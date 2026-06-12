@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Shield, Eye, EyeOff, Building2, ArrowLeft, ClipboardCheck } from 'lucide-react'
-import './LoginPage.css'
+import '../style/LoginPage.css'
 
 const ROLES = [
   { key: 'admin', label: 'Admin', icon: Shield },
@@ -35,7 +35,7 @@ export default function LoginPage() {
             <span className="lp-logo-icon"><Shield size={18} /></span>
             <div>
               <div className="lp-logo-name">E-Procurement</div>
-              <div className="lp-logo-sub">Blockchain System</div>
+              <div className="lp-logo-sub">Procurement System</div>
             </div>
           </div>
           <h1>{isRegister ? 'Register as Supplier' : 'Welcome Back'}</h1>
@@ -105,12 +105,12 @@ export default function LoginPage() {
         <div className="login-right-inner">
           <div className="login-quote-icon"><Shield size={32} /></div>
           <blockquote>
-            "Fair procurement starts with transparent systems. Every bid, every decision — permanently recorded and publicly verifiable."
+            "Fair procurement starts with transparent systems. Every request, every bid, every decision — tracked and accountable."
           </blockquote>
           <div className="login-stats">
-            <div><strong>100%</strong><span>Tamper-proof records</span></div>
-            <div><strong>3</strong><span>Role-based access</span></div>
-            <div><strong>Live</strong><span>Blockchain audit trail</span></div>
+            <div><strong>3</strong><span>User roles</span></div>
+            <div><strong>6</strong><span>Process phases</span></div>
+            <div><strong>100%</strong><span>Audit trail</span></div>
           </div>
         </div>
       </div>

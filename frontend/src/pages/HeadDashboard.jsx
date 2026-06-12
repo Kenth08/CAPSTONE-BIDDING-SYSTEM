@@ -1,38 +1,44 @@
 import { useState } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, FolderOpen, CheckCircle2, XCircle,
-  ClipboardCheck, Bell, Search, LogOut, Settings,
-  Eye, MoreHorizontal, Clock, Shield, AlertCircle, Filter, ChevronDown
+  LayoutDashboard, Clock, CheckCircle2, XCircle,
+  Bell, Search, ChevronDown, LogOut,
+  ClipboardCheck, AlertCircle, FolderOpen, Eye,
+  ThumbsUp, ThumbsDown
 } from 'lucide-react'
-import './HeadDashboard.css'
+import '../style/HeadDashboard.css'
 
 const NAV = [
   { icon: LayoutDashboard, label: 'Dashboard', to: '/head' },
   { icon: Clock, label: 'Pending Approval', to: '/head/pending' },
-  { icon: CheckCircle2, label: 'Approved', to: '/head/approved' },
-  { icon: Settings, label: 'Settings', to: '/head/settings' },
+  { icon: CheckCircle2, label: 'Approved Projects', to: '/head/approved' },
 ]
 
-// Projects waiting for Head approval
 const PENDING_PROJECTS = [
-  { id: 'P-2026-003', name: 'IT Systems Upgrade', budget: '$450K', deadline: 'Aug 1, 2026', category: 'Technology', createdBy: 'Admin User', createdAt: 'Jun 8, 2026' },
-  { id: 'P-2026-005', name: 'Water Treatment Facility', budget: '$1.7M', deadline: 'Sep 10, 2026', category: 'Environment', createdBy: 'Admin User', createdAt: 'Jun 9, 2026' },
+  {
+    id: 'P-2026-003',
+    name: 'IT Systems Upgrade',
+    category: 'Technology',
+    budget: '$450K',
+    deadline: 'Aug 1, 2026',
+    submittedAt: 'Jun 8, 2026',
+    description: 'Upgrade of school IT infrastructure and network systems, including hardware replacement and software licensing.',
+  },
 ]
 
-// Projects Head already approved
 const APPROVED_PROJECTS = [
-  { id: 'P-2026-001', name: 'Road Infrastructure Phase 2', budget: '$2.4M', deadline: 'Jul 15, 2026', category: 'Infrastructure', approvedAt: 'Jun 5, 2026', bids: 8 },
-  { id: 'P-2026-002', name: 'Hospital Equipment Procurement', budget: '$890K', deadline: 'Jun 30, 2026', category: 'Medical', approvedAt: 'Jun 3, 2026', bids: 5 },
-  { id: 'P-2026-004', name: 'School Construction Batch A', budget: '$3.1M', deadline: 'May 20, 2026', category: 'Infrastructure', approvedAt: 'Apr 15, 2026', bids: 6 },
+  { id: 'P-2026-001', name: 'Road Infrastructure Phase 2', category: 'Infrastructure', budget: '$2.4M', deadline: 'Jul 15, 2026', approvedAt: 'May 30, 2026', status: 'approved' },
+  { id: 'P-2026-002', name: 'Hospital Equipment Procurement', category: 'Medical', budget: '$890K', deadline: 'Jun 30, 2026', approvedAt: 'May 27, 2026', status: 'approved' },
+  { id: 'P-2026-004', name: 'School Construction Batch A', category: 'Infrastructure', budget: '$3.1M', deadline: 'May 20, 2026', approvedAt: 'Apr 7, 2026', status: 'approved' },
+  { id: 'P-2026-005', name: 'Water Treatment Facility', category: 'Environment', budget: '$1.7M', deadline: 'Sep 10, 2026', approvedAt: 'Jun 6, 2026', status: 'approved' },
 ]
 
-function HeadSidebar({ active }) {
+function Sidebar({ active }) {
   const navigate = useNavigate()
   return (
     <aside className="hd-sidebar">
       <div className="hd-sidebar-logo">
-        <span className="lp-logo-icon" style={{ background: '#8b5cf6' }}><ClipboardCheck size={16} /></span>
+        <span className="lp-logo-icon"><ClipboardCheck size={16} /></span>
         <div>
           <div className="lp-logo-name">E-Procurement</div>
           <div className="lp-logo-sub" style={{ color: '#64748b' }}>Head Panel</div>
@@ -52,24 +58,21 @@ function HeadSidebar({ active }) {
   )
 }
 
-function HeadHeader({ title }) {
+function Header({ title }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   return (
     <header className="hd-header">
       <h1 className="hd-page-title">{title}</h1>
       <div className="hd-header-right">
-        <div className="hd-search">
-          <Search size={15} />
-          <input placeholder="Search projects…" />
-        </div>
+        <div className="hd-search"><Search size={15} /><input placeholder="Search…" /></div>
         <button className="hd-notif"><Bell size={18} /><span className="hd-notif-dot" /></button>
         <div className="hd-user-wrap">
           <div className="hd-user" onClick={() => setOpen(o => !o)}>
             <div className="hd-avatar">H</div>
             <div className="hd-user-info">
-              <span>Head Officer</span>
-              <span>Procurement Head</span>
+              <span className="hd-user-name">School Head</span>
+              <span className="hd-user-role">Department Head</span>
             </div>
             <ChevronDown size={14} color="#64748b" />
           </div>
@@ -80,14 +83,10 @@ function HeadHeader({ title }) {
                 <div className="hd-dropdown-header">
                   <div className="hd-avatar">H</div>
                   <div>
-                    <div className="hd-dropdown-name">Head Officer</div>
-                    <div className="hd-dropdown-email">head@eprocure.gov</div>
+                    <div className="hd-dropdown-name">School Head</div>
+                    <div className="hd-dropdown-email">head@district.edu.ph</div>
                   </div>
                 </div>
-                <div className="hd-dropdown-divider" />
-                <button className="hd-dropdown-item" onClick={() => { setOpen(false); navigate('/head/settings') }}>
-                  <Settings size={15} /> Settings
-                </button>
                 <div className="hd-dropdown-divider" />
                 <button className="hd-dropdown-item hd-dropdown-logout" onClick={() => navigate('/login')}>
                   <LogOut size={15} /> Log out
@@ -101,114 +100,151 @@ function HeadHeader({ title }) {
   )
 }
 
-function HeadHome() {
-  const [pending, setPending] = useState(PENDING_PROJECTS)
-  const [approved, setApproved] = useState(APPROVED_PROJECTS)
+function PendingCard({ project, onApprove, onReject }) {
+  const [expanded, setExpanded] = useState(false)
+  const [showRejectForm, setShowRejectForm] = useState(false)
+  const [rejectReason, setRejectReason] = useState('')
 
-  const handleApprove = (id) => {
-    const proj = pending.find(p => p.id === id)
-    if (!proj) return
-    setPending(prev => prev.filter(p => p.id !== id))
-    setApproved(prev => [{ ...proj, approvedAt: 'Just now', bids: 0 }, ...prev])
-  }
-
-  const handleReject = (id) => {
-    setPending(prev => prev.filter(p => p.id !== id))
+  const handleReject = (e) => {
+    e.preventDefault()
+    onReject(project.id, rejectReason)
+    setShowRejectForm(false)
   }
 
   return (
+    <div className="hd-pending-card">
+      <div className="hd-pending-card-top">
+        <div className="hd-proj-icon"><FolderOpen size={16} /></div>
+        <div className="hd-pending-info">
+          <div className="hd-bold">{project.name}</div>
+          <div className="hd-muted" style={{ fontSize: 12 }}>{project.id} · {project.category} · Submitted {project.submittedAt}</div>
+        </div>
+        <div className="hd-pending-meta">
+          <span className="hd-bold" style={{ fontSize: 16 }}>{project.budget}</span>
+          <span className="hd-muted" style={{ fontSize: 12 }}>Due {project.deadline}</span>
+        </div>
+        <div className="hd-pending-actions">
+          <button className="hd-btn-expand" onClick={() => setExpanded(e => !e)}>
+            <Eye size={13} /> {expanded ? 'Hide' : 'Details'}
+          </button>
+          <button className="hd-btn-approve" onClick={() => onApprove(project.id)}>
+            <ThumbsUp size={13} /> Approve
+          </button>
+          <button className="hd-btn-reject-sm" onClick={() => setShowRejectForm(s => !s)}>
+            <ThumbsDown size={13} /> Reject
+          </button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="hd-pending-desc">
+          <p className="hd-muted" style={{ fontSize: 13, lineHeight: 1.6 }}>{project.description}</p>
+          <div className="hd-pending-desc-meta">
+            <div><span className="hd-label">Budget</span><strong>{project.budget}</strong></div>
+            <div><span className="hd-label">Category</span><span>{project.category}</span></div>
+            <div><span className="hd-label">Bidding Deadline</span><span>{project.deadline}</span></div>
+            <div><span className="hd-label">Submitted</span><span>{project.submittedAt}</span></div>
+          </div>
+        </div>
+      )}
+
+      {showRejectForm && (
+        <form className="hd-reject-form" onSubmit={handleReject}>
+          <label className="hd-label">Reason for rejection (optional)</label>
+          <textarea
+            placeholder="Explain why this project is being rejected…"
+            value={rejectReason}
+            onChange={e => setRejectReason(e.target.value)}
+            rows={3}
+          />
+          <div className="hd-reject-form-actions">
+            <button type="button" className="hd-btn-cancel" onClick={() => setShowRejectForm(false)}>Cancel</button>
+            <button type="submit" className="hd-btn-reject-confirm">Confirm Rejection</button>
+          </div>
+        </form>
+      )}
+    </div>
+  )
+}
+
+function HeadHome({ pending, approved, onApprove, onReject }) {
+  return (
     <div className="hd-content">
-      {/* Stats */}
       <div className="hd-stats">
         {[
-          { label: 'Pending Approval', value: pending.length, icon: Clock, color: 'yellow' },
-          { label: 'Approved Projects', value: approved.length, icon: CheckCircle2, color: 'green' },
-          { label: 'Total Bids Received', value: approved.reduce((s, p) => s + (p.bids || 0), 0), icon: FolderOpen, color: 'blue' },
+          { label: 'Pending Your Review', value: String(pending.length), icon: Clock, color: 'yellow' },
+          { label: 'Approved by You', value: String(approved.filter(p => p.status === 'approved').length), icon: CheckCircle2, color: 'green' },
+          { label: 'Rejected', value: String(approved.filter(p => p.status === 'rejected').length), icon: XCircle, color: 'red' },
+          { label: 'Total Reviewed', value: String(approved.length), icon: ClipboardCheck, color: 'blue' },
         ].map(({ label, value, icon: Icon, color }) => (
-          <div className="hd-stat-card" key={label}>
+          <div className={`hd-stat-card hd-stat-${color}`} key={label}>
             <div className="hd-stat-top">
               <span className="hd-stat-label">{label}</span>
-              <div className={`hd-stat-icon hd-icon-${color}`}><Icon size={18} /></div>
+              <div className={`hd-stat-icon hd-icon-${color}`}><Icon size={17} /></div>
             </div>
             <div className="hd-stat-value">{value}</div>
           </div>
         ))}
       </div>
 
-      {/* Pending Projects */}
+      {pending.length > 0 && (
+        <div className="hd-alert-card">
+          <div className="hd-alert-header">
+            <AlertCircle size={18} className="hd-alert-icon" />
+            <div>
+              <div className="hd-alert-title">Action Required</div>
+              <div className="hd-alert-sub">You have {pending.length} project{pending.length > 1 ? 's' : ''} waiting for your approval</div>
+            </div>
+            <Link to="/head/pending" className="hd-btn-review">Review Now</Link>
+          </div>
+        </div>
+      )}
+
       <div className="hd-card">
         <div className="hd-card-header">
           <div>
-            <h2>Pending Your Approval</h2>
-            <p>Projects created by Admin — approve to publish for suppliers</p>
+            <h2>Pending Approval</h2>
+            <p>Projects submitted by Admin for your review — approve or reject below</p>
           </div>
-          {pending.length > 0 && (
-            <span className="hd-pending-badge">{pending.length} awaiting</span>
-          )}
+          <Link to="/head/pending" className="hd-view-all">View all →</Link>
         </div>
-
         {pending.length === 0 ? (
           <div className="hd-empty">
-            <CheckCircle2 size={36} />
-            <p>All caught up! No projects waiting for approval.</p>
+            <CheckCircle2 size={32} className="hd-empty-icon" />
+            <p>No projects pending your approval — all caught up!</p>
           </div>
         ) : (
-          <div className="hd-project-cards">
+          <div className="hd-pending-list">
             {pending.map(p => (
-              <div className="hd-project-card hd-pending" key={p.id}>
-                <div className="hd-project-card-top">
-                  <div>
-                    <div className="hd-proj-id">{p.id}</div>
-                    <div className="hd-proj-name">{p.name}</div>
-                    <span className={`badge badge-blue`}>{p.category}</span>
-                  </div>
-                  <div className="hd-alert-icon"><AlertCircle size={20} /></div>
-                </div>
-                <div className="hd-project-card-meta">
-                  <div><span>Budget</span><strong>{p.budget}</strong></div>
-                  <div><span>Deadline</span><strong>{p.deadline}</strong></div>
-                  <div><span>Created by</span><strong>{p.createdBy}</strong></div>
-                  <div><span>Created</span><strong>{p.createdAt}</strong></div>
-                </div>
-                <div className="hd-project-card-actions">
-                  <button className="hd-btn-approve" onClick={() => handleApprove(p.id)}>
-                    <CheckCircle2 size={14} /> Approve & Publish
-                  </button>
-                  <button className="hd-btn-reject" onClick={() => handleReject(p.id)}>
-                    <XCircle size={14} /> Reject
-                  </button>
-                  <button className="hd-btn-view"><Eye size={14} /> View Details</button>
-                </div>
-              </div>
+              <PendingCard key={p.id} project={p} onApprove={onApprove} onReject={onReject} />
             ))}
           </div>
         )}
       </div>
 
-      {/* Approved Projects */}
       <div className="hd-card">
         <div className="hd-card-header">
-          <div>
-            <h2>Approved Projects</h2>
-            <p>Projects you approved — now live and open for supplier bids</p>
-          </div>
+          <div><h2>Recently Reviewed</h2><p>Projects you've approved or rejected</p></div>
           <Link to="/head/approved" className="hd-view-all">View all →</Link>
         </div>
         <div className="hd-table-wrap">
           <table className="hd-table">
             <thead>
-              <tr><th>ID</th><th>Project Name</th><th>Budget</th><th>Deadline</th><th>Bids</th><th>Approved On</th><th></th></tr>
+              <tr><th>ID</th><th>Project Name</th><th>Budget</th><th>Category</th><th>Reviewed On</th><th>Decision</th></tr>
             </thead>
             <tbody>
-              {approved.map(p => (
+              {approved.slice(0, 4).map(p => (
                 <tr key={p.id}>
-                  <td className="hd-mono">{p.id}</td>
+                  <td className="hd-id">{p.id}</td>
                   <td className="hd-bold">{p.name}</td>
                   <td>{p.budget}</td>
-                  <td className="hd-muted">{p.deadline}</td>
-                  <td><span className="hd-bid-count">{p.bids}</span></td>
+                  <td><span className="badge badge-gray">{p.category}</span></td>
                   <td className="hd-muted">{p.approvedAt}</td>
-                  <td><button className="hd-btn-icon"><Eye size={15} /></button></td>
+                  <td>
+                    <span className={`badge ${p.status === 'approved' ? 'badge-green' : 'badge-red'}`}>
+                      {p.status === 'approved' ? 'Approved' : 'Rejected'}
+                    </span>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -219,52 +255,29 @@ function HeadHome() {
   )
 }
 
-function PendingPage() {
-  const [pending, setPending] = useState(PENDING_PROJECTS)
-
+function PendingPage({ pending, onApprove, onReject }) {
   return (
     <div className="hd-content">
       <div className="hd-card">
         <div className="hd-card-header">
           <div>
             <h2>Pending Approval</h2>
-            <p>Review and approve projects before they go live for suppliers</p>
+            <p>Review each project carefully. Approved projects will go back to Admin to be published for supplier bidding.</p>
           </div>
-          <button className="hd-btn-outline"><Filter size={14} /> Filter</button>
+          <span className={`badge ${pending.length > 0 ? 'badge-yellow' : 'badge-green'}`}>
+            {pending.length > 0 ? `${pending.length} pending` : 'All clear'}
+          </span>
         </div>
         {pending.length === 0 ? (
           <div className="hd-empty">
-            <CheckCircle2 size={36} />
-            <p>No pending projects at this time.</p>
+            <CheckCircle2 size={40} className="hd-empty-icon" />
+            <h3>All caught up!</h3>
+            <p>No projects are waiting for your approval right now.</p>
           </div>
         ) : (
-          <div className="hd-project-cards" style={{ padding: '20px 24px' }}>
+          <div className="hd-pending-list" style={{ padding: '16px 24px' }}>
             {pending.map(p => (
-              <div className="hd-project-card hd-pending" key={p.id}>
-                <div className="hd-project-card-top">
-                  <div>
-                    <div className="hd-proj-id">{p.id}</div>
-                    <div className="hd-proj-name">{p.name}</div>
-                    <span className="badge badge-blue">{p.category}</span>
-                  </div>
-                  <div className="hd-alert-icon"><AlertCircle size={20} /></div>
-                </div>
-                <div className="hd-project-card-meta">
-                  <div><span>Budget</span><strong>{p.budget}</strong></div>
-                  <div><span>Deadline</span><strong>{p.deadline}</strong></div>
-                  <div><span>Created by</span><strong>{p.createdBy}</strong></div>
-                  <div><span>Submitted</span><strong>{p.createdAt}</strong></div>
-                </div>
-                <div className="hd-project-card-actions">
-                  <button className="hd-btn-approve" onClick={() => setPending(prev => prev.filter(x => x.id !== p.id))}>
-                    <CheckCircle2 size={14} /> Approve & Publish
-                  </button>
-                  <button className="hd-btn-reject" onClick={() => setPending(prev => prev.filter(x => x.id !== p.id))}>
-                    <XCircle size={14} /> Reject
-                  </button>
-                  <button className="hd-btn-view"><Eye size={14} /> View Details</button>
-                </div>
-              </div>
+              <PendingCard key={p.id} project={p} onApprove={onApprove} onReject={onReject} />
             ))}
           </div>
         )}
@@ -273,33 +286,48 @@ function PendingPage() {
   )
 }
 
-function ApprovedPage() {
+function ApprovedPage({ approved }) {
   return (
     <div className="hd-content">
       <div className="hd-card">
         <div className="hd-card-header">
-          <div><h2>Approved Projects</h2><p>All projects you have approved and published</p></div>
+          <div>
+            <h2>Approved Projects</h2>
+            <p>All projects you have reviewed</p>
+          </div>
+          <span className="badge badge-green">{approved.filter(p => p.status === 'approved').length} approved</span>
         </div>
-        <div className="hd-table-wrap">
-          <table className="hd-table">
-            <thead>
-              <tr><th>ID</th><th>Project Name</th><th>Budget</th><th>Category</th><th>Deadline</th><th>Bids</th><th>Approved On</th></tr>
-            </thead>
-            <tbody>
-              {APPROVED_PROJECTS.map(p => (
-                <tr key={p.id}>
-                  <td className="hd-mono">{p.id}</td>
-                  <td className="hd-bold">{p.name}</td>
-                  <td>{p.budget}</td>
-                  <td><span className="badge badge-blue">{p.category}</span></td>
-                  <td className="hd-muted">{p.deadline}</td>
-                  <td><span className="hd-bid-count">{p.bids}</span></td>
-                  <td className="hd-muted">{p.approvedAt}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {approved.length === 0 ? (
+          <div className="hd-empty">
+            <FolderOpen size={36} className="hd-empty-icon" />
+            <p>No approved projects yet.</p>
+          </div>
+        ) : (
+          <div className="hd-table-wrap">
+            <table className="hd-table">
+              <thead>
+                <tr><th>ID</th><th>Project Name</th><th>Category</th><th>Budget</th><th>Deadline</th><th>Reviewed On</th><th>Decision</th></tr>
+              </thead>
+              <tbody>
+                {approved.map(p => (
+                  <tr key={p.id}>
+                    <td className="hd-id">{p.id}</td>
+                    <td className="hd-bold">{p.name}</td>
+                    <td><span className="badge badge-gray">{p.category}</span></td>
+                    <td>{p.budget}</td>
+                    <td className="hd-muted">{p.deadline}</td>
+                    <td className="hd-muted">{p.approvedAt}</td>
+                    <td>
+                      <span className={`badge ${p.status === 'approved' ? 'badge-green' : 'badge-red'}`}>
+                        {p.status === 'approved' ? 'Approved' : 'Rejected'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -307,23 +335,42 @@ function ApprovedPage() {
 
 export default function HeadDashboard() {
   const loc = useLocation()
-  const TITLES = {
+  const [pending, setPending] = useState(PENDING_PROJECTS)
+  const [approved, setApproved] = useState(APPROVED_PROJECTS)
+
+  const approveProject = (id) => {
+    const project = pending.find(p => p.id === id)
+    if (!project) return
+    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    setApproved(prev => [{ ...project, approvedAt: today, status: 'approved' }, ...prev])
+    setPending(prev => prev.filter(p => p.id !== id))
+  }
+
+  const rejectProject = (id) => {
+    const project = pending.find(p => p.id === id)
+    if (!project) return
+    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    setApproved(prev => [{ ...project, approvedAt: today, status: 'rejected' }, ...prev])
+    setPending(prev => prev.filter(p => p.id !== id))
+  }
+
+  const PAGE_TITLES = {
     '/head': 'Dashboard',
     '/head/pending': 'Pending Approval',
     '/head/approved': 'Approved Projects',
-    '/head/settings': 'Settings',
   }
+
   return (
     <div className="hd-layout">
-      <HeadSidebar active={loc.pathname} />
+      <Sidebar active={loc.pathname} />
       <div className="hd-main">
-        <HeadHeader title={TITLES[loc.pathname] || 'Dashboard'} />
+        <Header title={PAGE_TITLES[loc.pathname] || 'Dashboard'} />
         <div className="hd-body">
           <Routes>
-            <Route index element={<HeadHome />} />
-            <Route path="pending" element={<PendingPage />} />
-            <Route path="approved" element={<ApprovedPage />} />
-            <Route path="*" element={<HeadHome />} />
+            <Route index element={<HeadHome pending={pending} approved={approved} onApprove={approveProject} onReject={rejectProject} />} />
+            <Route path="pending" element={<PendingPage pending={pending} onApprove={approveProject} onReject={rejectProject} />} />
+            <Route path="approved" element={<ApprovedPage approved={approved} />} />
+            <Route path="*" element={<HeadHome pending={pending} approved={approved} onApprove={approveProject} onReject={rejectProject} />} />
           </Routes>
         </div>
       </div>

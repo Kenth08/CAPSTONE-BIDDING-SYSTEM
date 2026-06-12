@@ -3,9 +3,9 @@ import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, FileText, Clock, CheckCircle2,
   Building2, Bell, Search, ChevronDown, LogOut, Settings,
-  Plus, Eye, MoreHorizontal, ArrowRight, Shield, AlertCircle, User
+  Eye, ArrowRight, Shield, User, X, Send, Trophy
 } from 'lucide-react'
-import './SupplierDashboard.css'
+import '../style/SupplierDashboard.css'
 
 const NAV = [
   { icon: LayoutDashboard, label: 'Dashboard', to: '/supplier' },
@@ -16,15 +16,80 @@ const NAV = [
 ]
 
 const OPEN_PROJECTS = [
-  { id: 'P-2026-001', name: 'Road Infrastructure Phase 2', budget: '$2.4M', deadline: 'Jul 15, 2026', category: 'Infrastructure' },
-  { id: 'P-2026-003', name: 'IT Systems Upgrade', budget: '$450K', deadline: 'Aug 1, 2026', category: 'Technology' },
-  { id: 'P-2026-005', name: 'Water Treatment Facility', budget: '$1.7M', deadline: 'Sep 10, 2026', category: 'Environment' },
+  { id: 'P-2026-001', name: 'Road Infrastructure Phase 2', budget: '$2.4M', deadline: 'Jul 15, 2026', category: 'Infrastructure', description: 'Phase 2 of the road infrastructure project covering districts 3–5.' },
+  { id: 'P-2026-002', name: 'Hospital Equipment Procurement', budget: '$890K', deadline: 'Jun 30, 2026', category: 'Medical', description: 'Procurement of medical equipment for the district hospital.' },
+  { id: 'P-2026-005', name: 'Water Treatment Facility', budget: '$1.7M', deadline: 'Sep 10, 2026', category: 'Environment', description: 'Construction of a water treatment facility for the district.' },
 ]
 
-const MY_BIDS = [
-  { project: 'Hospital Equipment Procurement', amount: '$820K', submitted: 'Jun 1, 2026', status: 'shortlisted' },
-  { project: 'Road Infrastructure Phase 2', amount: '$2.1M', submitted: 'Jun 5, 2026', status: 'pending' },
+const INITIAL_BIDS = [
+  { project: 'Hospital Equipment Procurement', projectId: 'P-2026-002', amount: '$820K', submitted: 'Jun 1, 2026', status: 'shortlisted', notes: 'Full product warranty, 60-day delivery' },
+  { project: 'Road Infrastructure Phase 2', projectId: 'P-2026-001', amount: '$2.1M', submitted: 'Jun 5, 2026', status: 'under_review', notes: 'Experienced team, 24-month timeline' },
 ]
+
+const BID_STATUS = {
+  submitted: 'badge-yellow',
+  under_review: 'badge-blue',
+  shortlisted: 'badge-green',
+  winner: 'badge-purple',
+  rejected: 'badge-red',
+}
+
+function BidModal({ project, onClose, onSubmit }) {
+  const [form, setForm] = useState({ amount: '', notes: '' })
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    onSubmit(project, form)
+    onClose()
+  }
+
+  return (
+    <div className="sd-modal-overlay" onClick={onClose}>
+      <div className="sd-modal" onClick={e => e.stopPropagation()}>
+        <div className="sd-modal-header">
+          <div>
+            <h3>Submit Bid</h3>
+            <p className="sd-muted sd-small">{project.id} · {project.name}</p>
+          </div>
+          <button className="sd-modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="sd-modal-meta">
+          <div><span>Budget</span><strong>{project.budget}</strong></div>
+          <div><span>Deadline</span><strong>{project.deadline}</strong></div>
+          <div><span>Category</span><strong>{project.category}</strong></div>
+        </div>
+        <form onSubmit={handleSubmit} className="sd-modal-form">
+          <div className="sd-form-group">
+            <label>Your Bid Amount</label>
+            <input
+              type="text"
+              placeholder="e.g. $850K"
+              value={form.amount}
+              onChange={e => setForm({ ...form, amount: e.target.value })}
+              required
+            />
+          </div>
+          <div className="sd-form-group">
+            <label>Notes / Proposal Summary</label>
+            <textarea
+              placeholder="Briefly describe your approach, timeline, and qualifications…"
+              value={form.notes}
+              onChange={e => setForm({ ...form, notes: e.target.value })}
+              rows={4}
+              required
+            />
+          </div>
+          <div className="sd-modal-footer">
+            <button type="button" className="sd-btn-cancel" onClick={onClose}>Cancel</button>
+            <button type="submit" className="sd-btn-primary">
+              <Send size={14} /> Submit Bid
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
 
 function SupplierSidebar({ active }) {
   const navigate = useNavigate()
@@ -103,14 +168,20 @@ function SupplierHeader({ title }) {
   )
 }
 
-function SupplierHome() {
+function SupplierHome({ bids, onBid }) {
+  const [modal, setModal] = useState(null)
+  const alreadyBid = new Set(bids.map(b => b.projectId))
+  const available = OPEN_PROJECTS.filter(p => !alreadyBid.has(p.id))
+
   return (
     <div className="sd-content">
+      {modal && <BidModal project={modal} onClose={() => setModal(null)} onSubmit={(proj, form) => { onBid(proj, form); setModal(null) }} />}
+
       <div className="sd-stats">
         {[
-          { label: 'Open Projects', value: '3', icon: FolderOpen, color: 'blue' },
-          { label: 'My Active Bids', value: '2', icon: FileText, color: 'green' },
-          { label: 'Shortlisted', value: '1', icon: CheckCircle2, color: 'purple' },
+          { label: 'Open Projects', value: String(OPEN_PROJECTS.length), icon: FolderOpen, color: 'blue' },
+          { label: 'My Active Bids', value: String(bids.length), icon: FileText, color: 'green' },
+          { label: 'Shortlisted', value: String(bids.filter(b => b.status === 'shortlisted').length), icon: CheckCircle2, color: 'purple' },
           { label: 'Approval Status', value: 'Active', icon: Shield, color: 'green' },
         ].map(({ label, value, icon: Icon, color }) => (
           <div className="sd-stat-card" key={label}>
@@ -129,42 +200,54 @@ function SupplierHome() {
             <div><h2>Available Projects</h2><p>Open projects you can bid on</p></div>
             <Link to="/supplier/projects" className="sd-view-all">View all →</Link>
           </div>
-          <div className="sd-projects-list">
-            {OPEN_PROJECTS.map(p => (
-              <div className="sd-project-row" key={p.id}>
-                <div className="sd-proj-icon"><FolderOpen size={16} /></div>
-                <div className="sd-proj-info">
-                  <span className="sd-bold">{p.name}</span>
-                  <span className="sd-muted">{p.id} · {p.category}</span>
+          {available.length === 0 ? (
+            <div style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
+              You have already submitted bids on all available projects.
+            </div>
+          ) : (
+            <div className="sd-projects-list">
+              {available.map(p => (
+                <div className="sd-project-row" key={p.id}>
+                  <div className="sd-proj-icon"><FolderOpen size={16} /></div>
+                  <div className="sd-proj-info">
+                    <span className="sd-bold">{p.name}</span>
+                    <span className="sd-muted">{p.id} · {p.category}</span>
+                  </div>
+                  <div className="sd-proj-right">
+                    <span className="sd-proj-budget">{p.budget}</span>
+                    <span className="sd-muted sd-small">Due {p.deadline}</span>
+                  </div>
+                  <button className="sd-bid-btn" onClick={() => setModal(p)}>Bid <ArrowRight size={13} /></button>
                 </div>
-                <div className="sd-proj-right">
-                  <span className="sd-proj-budget">{p.budget}</span>
-                  <span className="sd-muted sd-small">Due {p.deadline}</span>
-                </div>
-                <Link to="/supplier/projects" className="sd-bid-btn">Bid <ArrowRight size={13} /></Link>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="sd-card">
           <div className="sd-card-header">
             <div><h2>My Bids</h2><p>Your submitted bids</p></div>
           </div>
-          <div className="sd-bids-list">
-            {MY_BIDS.map((b, i) => (
-              <div className="sd-bid-row" key={i}>
-                <div className="sd-bid-info">
-                  <span className="sd-bold">{b.project}</span>
-                  <span className="sd-muted sd-small">Submitted {b.submitted}</span>
+          {bids.length === 0 ? (
+            <div style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
+              No bids submitted yet.
+            </div>
+          ) : (
+            <div className="sd-bids-list">
+              {bids.map((b, i) => (
+                <div className="sd-bid-row" key={i}>
+                  <div className="sd-bid-info">
+                    <span className="sd-bold">{b.project}</span>
+                    <span className="sd-muted sd-small">Submitted {b.submitted}</span>
+                  </div>
+                  <div className="sd-bid-right">
+                    <span className="sd-proj-budget">{b.amount}</span>
+                    <span className={`badge ${BID_STATUS[b.status] || 'badge-yellow'}`}>{b.status.replace('_', ' ')}</span>
+                  </div>
                 </div>
-                <div className="sd-bid-right">
-                  <span className="sd-proj-budget">{b.amount}</span>
-                  <span className={`badge ${b.status === 'shortlisted' ? 'badge-green' : 'badge-yellow'}`}>{b.status}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -202,9 +285,13 @@ function SupplierHome() {
   )
 }
 
-function SupplierProjects() {
+function SupplierProjects({ bids, onBid }) {
+  const [modal, setModal] = useState(null)
+  const alreadyBid = new Set(bids.map(b => b.projectId))
+
   return (
     <div className="sd-content">
+      {modal && <BidModal project={modal} onClose={() => setModal(null)} onSubmit={(proj, form) => { onBid(proj, form); setModal(null) }} />}
       <div className="sd-card">
         <div className="sd-card-header">
           <div><h2>Available Projects</h2><p>Browse and bid on open procurement projects</p></div>
@@ -221,7 +308,11 @@ function SupplierProjects() {
                 <td>{p.budget}</td>
                 <td><span className="badge badge-blue">{p.category}</span></td>
                 <td className="sd-muted">{p.deadline}</td>
-                <td><button className="sd-bid-btn-table">Submit Bid</button></td>
+                <td>
+                  {alreadyBid.has(p.id)
+                    ? <span className="badge badge-green">Bid Submitted</span>
+                    : <button className="sd-bid-btn-table" onClick={() => setModal(p)}>Submit Bid</button>}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -231,28 +322,35 @@ function SupplierProjects() {
   )
 }
 
-function SupplierBids() {
+function SupplierBids({ bids }) {
   return (
     <div className="sd-content">
       <div className="sd-card">
         <div className="sd-card-header">
-          <div><h2>My Bids</h2><p>Track all your submitted bids</p></div>
+          <div><h2>My Bids</h2><p>Track all your submitted bids and their evaluation status</p></div>
         </div>
-        <table className="sd-table">
-          <thead>
-            <tr><th>Project</th><th>Amount</th><th>Submitted</th><th>Status</th></tr>
-          </thead>
-          <tbody>
-            {MY_BIDS.map((b, i) => (
-              <tr key={i}>
-                <td className="sd-bold">{b.project}</td>
-                <td>{b.amount}</td>
-                <td className="sd-muted">{b.submitted}</td>
-                <td><span className={`badge ${b.status === 'shortlisted' ? 'badge-green' : 'badge-yellow'}`}>{b.status}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {bids.length === 0 ? (
+          <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
+            No bids submitted yet. Browse projects to submit your first bid.
+          </div>
+        ) : (
+          <table className="sd-table">
+            <thead>
+              <tr><th>Project</th><th>Amount</th><th>Notes</th><th>Submitted</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {bids.map((b, i) => (
+                <tr key={i}>
+                  <td className="sd-bold">{b.project}</td>
+                  <td>{b.amount}</td>
+                  <td className="sd-muted" style={{ maxWidth: 220, fontSize: 13 }}>{b.notes}</td>
+                  <td className="sd-muted">{b.submitted}</td>
+                  <td><span className={`badge ${BID_STATUS[b.status] || 'badge-yellow'}`}>{b.status.replace('_', ' ')}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   )
@@ -260,6 +358,20 @@ function SupplierBids() {
 
 export default function SupplierDashboard() {
   const loc = useLocation()
+  const [bids, setBids] = useState(INITIAL_BIDS)
+
+  const submitBid = (project, form) => {
+    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    setBids(prev => [{
+      project: project.name,
+      projectId: project.id,
+      amount: form.amount,
+      submitted: today,
+      status: 'submitted',
+      notes: form.notes,
+    }, ...prev])
+  }
+
   const TITLES = {
     '/supplier': 'Dashboard',
     '/supplier/projects': 'Projects',
@@ -274,10 +386,10 @@ export default function SupplierDashboard() {
         <SupplierHeader title={TITLES[loc.pathname] || 'Dashboard'} />
         <div className="sd-body">
           <Routes>
-            <Route index element={<SupplierHome />} />
-            <Route path="projects" element={<SupplierProjects />} />
-            <Route path="bids" element={<SupplierBids />} />
-            <Route path="*" element={<SupplierHome />} />
+            <Route index element={<SupplierHome bids={bids} onBid={submitBid} />} />
+            <Route path="projects" element={<SupplierProjects bids={bids} onBid={submitBid} />} />
+            <Route path="bids" element={<SupplierBids bids={bids} />} />
+            <Route path="*" element={<SupplierHome bids={bids} onBid={submitBid} />} />
           </Routes>
         </div>
       </div>

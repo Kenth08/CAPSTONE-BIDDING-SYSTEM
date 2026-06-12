@@ -3,7 +3,7 @@ import {
   Shield, Users, FileText, Lock, BarChart2, Link2,
   PlusCircle, CheckCircle, Eye, ArrowRight, Building2, ClipboardCheck
 } from 'lucide-react'
-import './LandingPage.css'
+import '../style/LandingPage.css'
 
 const STEPS = [
   { num: '01', icon: PlusCircle, title: 'Admin Creates Project', desc: 'Scope, budget, and deadline defined' },
