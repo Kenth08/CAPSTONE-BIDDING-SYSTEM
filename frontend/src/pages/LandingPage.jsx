@@ -92,12 +92,12 @@ export default function LandingPage() {
             <Link to="/login" className="btn-primary lp-hero-login">
               <Shield size={16} /> Login
             </Link>
-            <Link to="/login?register=supplier" className="btn-outline lp-hero-register">
+            <Link to="/register" className="btn-outline lp-hero-register">
               Register as Supplier
             </Link>
           </div>
           <p className="lp-hero-hint">
-            New supplier? <Link to="/login?register=supplier" className="lp-hint-link">Register as Supplier</Link>
+            New supplier? <Link to="/register" className="lp-hint-link">Register as Supplier</Link>
           </p>
         </div>
       </section>
@@ -162,7 +162,7 @@ export default function LandingPage() {
         <h2>Join the Platform</h2>
         <p>Register as a supplier to start bidding, or log in as an admin to manage the procurement process.</p>
         <div className="lp-cta-btns">
-          <Link to="/login?register=supplier" className="btn-primary">
+          <Link to="/register" className="btn-primary">
             <Building2 size={16} /> Register as Supplier
           </Link>
           <Link to="/login" className="btn-outline">Login as Admin</Link>

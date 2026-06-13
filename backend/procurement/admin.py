@@ -12,9 +12,10 @@ class ProjectAdmin(admin.ModelAdmin):
 
 @admin.register(Supplier)
 class SupplierAdmin(admin.ModelAdmin):
-    list_display = ("company", "contact", "status", "qualification_status", "registered")
+    list_display = ("company", "contact", "tin", "status", "qualification_status", "registered")
     list_filter = ("status", "qualification_status")
-    search_fields = ("company", "contact")
+    list_editable = ("qualification_status",)
+    search_fields = ("company", "contact", "tin", "user__email")
 
 
 @admin.register(Bid)

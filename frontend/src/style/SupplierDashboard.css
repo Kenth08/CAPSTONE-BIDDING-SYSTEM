@@ -601,3 +601,81 @@
 .sd-tl-date { font-size: 12px; color: var(--text-gray); margin: 2px 0 4px; }
 .sd-tl-desc { font-size: 13px; color: var(--text-gray); line-height: 1.5; }
 .sd-timeline-step.pending .sd-tl-title { color: var(--text-gray); }
+
+/* ── VERIFICATION BANNER ─────────────────────────────────── */
+.sd-verify-banner {
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 16px 18px; border-radius: 12px; margin-bottom: 18px;
+  border: 1px solid transparent;
+}
+.sd-verify-pending  { background: #fffbeb; border-color: #fcd34d; }
+.sd-verify-revision { background: #fff7ed; border-color: #fdba74; }
+.sd-verify-rejected { background: #fef2f2; border-color: #fca5a5; }
+.sd-verify-icon {
+  width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.sd-verify-pending  .sd-verify-icon { background: rgba(245,158,11,0.15); color: #d97706; }
+.sd-verify-revision .sd-verify-icon { background: rgba(249,115,22,0.15); color: #ea580c; }
+.sd-verify-rejected .sd-verify-icon { background: rgba(239,68,68,0.15);  color: #dc2626; }
+.sd-verify-text { display: flex; flex-direction: column; gap: 3px; }
+.sd-verify-text .sd-bold { font-size: 14.5px; color: var(--text-dark); }
+.sd-verify-note { margin-top: 6px; font-size: 13px; font-style: italic; color: var(--text-dark); }
+
+/* ── REVISION PANEL ──────────────────────────────────────── */
+.sd-revision-card { border: 1px solid #fdba74; }
+.sd-revision-list { padding: 4px 24px; display: flex; flex-direction: column; gap: 10px; }
+.sd-revision-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--light-border); border-radius: 10px;
+}
+.sd-revision-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sd-revision-note {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12.5px; color: #ea580c;
+}
+.sd-revision-action { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.sd-reupload-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border: 1px solid var(--primary); color: var(--primary);
+  background: #fff; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.sd-reupload-btn:hover { background: var(--primary); color: #fff; }
+.sd-revision-file {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #ecfdf5; border: 1px solid #6ee7b7; border-radius: 8px;
+  padding: 7px 10px; font-size: 12.5px; color: #047857; max-width: 240px;
+}
+.sd-revision-file .sd-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-revision-file button { background: none; border: none; cursor: pointer; color: #047857; display: flex; }
+.sd-revision-footer {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 16px 24px; border-top: 1px solid var(--light-border); margin-top: 8px;
+}
+
+/* ── LOCKED BID BUTTON / STATUS ICONS ────────────────────── */
+.sd-bid-locked { background: #f1f5f9 !important; color: #94a3b8 !important; cursor: not-allowed; }
+.sd-clock { color: #d97706; flex-shrink: 0; }
+
+/* ── CONFIRM DIALOG ──────────────────────────────────────── */
+.sd-confirm {
+  background: #fff; border-radius: 14px; padding: 24px; max-width: 380px; width: 100%;
+  text-align: center; box-shadow: 0 16px 40px rgba(0,0,0,0.25);
+}
+.sd-confirm-icon {
+  width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 14px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(59,130,246,0.12); color: var(--primary);
+}
+.sd-confirm h4 { margin: 0 0 8px; font-size: 16px; color: var(--text-dark); }
+.sd-confirm p { margin: 0 0 18px; font-size: 13.5px; color: var(--text-gray); line-height: 1.5; }
+.sd-confirm-actions { display: flex; gap: 10px; justify-content: center; }
+
+/* ── FLOATING TOASTS (success / error) ───────────────────── */
+.sd-toast-success, .sd-toast-error {
+  position: fixed; top: 20px; right: 20px; z-index: 300;
+  margin-bottom: 0; box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+  animation: sd-toast-in .2s ease;
+}
+.sd-toast-error { background: #fef2f2; border-color: #fca5a5; color: #b91c1c; }
+@keyframes sd-toast-in { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }

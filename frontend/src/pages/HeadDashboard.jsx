@@ -6,6 +6,7 @@ import {
   ClipboardCheck, AlertCircle, FolderOpen, Eye,
   ThumbsUp, ThumbsDown
 } from 'lucide-react'
+import { clearSession } from '../api'
 import '../style/HeadDashboard.css'
 
 const NAV = [
@@ -64,7 +65,7 @@ function Sidebar({ active }) {
           </div>
           <button
             className="hd-sidebar-expand"
-            onClick={() => { localStorage.removeItem('role'); navigate('/login') }}
+            onClick={() => { clearSession(); navigate('/login') }}
           >
             <ChevronRight size={14} />
           </button>
@@ -107,7 +108,7 @@ function Header({ title }) {
                   </div>
                 </div>
                 <div className="hd-dropdown-divider" />
-                <button className="hd-dropdown-item hd-dropdown-logout" onClick={() => { localStorage.removeItem('role'); navigate('/login') }}>
+                <button className="hd-dropdown-item hd-dropdown-logout" onClick={() => { clearSession(); navigate('/login') }}>
                   <LogOut size={15} /> Log out
                 </button>
               </div>

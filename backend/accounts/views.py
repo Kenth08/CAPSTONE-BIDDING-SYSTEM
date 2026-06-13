@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import generics, permissions
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -7,6 +8,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from .serializers import (
     RegisterSerializer,
     RoleTokenObtainPairSerializer,
+    SupplierRegisterSerializer,
     UserSerializer,
 )
 
@@ -25,6 +27,24 @@ class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
+
+
+class SupplierRegisterView(generics.CreateAPIView):
+    """POST multipart form -> creates a supplier account + profile (pending review)."""
+
+    queryset = User.objects.all()
+    serializer_class = SupplierRegisterSerializer
+    permission_classes = [permissions.AllowAny]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(
+            {"detail": "Registration submitted. Your account is pending admin verification."},
+            status=201,
+        )
 
 
 class MeView(APIView):

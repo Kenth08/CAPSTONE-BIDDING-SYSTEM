@@ -1,10 +1,15 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
   Bell, Search, ChevronDown, ChevronRight, LogOut, Shield,
-  Plus, FileText, Activity, UserCheck, Info, Eye
+  Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
+  CheckCircle2, AlertTriangle, XCircle, Check
 } from 'lucide-react'
+import {
+  clearSession, apiListSuppliers, apiGetSupplier,
+  apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision,
+} from '../api'
 import '../style/AdminDashboard.css'
 
 const NAV = [
@@ -31,21 +36,6 @@ const INITIAL_PROJECTS = [
     type: 'IT Equipment', eligibleTypes: 'Open to All',
     bids: 1, status: 'awarded',
     description: 'Procurement of chairs and tables for conference rooms.',
-  },
-]
-
-const INITIAL_SUPPLIERS = [
-  {
-    id: 1, company: 'PA co.', contact: 'Kenthcharles Repollo',
-    businessType: 'IT Equipment, ICT Services',
-    status: 'draft', qualificationStatus: 'verified',
-    emailVerified: 'Verified', registered: '6/1/2026',
-  },
-  {
-    id: 2, company: 'PA co.', contact: 'coc',
-    businessType: '53ce8d48-c8e8-45db-be63-d659c488e905',
-    status: 'approved', qualificationStatus: 'waiting_admin_approval',
-    emailVerified: 'Verified', registered: '6/1/2026',
   },
 ]
 
@@ -104,7 +94,7 @@ function Sidebar({ active }) {
           </div>
           <button
             className="ad-sidebar-expand"
-            onClick={() => { localStorage.removeItem('role'); navigate('/login') }}
+            onClick={() => { clearSession(); navigate('/login') }}
           >
             <ChevronRight size={14} />
           </button>
@@ -153,7 +143,7 @@ function Header({ title }) {
                 </div>
                 <div className="ad-dropdown-divider" />
                 <button className="ad-dropdown-item ad-dropdown-logout"
-                  onClick={() => { localStorage.removeItem('role'); navigate('/login') }}>
+                  onClick={() => { clearSession(); navigate('/login') }}>
                   <LogOut size={15} /> Log out
                 </button>
               </div>
@@ -471,35 +461,70 @@ function PlanningPage({ projects }) {
 
 // ── Suppliers Page ────────────────────────────────────────────────────────────
 
+const QUAL_CLS = {
+  verified: 'badge-green',
+  waiting_admin_approval: 'badge-yellow',
+  needs_revision: 'badge-orange',
+  rejected: 'badge-red',
+}
+const QUAL_LABEL = {
+  verified: 'Verified',
+  waiting_admin_approval: 'Waiting Admin Approval',
+  needs_revision: 'Needs Revision',
+  rejected: 'Rejected',
+}
+const SUP_STATUS_CLS = {
+  draft: 'badge-gray', approved: 'badge-green',
+  rejected: 'badge-red', pending: 'badge-yellow',
+}
+
 function SuppliersPage() {
-  const [suppliers] = useState(INITIAL_SUPPLIERS)
+  const [suppliers, setSuppliers] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [filterTab, setFilterTab] = useState('All')
   const [search, setSearch] = useState('')
+  const [viewId, setViewId] = useState(null)
+  const [toast, setToast] = useState(null) // { type, message }
   const TABS = ['All', 'Pending', 'Approved', 'Rejected']
 
-  const QUAL_CLS = {
-    verified: 'badge-green',
-    waiting_admin_approval: 'badge-yellow',
-    rejected: 'badge-red',
+  const load = () => {
+    setLoading(true)
+    apiListSuppliers()
+      .then(data => { setSuppliers(data); setError('') })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
   }
-  const SUP_STATUS_CLS = {
-    draft: 'badge-gray', approved: 'badge-green',
-    rejected: 'badge-red', pending: 'badge-yellow',
-  }
+  useEffect(load, [])
+
+  const showToast = (type, message) => setToast({ type, message })
 
   const filtered = suppliers.filter(s => {
     const q = search.toLowerCase()
-    const matchSearch = !q || s.company.toLowerCase().includes(q) || s.contact.toLowerCase().includes(q)
+    const matchSearch = !q ||
+      (s.company || '').toLowerCase().includes(q) ||
+      (s.contact || '').toLowerCase().includes(q) ||
+      (s.full_name || '').toLowerCase().includes(q)
+    const qs = s.qualification_status
     const matchTab =
       filterTab === 'All'      ? true :
-      filterTab === 'Pending'  ? (s.status === 'draft' || s.status === 'pending') :
-      filterTab === 'Approved' ? s.status === 'approved' :
-      filterTab === 'Rejected' ? s.status === 'rejected' : true
+      filterTab === 'Pending'  ? (qs === 'waiting_admin_approval' || qs === 'needs_revision') :
+      filterTab === 'Approved' ? qs === 'verified' :
+      filterTab === 'Rejected' ? qs === 'rejected' : true
     return matchSearch && matchTab
   })
 
   return (
     <div className="ad-content">
+      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
+      {viewId !== null && (
+        <SupplierDetailModal
+          supplierId={viewId}
+          onClose={() => setViewId(null)}
+          onReviewed={(message) => { showToast('success', message); load() }}
+        />
+      )}
+
       <div className="ad-card">
         <div className="ad-card-header" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 12 }}>
           <div className="ad-filter-pills">
@@ -520,32 +545,289 @@ function SuppliersPage() {
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0
+            {loading
+              ? <tr><td colSpan={8} className="ad-empty-row">Loading suppliers…</td></tr>
+              : error
+              ? <tr><td colSpan={8} className="ad-empty-row">{error}</td></tr>
+              : filtered.length === 0
               ? <tr><td colSpan={8} className="ad-empty-row">No suppliers found.</td></tr>
               : filtered.map(s => (
                 <tr key={s.id}>
                   <td className="ad-bold">{s.company}</td>
-                  <td>{s.contact}</td>
-                  <td className="ad-muted" style={{ maxWidth: 200, wordBreak: 'break-all', fontSize: 12 }}>{s.businessType}</td>
+                  <td>{s.contact || s.full_name}</td>
+                  <td className="ad-muted" style={{ maxWidth: 200, wordBreak: 'break-word', fontSize: 12 }}>{s.business_type}</td>
                   <td>
                     <span className={`badge ${SUP_STATUS_CLS[s.status] || 'badge-gray'}`}>
-                      • {s.status.toUpperCase()}
+                      • {(s.status || '').toUpperCase()}
                     </span>
                   </td>
                   <td>
-                    <span className={`badge ${QUAL_CLS[s.qualificationStatus] || 'badge-gray'}`}>
-                      {s.qualificationStatus.replace(/_/g, ' ')}
+                    <span className={`badge ${QUAL_CLS[s.qualification_status] || 'badge-gray'}`}>
+                      {QUAL_LABEL[s.qualification_status] || (s.qualification_status || '').replace(/_/g, ' ')}
                     </span>
                   </td>
-                  <td><span className="badge badge-green">{s.emailVerified}</span></td>
+                  <td><span className={`badge ${s.email_verified ? 'badge-green' : 'badge-gray'}`}>{s.email_verified ? 'Verified' : 'Unverified'}</span></td>
                   <td className="ad-muted">{s.registered}</td>
-                  <td><button className="ad-btn-view-sm">View</button></td>
+                  <td>
+                    <button className="ad-btn-view-sm" onClick={() => setViewId(s.id)}>
+                      <Eye size={12} /> View
+                    </button>
+                  </td>
                 </tr>
               ))
             }
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+// ── Supplier detail / review modal ────────────────────────────────────────────
+
+function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
+  const [supplier, setSupplier] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [flags, setFlags] = useState({})   // { key: { checked, note } }
+  const [note, setNote] = useState('')      // overall message
+  const [confirm, setConfirm] = useState(null) // { title, message, tone, onConfirm }
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    apiGetSupplier(supplierId)
+      .then(data => {
+        setSupplier(data)
+        setNote(data.admin_notes || '')
+        // Pre-fill flags from any existing revision request.
+        const initial = {}
+        ;(data.documents || []).forEach(d => {
+          if (d.review_status === 'needs_revision') initial[d.key] = { checked: true, note: d.review_note || '' }
+        })
+        setFlags(initial)
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }, [supplierId])
+
+  const toggleFlag = (key) =>
+    setFlags(f => ({ ...f, [key]: { checked: !f[key]?.checked, note: f[key]?.note || '' } }))
+  const setFlagNote = (key, val) =>
+    setFlags(f => ({ ...f, [key]: { checked: f[key]?.checked ?? true, note: val } }))
+
+  const flaggedDocs = () => {
+    const out = {}
+    Object.entries(flags).forEach(([k, v]) => { if (v.checked) out[k] = v.note || '' })
+    return out
+  }
+
+  const runAction = async (fn, successMsg) => {
+    setBusy(true)
+    try {
+      await fn()
+      onReviewed(successMsg)
+      onClose()
+    } catch (err) {
+      setError(err.message)
+      setConfirm(null)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleApprove = () => setConfirm({
+    title: 'Approve supplier?',
+    message: `${supplier.company} will be marked Verified and allowed to submit bids.`,
+    tone: 'green',
+    confirmLabel: 'Approve',
+    onConfirm: () => runAction(() => apiSupplierApprove(supplierId), 'Supplier approved.'),
+  })
+
+  const handleRequestRevision = () => {
+    const docs = flaggedDocs()
+    if (Object.keys(docs).length === 0) {
+      setError('Flag at least one document for revision (check the box next to it).')
+      return
+    }
+    setConfirm({
+      title: 'Request revision?',
+      message: `The supplier will be notified to re-upload ${Object.keys(docs).length} document(s). They cannot bid until re-approved.`,
+      tone: 'orange',
+      confirmLabel: 'Send Revision Request',
+      onConfirm: () => runAction(
+        () => apiSupplierRequestRevision(supplierId, { note, documents: docs }),
+        'Revision request sent to supplier.'
+      ),
+    })
+  }
+
+  const handleReject = () => setConfirm({
+    title: 'Reject supplier?',
+    message: `${supplier.company} will be marked Rejected. Add a reason below so they understand why.`,
+    tone: 'red',
+    confirmLabel: 'Reject',
+    onConfirm: () => runAction(() => apiSupplierReject(supplierId, note), 'Supplier rejected.'),
+  })
+
+  return (
+    <div className="ad-modal-overlay" onClick={onClose}>
+      <div className="ad-modal" onClick={e => e.stopPropagation()}>
+        <div className="ad-modal-header">
+          <div>
+            <h3>{loading ? 'Loading…' : supplier?.company}</h3>
+            {!loading && supplier && (
+              <p className="ad-muted ad-small">{supplier.full_name || supplier.contact} · {supplier.email}</p>
+            )}
+          </div>
+          <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        {loading ? (
+          <div className="ad-modal-body" style={{ padding: 40, textAlign: 'center' }}>Loading supplier profile…</div>
+        ) : !supplier ? (
+          <div className="ad-modal-body" style={{ padding: 40, textAlign: 'center' }}>{error || 'Could not load supplier.'}</div>
+        ) : (
+          <>
+            <div className="ad-modal-body">
+              {error && <div className="ad-modal-error"><AlertTriangle size={15} /> {error}</div>}
+
+              <div className="ad-modal-badges">
+                <span className={`badge ${SUP_STATUS_CLS[supplier.status] || 'badge-gray'}`}>• {(supplier.status || '').toUpperCase()}</span>
+                <span className={`badge ${QUAL_CLS[supplier.qualification_status] || 'badge-gray'}`}>
+                  {QUAL_LABEL[supplier.qualification_status] || supplier.qualification_status}
+                </span>
+              </div>
+
+              <div className="ad-info-grid">
+                <Info2 label="Representative" value={supplier.representative_name || supplier.contact} />
+                <Info2 label="Email" value={supplier.email} />
+                <Info2 label="Phone" value={supplier.phone_number} />
+                <Info2 label="TIN" value={supplier.tin} />
+                <Info2 label="Address" value={supplier.company_address} full />
+                <Info2 label="Business Types" value={(supplier.business_types || []).join(', ') || supplier.business_type} full />
+                <Info2 label="Registered" value={supplier.registered} />
+                <Info2 label="Financial Year" value={supplier.financial_statement_year} />
+              </div>
+
+              <div className="ad-docs-head">
+                <FileText size={15} /> Uploaded Documents
+                <span className="ad-muted ad-small">Check a document to flag it for revision.</span>
+              </div>
+              <div className="ad-docs-list">
+                {supplier.documents.map(d => (
+                  <div className={`ad-doc-row${flags[d.key]?.checked ? ' flagged' : ''}`} key={d.key}>
+                    <div className="ad-doc-main">
+                      <label className="ad-doc-check">
+                        <input
+                          type="checkbox"
+                          checked={!!flags[d.key]?.checked}
+                          disabled={!d.url}
+                          onChange={() => toggleFlag(d.key)}
+                        />
+                      </label>
+                      <div className="ad-doc-name">
+                        <span className="ad-bold">{d.label}</span>
+                        <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+                      </div>
+                      {d.url
+                        ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                        : <span className="ad-doc-missing">Not uploaded</span>}
+                    </div>
+                    {flags[d.key]?.checked && (
+                      <input
+                        className="ad-doc-note"
+                        placeholder="What needs fixing? (e.g. blurry scan, expired)"
+                        value={flags[d.key]?.note || ''}
+                        onChange={e => setFlagNote(d.key, e.target.value)}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="ad-field">
+                <label>Message to supplier (overall note)</label>
+                <textarea
+                  rows={2}
+                  placeholder="Optional message shown to the supplier with your decision…"
+                  value={note}
+                  onChange={e => setNote(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="ad-modal-footer">
+              <button className="ad-btn-cancel" onClick={onClose}>Close</button>
+              <div className="ad-modal-footer-actions">
+                <button className="ad-btn-reject" disabled={busy} onClick={handleReject}>
+                  <XCircle size={14} /> Reject
+                </button>
+                <button className="ad-btn-revision" disabled={busy} onClick={handleRequestRevision}>
+                  <AlertTriangle size={14} /> Request Revision
+                </button>
+                <button className="ad-btn-approve" disabled={busy} onClick={handleApprove}>
+                  <Check size={14} /> Approve
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {confirm && (
+          <ConfirmDialog
+            {...confirm}
+            busy={busy}
+            onCancel={() => setConfirm(null)}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Info2({ label, value, full }) {
+  return (
+    <div className={`ad-info-item${full ? ' ad-info-full' : ''}`}>
+      <span className="ad-info-label">{label}</span>
+      <span className="ad-info-value">{value || '—'}</span>
+    </div>
+  )
+}
+
+// ── Confirmation dialog ───────────────────────────────────────────────────────
+
+function ConfirmDialog({ title, message, tone = 'green', confirmLabel = 'Confirm', busy, onConfirm, onCancel }) {
+  return (
+    <div className="ad-confirm-overlay" onClick={onCancel}>
+      <div className="ad-confirm" onClick={e => e.stopPropagation()}>
+        <div className={`ad-confirm-icon ad-confirm-${tone}`}>
+          {tone === 'green' ? <CheckCircle2 size={22} /> : tone === 'red' ? <XCircle size={22} /> : <AlertTriangle size={22} />}
+        </div>
+        <h4>{title}</h4>
+        <p>{message}</p>
+        <div className="ad-confirm-actions">
+          <button className="ad-btn-cancel" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className={`ad-btn-confirm ad-confirm-${tone}`} onClick={onConfirm} disabled={busy}>
+            {busy ? 'Working…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+
+function Toast({ type, message, onClose }) {
+  useEffect(() => {
+    const t = setTimeout(onClose, 4000)
+    return () => clearTimeout(t)
+  }, [onClose])
+  return (
+    <div className={`ad-toast ad-toast-${type}`} role="status">
+      {type === 'success' ? <CheckCircle2 size={17} /> : <AlertTriangle size={17} />}
+      <span>{message}</span>
+      <button onClick={onClose} aria-label="Dismiss"><X size={15} /></button>
     </div>
   )
 }

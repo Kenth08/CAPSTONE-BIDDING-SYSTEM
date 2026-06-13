@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Shield, Eye, EyeOff, Building2, ArrowLeft, ClipboardCheck } from 'lucide-react'
+import { apiLogin, saveSession } from '../api'
 import '../style/LoginPage.css'
 
 const ROLES = [
@@ -11,19 +12,31 @@ const ROLES = [
 
 export default function LoginPage() {
   const navigate = useNavigate()
-  const [params] = useSearchParams()
-  const isRegister = params.get('register') === 'supplier'
   const [showPass, setShowPass] = useState(false)
   const [role, setRole] = useState('admin')
-  const [form, setForm] = useState({ email: '', password: '', company: '', name: '' })
+  const [form, setForm] = useState({ username: '', password: '' })
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    const savedRole = isRegister ? 'supplier' : role
-    localStorage.setItem('role', savedRole)
-    if (savedRole === 'admin') navigate('/admin')
-    else if (savedRole === 'head') navigate('/head')
+  const goToDashboard = (userRole) => {
+    if (userRole === 'admin') navigate('/admin')
+    else if (userRole === 'head') navigate('/head')
     else navigate('/supplier')
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      const session = await apiLogin(form.username, form.password)
+      saveSession(session)
+      goToDashboard(session.user.role)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
   }
 
   const roleLabel = ROLES.find(r => r.key === role)?.label || 'Admin'
@@ -40,39 +53,25 @@ export default function LoginPage() {
               <div className="lp-logo-sub">Procurement System</div>
             </div>
           </div>
-          <h1>{isRegister ? 'Register as Supplier' : 'Welcome Back'}</h1>
-          <p>{isRegister ? 'Create your supplier account to start bidding on procurement projects.' : 'Select your role and sign in to continue.'}</p>
+          <h1>Welcome Back</h1>
+          <p>Select your role and sign in to continue.</p>
 
-          {!isRegister && (
-            <div className="login-role-tabs">
-              {ROLES.map(({ key, label, icon: Icon }) => (
-                <button
-                  key={key}
-                  className={role === key ? 'active' : ''}
-                  onClick={() => setRole(key)}
-                >
-                  <Icon size={13} /> {label}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="login-role-tabs">
+            {ROLES.map(({ key, label, icon: Icon }) => (
+              <button
+                key={key}
+                className={role === key ? 'active' : ''}
+                onClick={() => setRole(key)}
+              >
+                <Icon size={13} /> {label}
+              </button>
+            ))}
+          </div>
 
           <form onSubmit={handleSubmit} className="login-form">
-            {isRegister && (
-              <>
-                <div className="form-group">
-                  <label>Full Name</label>
-                  <input type="text" placeholder="John Smith" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required />
-                </div>
-                <div className="form-group">
-                  <label>Company Name</label>
-                  <input type="text" placeholder="Acme Corp" value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} required />
-                </div>
-              </>
-            )}
             <div className="form-group">
-              <label>Email Address</label>
-              <input type="email" placeholder="you@example.com" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} required />
+              <label>Username</label>
+              <input type="text" placeholder="admin" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} required />
             </div>
             <div className="form-group">
               <label>Password</label>
@@ -89,17 +88,16 @@ export default function LoginPage() {
                 </button>
               </div>
             </div>
-            {!isRegister && <a href="#" className="login-forgot">Forgot password?</a>}
-            <button type="submit" className="login-submit">
-              {isRegister ? 'Create Account' : `Sign in as ${roleLabel}`}
+            {error && <div className="login-error">{error}</div>}
+            <span className="login-hint">Demo accounts: <b>admin</b> / <b>head</b> / <b>supplier</b> — password <b>password123</b></span>
+            <a href="#" className="login-forgot">Forgot password?</a>
+            <button type="submit" className="login-submit" disabled={loading}>
+              {loading ? 'Please wait…' : `Sign in as ${roleLabel}`}
             </button>
           </form>
 
           <p className="login-switch">
-            {isRegister
-              ? <>Already have an account? <Link to="/login">Sign in</Link></>
-              : <>New supplier? <Link to="/login?register=supplier">Register here</Link></>
-            }
+            New supplier? <Link to="/register">Register here</Link>
           </p>
         </div>
       </div>

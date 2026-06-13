@@ -1,0 +1,14 @@
+{
+  "name": "eprocurement",
+  "version": "1.0.0",
+  "private": true,
+  "description": "E-Procurement system — runs the Django backend and React frontend together.",
+  "scripts": {
+    "dev": "concurrently -k -n BACKEND,FRONTEND -c blue,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && venv\\Scripts\\python manage.py runserver",
+    "dev:frontend": "cd frontend && npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}

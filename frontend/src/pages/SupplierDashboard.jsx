@@ -1,11 +1,30 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, FileText, Clock, CheckCircle2,
   Building2, Bell, Search, ChevronDown, ChevronRight, LogOut, Settings,
-  Eye, ArrowRight, Shield, User, X, Send, Trophy, Trash2
+  Eye, ArrowRight, Shield, User, X, Send, Trophy, Trash2,
+  AlertTriangle, Upload, Lock
 } from 'lucide-react'
+import { clearSession, apiGetMySupplier, apiResubmitDocuments } from '../api'
 import '../style/SupplierDashboard.css'
+
+// File rules mirror the registration form.
+const ALLOWED_EXT = ['pdf', 'jpg', 'jpeg', 'png']
+const MAX_MB = 5
+function validateFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase()
+  if (!ALLOWED_EXT.includes(ext)) return `Unsupported type ".${ext}". Use PDF, JPG, or PNG.`
+  if (file.size > MAX_MB * 1024 * 1024) return `File is too large (max ${MAX_MB} MB).`
+  return null
+}
+
+const QUAL_STATUS = {
+  waiting_admin_approval: { label: 'Pending Review', tone: 'pending', text: 'Your registration is awaiting admin verification. You can browse projects, but bidding unlocks once approved.' },
+  needs_revision:         { label: 'Action Required', tone: 'revision', text: 'The admin needs you to fix the documents below, then resubmit for review.' },
+  verified:               { label: 'Approved', tone: 'approved', text: 'Your account is verified. You can submit bids on open projects.' },
+  rejected:               { label: 'Rejected', tone: 'rejected', text: 'Your registration was rejected. See the message below.' },
+}
 
 const NAV = [
   { icon: LayoutDashboard, label: 'Dashboard',  to: '/supplier' },
@@ -136,6 +155,132 @@ function BidDetailModal({ bid, onClose, onWithdraw }) {
   )
 }
 
+// ─── Verification banner + revision panel ────────────────────────────────────
+
+function SupplierToast({ type, message, onClose }) {
+  useEffect(() => {
+    const t = setTimeout(onClose, 4000)
+    return () => clearTimeout(t)
+  }, [onClose])
+  return (
+    <div className={`sd-toast sd-toast-${type}`} role="status">
+      {type === 'error' ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}
+      <span>{message}</span>
+    </div>
+  )
+}
+
+function VerificationBanner({ profile }) {
+  if (!profile) return null
+  const info = QUAL_STATUS[profile.qualification_status]
+  if (!info || info.tone === 'approved') return null  // hide when verified
+  return (
+    <div className={`sd-verify-banner sd-verify-${info.tone}`}>
+      <div className="sd-verify-icon">
+        {info.tone === 'rejected' ? <X size={18} /> : info.tone === 'revision' ? <AlertTriangle size={18} /> : <Clock size={18} />}
+      </div>
+      <div className="sd-verify-text">
+        <span className="sd-bold">{info.label}</span>
+        <span className="sd-muted sd-small">{info.text}</span>
+        {profile.admin_notes && <span className="sd-verify-note">“{profile.admin_notes}”</span>}
+      </div>
+    </div>
+  )
+}
+
+// Lists the documents the admin flagged and lets the supplier re-upload + resubmit.
+function RevisionPanel({ profile, onResubmitted, setToast }) {
+  const flagged = (profile?.documents || []).filter(d => d.review_status === 'needs_revision')
+  const [files, setFiles] = useState({})  // { key: File }
+  const [busy, setBusy] = useState(false)
+  const [confirm, setConfirm] = useState(false)
+  const refs = useRef({})
+
+  if (profile?.qualification_status !== 'needs_revision' || flagged.length === 0) return null
+
+  const onFile = (key, file) => {
+    if (!file) return
+    const msg = validateFile(file)
+    if (msg) { setToast({ type: 'error', message: `${key.replace(/_/g, ' ')}: ${msg}` }); return }
+    setFiles(f => ({ ...f, [key]: file }))
+  }
+
+  const allReplaced = flagged.every(d => files[d.key])
+
+  const doResubmit = async () => {
+    setBusy(true)
+    try {
+      const fd = new FormData()
+      Object.entries(files).forEach(([k, file]) => fd.append(k, file))
+      await apiResubmitDocuments(fd)
+      setToast({ type: 'success', message: 'Documents resubmitted. Your account is pending review again.' })
+      setConfirm(false)
+      onResubmitted()
+    } catch (err) {
+      setToast({ type: 'error', message: err.message })
+      setConfirm(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="sd-card sd-revision-card">
+      <div className="sd-card-header">
+        <div><h2>Documents Needing Revision</h2><p>Re-upload the flagged documents, then resubmit for review.</p></div>
+      </div>
+      <div className="sd-revision-list">
+        {flagged.map(d => (
+          <div className="sd-revision-row" key={d.key}>
+            <div className="sd-revision-info">
+              <span className="sd-bold">{d.label}</span>
+              {d.review_note && <span className="sd-revision-note"><AlertTriangle size={12} /> {d.review_note}</span>}
+            </div>
+            <div className="sd-revision-action">
+              {files[d.key] ? (
+                <div className="sd-revision-file">
+                  <FileText size={14} /><span className="sd-file-name" title={files[d.key].name}>{files[d.key].name}</span>
+                  <button onClick={() => setFiles(f => { const n = { ...f }; delete n[d.key]; return n })}><X size={14} /></button>
+                </div>
+              ) : (
+                <button className="sd-reupload-btn" onClick={() => refs.current[d.key]?.click()}>
+                  <Upload size={14} /> Re-upload
+                </button>
+              )}
+              <input ref={el => (refs.current[d.key] = el)} type="file" accept=".pdf,.jpg,.jpeg,.png" hidden
+                onChange={e => onFile(d.key, e.target.files[0])} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="sd-revision-footer">
+        <button
+          className="sd-btn-primary"
+          disabled={!allReplaced || busy}
+          onClick={() => setConfirm(true)}
+        >
+          <Send size={14} /> Resubmit for Review
+        </button>
+        {!allReplaced && <span className="sd-muted sd-small">Replace all flagged documents to enable resubmission.</span>}
+      </div>
+
+      {confirm && (
+        <div className="sd-modal-overlay" onClick={() => !busy && setConfirm(false)}>
+          <div className="sd-confirm" onClick={e => e.stopPropagation()}>
+            <div className="sd-confirm-icon"><Send size={20} /></div>
+            <h4>Resubmit documents?</h4>
+            <p>Your account will go back to <b>Pending Review</b> until the admin checks your updated documents.</p>
+            <div className="sd-confirm-actions">
+              <button className="sd-btn-cancel" onClick={() => setConfirm(false)} disabled={busy}>Cancel</button>
+              <button className="sd-btn-primary" onClick={doResubmit} disabled={busy}>{busy ? 'Sending…' : 'Resubmit'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Sidebar / Header ────────────────────────────────────────────────────────
 
 function SupplierSidebar({ active }) {
@@ -170,7 +315,7 @@ function SupplierSidebar({ active }) {
           </div>
           <button
             className="sd-sidebar-expand"
-            onClick={() => { localStorage.removeItem('role'); navigate('/login') }}
+            onClick={() => { clearSession(); navigate('/login') }}
           >
             <ChevronRight size={14} />
           </button>
@@ -223,7 +368,7 @@ function SupplierHeader({ title }) {
                   <Settings size={15} /> Settings
                 </button>
                 <div className="sd-dropdown-divider" />
-                <button className="sd-dropdown-item sd-dropdown-logout" onClick={() => { localStorage.removeItem('role'); navigate('/login') }}>
+                <button className="sd-dropdown-item sd-dropdown-logout" onClick={() => { clearSession(); navigate('/login') }}>
                   <LogOut size={15} /> Log out
                 </button>
               </div>
@@ -237,21 +382,25 @@ function SupplierHeader({ title }) {
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
 
-function SupplierHome({ bids, onBid }) {
+function SupplierHome({ bids, onBid, eligible, profile, onResubmitted, setToast }) {
   const [modal, setModal] = useState(null)
   const alreadyBid = new Set(bids.map(b => b.projectId))
   const available = OPEN_PROJECTS.filter(p => !alreadyBid.has(p.id))
+  const approvalLabel = QUAL_STATUS[profile?.qualification_status]?.label || 'Pending'
 
   return (
     <div className="sd-content">
       {modal && <BidModal project={modal} onClose={() => setModal(null)} onSubmit={(proj, form) => { onBid(proj, form); setModal(null) }} />}
+
+      <VerificationBanner profile={profile} />
+      <RevisionPanel profile={profile} onResubmitted={onResubmitted} setToast={setToast} />
 
       <div className="sd-stats">
         {[
           { label: 'Open Projects',   value: String(OPEN_PROJECTS.length),                                    icon: FolderOpen,   color: 'blue'   },
           { label: 'My Active Bids',  value: String(bids.length),                                             icon: FileText,     color: 'green'  },
           { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'shortlisted').length),     icon: CheckCircle2, color: 'purple' },
-          { label: 'Approval Status', value: 'Active',                                                        icon: Shield,       color: 'green'  },
+          { label: 'Approval Status', value: approvalLabel,                                                   icon: Shield,       color: eligible ? 'green' : 'yellow' },
         ].map(({ label, value, icon: Icon, color }) => (
           <div className="sd-stat-card" key={label}>
             <div className="sd-stat-top">
@@ -286,7 +435,9 @@ function SupplierHome({ bids, onBid }) {
                     <span className="sd-proj-budget">{p.budget}</span>
                     <span className="sd-muted sd-small">Due {p.deadline}</span>
                   </div>
-                  <button className="sd-bid-btn" onClick={() => setModal(p)}>Bid <ArrowRight size={13} /></button>
+                  {eligible
+                    ? <button className="sd-bid-btn" onClick={() => setModal(p)}>Bid <ArrowRight size={13} /></button>
+                    : <button className="sd-bid-btn sd-bid-locked" disabled title="Approval required before bidding"><Lock size={12} /> Locked</button>}
                 </div>
               ))}
             </div>
@@ -327,17 +478,17 @@ function SupplierHome({ bids, onBid }) {
         <div className="sd-status-body">
           <div className="sd-status-item">
             <CheckCircle2 size={18} className="sd-check" />
-            <div><span className="sd-bold">Account Registered</span><span className="sd-muted">Jun 1, 2026</span></div>
+            <div><span className="sd-bold">Account Registered</span><span className="sd-muted">{profile?.registered || '—'}</span></div>
           </div>
           <div className="sd-status-divider" />
           <div className="sd-status-item">
-            <CheckCircle2 size={18} className="sd-check" />
-            <div><span className="sd-bold">Admin Approved</span><span className="sd-muted">Jun 3, 2026</span></div>
+            {eligible ? <CheckCircle2 size={18} className="sd-check" /> : <Clock size={18} className="sd-clock" />}
+            <div><span className="sd-bold">Admin Verification</span><span className="sd-muted">{approvalLabel}</span></div>
           </div>
           <div className="sd-status-divider" />
           <div className="sd-status-item">
-            <CheckCircle2 size={18} className="sd-check" />
-            <div><span className="sd-bold">Eligible to Bid</span><span className="sd-muted">Active on all open projects</span></div>
+            {eligible ? <CheckCircle2 size={18} className="sd-check" /> : <Lock size={18} className="sd-clock" />}
+            <div><span className="sd-bold">Eligible to Bid</span><span className="sd-muted">{eligible ? 'Active on all open projects' : 'Locked until approved'}</span></div>
           </div>
         </div>
       </div>
@@ -345,7 +496,7 @@ function SupplierHome({ bids, onBid }) {
   )
 }
 
-function SupplierProjects({ bids, onBid }) {
+function SupplierProjects({ bids, onBid, eligible }) {
   const [modal, setModal] = useState(null)
   const alreadyBid = new Set(bids.map(b => b.projectId))
 
@@ -374,7 +525,9 @@ function SupplierProjects({ bids, onBid }) {
                 <td>
                   {alreadyBid.has(p.id)
                     ? <span className="badge badge-green">Bid Submitted</span>
-                    : <button className="sd-bid-btn-table" onClick={() => setModal(p)}>Submit Bid</button>}
+                    : eligible
+                    ? <button className="sd-bid-btn-table" onClick={() => setModal(p)}>Submit Bid</button>
+                    : <span className="badge badge-yellow"><Lock size={11} /> Locked</span>}
                 </td>
               </tr>
             ))}
@@ -433,25 +586,31 @@ function SupplierBids({ bids, onWithdraw }) {
   )
 }
 
-function SupplierStatusPage({ bids }) {
+function SupplierStatusPage({ bids, profile, eligible }) {
+  const qs = profile?.qualification_status
+  const verifyDate =
+    qs === 'verified' ? (profile?.reviewed_at ? new Date(profile.reviewed_at).toLocaleDateString() : 'Approved')
+    : qs === 'needs_revision' ? 'Revision requested'
+    : qs === 'rejected' ? 'Rejected'
+    : 'Pending review'
   const steps = [
     {
       label: 'Account Registered',
-      date: 'Jun 1, 2026',
+      date: profile?.registered || '—',
       done: true,
       desc: 'Your supplier account was created and submitted for review.',
     },
     {
-      label: 'Admin Approved',
-      date: 'Jun 3, 2026',
-      done: true,
-      desc: 'Admin verified your company details and approved your account.',
+      label: 'Admin Verification',
+      date: verifyDate,
+      done: qs === 'verified',
+      desc: 'Admin reviews your company details and uploaded documents.',
     },
     {
       label: 'Eligible to Bid',
-      date: 'Jun 3, 2026',
-      done: true,
-      desc: 'You are now eligible to submit bids on all published projects.',
+      date: eligible ? 'Active' : 'Locked until approved',
+      done: !!eligible,
+      desc: 'Once approved, you can submit bids on all published projects.',
     },
     {
       label: 'Bids Submitted',
@@ -626,6 +785,18 @@ function SupplierProfile() {
 export default function SupplierDashboard() {
   const loc = useLocation()
   const [bids, setBids] = useState(INITIAL_BIDS)
+  const [profile, setProfile] = useState(null)
+  const [toast, setToast] = useState(null)
+
+  const loadProfile = () => {
+    apiGetMySupplier()
+      .then(setProfile)
+      .catch(() => setProfile(null))
+  }
+  useEffect(loadProfile, [])
+
+  // Verification is the real bidding gate (the admin approve action sets this).
+  const eligible = profile?.qualification_status === 'verified'
 
   const submitBid = (project, form) => {
     const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -655,14 +826,15 @@ export default function SupplierDashboard() {
       <SupplierSidebar active={loc.pathname} />
       <div className="sd-main">
         <SupplierHeader title={title} />
+        {toast && <SupplierToast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
         <div className="sd-body">
           <Routes>
-            <Route index element={<SupplierHome bids={bids} onBid={submitBid} />} />
-            <Route path="projects" element={<SupplierProjects bids={bids} onBid={submitBid} />} />
+            <Route index element={<SupplierHome bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} />} />
+            <Route path="projects" element={<SupplierProjects bids={bids} onBid={submitBid} eligible={eligible} />} />
             <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} />} />
-            <Route path="status"   element={<SupplierStatusPage bids={bids} />} />
+            <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="profile"  element={<SupplierProfile />} />
-            <Route path="*"        element={<SupplierHome bids={bids} onBid={submitBid} />} />
+            <Route path="*"        element={<SupplierHome bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} />} />
           </Routes>
         </div>
       </div>
