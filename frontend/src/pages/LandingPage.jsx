@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import {
   Shield, Users, FileText, Lock, BarChart2, Link2,
-  PlusCircle, CheckCircle, Eye, ArrowRight, Building2, ClipboardCheck
+  PlusCircle, CheckCircle, Eye, Building2, ClipboardCheck
 } from 'lucide-react'
 import '../style/LandingPage.css'
 

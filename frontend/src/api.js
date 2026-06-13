@@ -18,9 +18,6 @@ export function clearSession() {
 
 export const getToken = () => localStorage.getItem('access')
 export const getRole = () => localStorage.getItem('role')
-export const getUser = () => {
-  try { return JSON.parse(localStorage.getItem('user')) } catch { return null }
-}
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export async function apiLogin(username, password) {
@@ -31,20 +28,6 @@ export async function apiLogin(username, password) {
   })
   if (!res.ok) throw new Error('Invalid username or password.')
   return res.json() // { access, refresh, user }
-}
-
-export async function apiRegister(data) {
-  const res = await fetch(`${API_URL}/auth/register/`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    const msg = Object.values(err).flat().join(' ')
-    throw new Error(msg || 'Registration failed.')
-  }
-  return res.json()
 }
 
 // Multi-step supplier registration with document uploads (multipart/form-data).
