@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
-  Bell, Search, ChevronDown, ChevronRight, LogOut, Shield,
+  Bell, Search, ChevronRight, LogOut, Shield,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
   CheckCircle2, AlertTriangle, XCircle, Check
 } from 'lucide-react'

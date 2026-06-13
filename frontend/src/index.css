@@ -4,6 +4,8 @@
   box-sizing: border-box;
 }
 
+html { scroll-behavior: smooth; }
+
 :root {
   --primary: #10b981;
   --primary-dark: #059669;
@@ -30,9 +32,18 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-a { text-decoration: none; color: inherit; }
-button { cursor: pointer; border: none; outline: none; }
-input, textarea, select { outline: none; font-family: inherit; }
+a { text-decoration: none; color: inherit; transition: color 0.2s ease; }
+button { cursor: pointer; border: none; outline: none; transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.1s ease, box-shadow 0.2s ease; }
+button:active { transform: translateY(1px); }
+button:disabled { cursor: not-allowed; opacity: 0.6; }
+input, textarea, select { outline: none; font-family: inherit; transition: border-color 0.2s ease, box-shadow 0.2s ease; }
+
+/* Keyboard-only focus ring (doesn't show on mouse click) */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 
 .btn-primary {
   background: var(--primary);
@@ -46,7 +57,7 @@ input, textarea, select { outline: none; font-family: inherit; }
   align-items: center;
   gap: 8px;
 }
-.btn-primary:hover { background: var(--primary-dark); }
+.btn-primary:hover { background: var(--primary-dark); box-shadow: 0 4px 12px rgba(16,185,129,0.25); }
 
 .btn-outline {
   background: transparent;
@@ -92,3 +103,28 @@ input, textarea, select { outline: none; font-family: inherit; }
 .badge-blue { background: rgba(59,130,246,0.1); color: #3b82f6; border: 1px solid rgba(59,130,246,0.2); }
 .badge-red { background: rgba(239,68,68,0.1); color: #ef4444; border: 1px solid rgba(239,68,68,0.2); }
 .badge-gray { background: rgba(100,116,139,0.1); color: #64748b; border: 1px solid rgba(100,116,139,0.2); }
+
+/* ── Polish: themed scrollbars ──────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--dark-border) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--dark-border);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--text-gray); background-clip: padding-box; }
+
+/* ── Accessibility: respect reduced-motion preference ───────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

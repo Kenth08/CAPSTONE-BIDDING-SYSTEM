@@ -18,12 +18,16 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         # --- Role accounts -------------------------------------------------
+        # username == email; log in with the email address.
+        # (username, email, password, role, full_name, is_super)
         accounts = [
-            ("admin", "admin@gmail.com", "admin", "System Administrator", True),
-            ("head", "head@gmail.com", "head", "Department Head", False),
-            ("supplier", "supplier@gmail.com", "supplier", "Kenthcharles Repollo", False),
+            ("admin@gmail.com", "admin@gmail.com", "admin123", "admin", "System Administrator", True),
+            ("head@gmail.com", "head@gmail.com", "head123", "head", "Department Head", False),
+            ("supplier", "supplier@gmail.com", "password123", "supplier", "Kenthcharles Repollo", False),
         ]
-        for username, email, role, full_name, is_super in accounts:
+        # Remove any older demo accounts that used the bare role as a username.
+        User.objects.filter(username__in=["admin", "head"]).delete()
+        for username, email, password, role, full_name, is_super in accounts:
             user, created = User.objects.get_or_create(
                 username=username,
                 defaults={"email": email, "role": role, "full_name": full_name},
@@ -33,9 +37,9 @@ class Command(BaseCommand):
             user.email = email
             user.is_staff = is_super
             user.is_superuser = is_super
-            user.set_password("password123")
+            user.set_password(password)
             user.save()
-            self.stdout.write(f"  user: {username} / password123 ({role})")
+            self.stdout.write(f"  user: {username} / {password} ({role})")
 
         # --- Clear existing demo rows -------------------------------------
         Award.objects.all().delete()

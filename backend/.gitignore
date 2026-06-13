@@ -1,0 +1,13 @@
+# Secrets / local config
+.env
+
+# Local SQLite database
+db.sqlite3
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Uploaded media
+media/
