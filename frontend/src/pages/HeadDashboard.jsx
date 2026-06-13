@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
-  Bell, Search, ChevronDown, LogOut,
+  Bell, Search, ChevronDown, ChevronRight, LogOut,
   ClipboardCheck, AlertCircle, FolderOpen, Eye,
   ThumbsUp, ThumbsDown
 } from 'lucide-react'
@@ -11,7 +11,7 @@ import '../style/HeadDashboard.css'
 const NAV = [
   { icon: LayoutDashboard, label: 'Dashboard', to: '/head' },
   { icon: Clock, label: 'Pending Approval', to: '/head/pending' },
-  { icon: CheckCircle2, label: 'Approved Projects', to: '/head/approved' },
+  { icon: CheckCircle2, label: 'Reviewed Projects', to: '/head/approved' },
 ]
 
 const PENDING_PROJECTS = [
@@ -38,22 +38,38 @@ function Sidebar({ active }) {
   return (
     <aside className="hd-sidebar">
       <div className="hd-sidebar-logo">
-        <span className="lp-logo-icon"><ClipboardCheck size={16} /></span>
+        <span className="hd-logo-icon"><ClipboardCheck size={16} /></span>
         <div>
-          <div className="lp-logo-name">E-Procurement</div>
-          <div className="lp-logo-sub" style={{ color: '#64748b' }}>Head Panel</div>
+          <div className="hd-logo-name">E-Procurement</div>
+          <div className="hd-logo-sub">Head Workspace</div>
         </div>
       </div>
-      <nav className="hd-sidebar-nav">
-        {NAV.map(({ icon: Icon, label, to }) => (
-          <Link key={to} to={to} className={`hd-nav-item ${active === to ? 'active' : ''}`}>
-            <Icon size={18} /><span>{label}</span>
-          </Link>
-        ))}
-      </nav>
-      <button className="hd-logout" onClick={() => navigate('/login')}>
-        <LogOut size={16} /><span>Log out</span>
-      </button>
+      <div className="hd-menu-section">
+        <span className="hd-menu-label">MENU</span>
+        <nav className="hd-sidebar-nav">
+          {NAV.map(({ icon: Icon, label, to }) => (
+            <Link key={to} to={to} className={`hd-nav-item${active === to ? ' active' : ''}`}>
+              <Icon size={18} /><span>{label}</span>
+              {active === to && <span className="hd-nav-dot" />}
+            </Link>
+          ))}
+        </nav>
+      </div>
+      <div className="hd-sidebar-footer">
+        <div className="hd-sidebar-user">
+          <div className="hd-sidebar-avatar">H</div>
+          <div className="hd-sidebar-user-info">
+            <span className="hd-sidebar-user-name">School Head</span>
+            <span className="hd-sidebar-user-email">head@district.edu.ph</span>
+          </div>
+          <button
+            className="hd-sidebar-expand"
+            onClick={() => { localStorage.removeItem('role'); navigate('/login') }}
+          >
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      </div>
     </aside>
   )
 }
@@ -63,7 +79,10 @@ function Header({ title }) {
   const [open, setOpen] = useState(false)
   return (
     <header className="hd-header">
-      <h1 className="hd-page-title">{title}</h1>
+      <div className="hd-header-left">
+        <div className="hd-workspace-label">HEAD WORKSPACE</div>
+        <h1 className="hd-page-title">{title}</h1>
+      </div>
       <div className="hd-header-right">
         <div className="hd-search"><Search size={15} /><input placeholder="Search…" /></div>
         <button className="hd-notif"><Bell size={18} /><span className="hd-notif-dot" /></button>
@@ -88,7 +107,7 @@ function Header({ title }) {
                   </div>
                 </div>
                 <div className="hd-dropdown-divider" />
-                <button className="hd-dropdown-item hd-dropdown-logout" onClick={() => navigate('/login')}>
+                <button className="hd-dropdown-item hd-dropdown-logout" onClick={() => { localStorage.removeItem('role'); navigate('/login') }}>
                   <LogOut size={15} /> Log out
                 </button>
               </div>
@@ -292,8 +311,8 @@ function ApprovedPage({ approved }) {
       <div className="hd-card">
         <div className="hd-card-header">
           <div>
-            <h2>Approved Projects</h2>
-            <p>All projects you have reviewed</p>
+            <h2>Reviewed Projects</h2>
+            <p>All projects you have approved or rejected</p>
           </div>
           <span className="badge badge-green">{approved.filter(p => p.status === 'approved').length} approved</span>
         </div>
@@ -357,7 +376,7 @@ export default function HeadDashboard() {
   const PAGE_TITLES = {
     '/head': 'Dashboard',
     '/head/pending': 'Pending Approval',
-    '/head/approved': 'Approved Projects',
+    '/head/approved': 'Reviewed Projects',
   }
 
   return (

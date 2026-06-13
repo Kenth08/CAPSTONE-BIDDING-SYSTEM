@@ -2,43 +2,48 @@ import { useState } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, FileText, Clock, CheckCircle2,
-  Building2, Bell, Search, ChevronDown, LogOut, Settings,
-  Eye, ArrowRight, Shield, User, X, Send, Trophy
+  Building2, Bell, Search, ChevronDown, ChevronRight, LogOut, Settings,
+  Eye, ArrowRight, Shield, User, X, Send, Trophy, Trash2
 } from 'lucide-react'
 import '../style/SupplierDashboard.css'
 
 const NAV = [
-  { icon: LayoutDashboard, label: 'Dashboard', to: '/supplier' },
-  { icon: FolderOpen, label: 'Projects', to: '/supplier/projects' },
-  { icon: FileText, label: 'My Bids', to: '/supplier/bids' },
-  { icon: Clock, label: 'Status', to: '/supplier/status' },
-  { icon: Settings, label: 'Profile', to: '/supplier/profile' },
+  { icon: LayoutDashboard, label: 'Dashboard',  to: '/supplier' },
+  { icon: FolderOpen,      label: 'Projects',   to: '/supplier/projects' },
+  { icon: FileText,        label: 'My Bids',    to: '/supplier/bids' },
+  { icon: Clock,           label: 'Status',     to: '/supplier/status' },
+  { icon: Settings,        label: 'Profile',    to: '/supplier/profile' },
 ]
 
 const OPEN_PROJECTS = [
-  { id: 'P-2026-001', name: 'Road Infrastructure Phase 2', budget: '$2.4M', deadline: 'Jul 15, 2026', category: 'Infrastructure', description: 'Phase 2 of the road infrastructure project covering districts 3–5.' },
-  { id: 'P-2026-002', name: 'Hospital Equipment Procurement', budget: '$890K', deadline: 'Jun 30, 2026', category: 'Medical', description: 'Procurement of medical equipment for the district hospital.' },
-  { id: 'P-2026-005', name: 'Water Treatment Facility', budget: '$1.7M', deadline: 'Sep 10, 2026', category: 'Environment', description: 'Construction of a water treatment facility for the district.' },
+  { id: 'P-2026-001', name: 'Road Infrastructure Phase 2',    budget: '$2.4M', deadline: 'Jul 15, 2026', category: 'Infrastructure', description: 'Phase 2 of the road infrastructure project covering districts 3–5.' },
+  { id: 'P-2026-002', name: 'Hospital Equipment Procurement', budget: '$890K', deadline: 'Jun 30, 2026', category: 'Medical',        description: 'Procurement of medical equipment for the district hospital.' },
+  { id: 'P-2026-005', name: 'Water Treatment Facility',       budget: '$1.7M', deadline: 'Sep 10, 2026', category: 'Environment',    description: 'Construction of a water treatment facility for the district.' },
 ]
 
 const INITIAL_BIDS = [
-  { project: 'Hospital Equipment Procurement', projectId: 'P-2026-002', amount: '$820K', submitted: 'Jun 1, 2026', status: 'shortlisted', notes: 'Full product warranty, 60-day delivery' },
-  { project: 'Road Infrastructure Phase 2', projectId: 'P-2026-001', amount: '$2.1M', submitted: 'Jun 5, 2026', status: 'under_review', notes: 'Experienced team, 24-month timeline' },
+  { project: 'Hospital Equipment Procurement', projectId: 'P-2026-002', amount: '$820K', submitted: 'Jun 1, 2026',  status: 'shortlisted',  notes: 'Full product warranty, 60-day delivery' },
+  { project: 'Road Infrastructure Phase 2',    projectId: 'P-2026-001', amount: '$2.1M', submitted: 'Jun 5, 2026',  status: 'under_review', notes: 'Experienced team, 24-month timeline' },
 ]
 
 const BID_STATUS = {
-  submitted: 'badge-yellow',
+  submitted:    'badge-yellow',
   under_review: 'badge-blue',
-  shortlisted: 'badge-green',
-  winner: 'badge-purple',
-  rejected: 'badge-red',
+  shortlisted:  'badge-green',
+  winner:       'badge-purple',
+  rejected:     'badge-red',
 }
+
+// ─── Bid submit modal ────────────────────────────────────────────────────────
 
 function BidModal({ project, onClose, onSubmit }) {
   const [form, setForm] = useState({ amount: '', notes: '' })
+  const [error, setError] = useState('')
 
   const handleSubmit = (e) => {
     e.preventDefault()
+    const raw = form.amount.replace(/[^0-9.]/g, '')
+    if (!raw || isNaN(Number(raw))) { setError('Enter a valid bid amount (e.g. $850K or 850000)'); return }
     onSubmit(project, form)
     onClose()
   }
@@ -65,9 +70,10 @@ function BidModal({ project, onClose, onSubmit }) {
               type="text"
               placeholder="e.g. $850K"
               value={form.amount}
-              onChange={e => setForm({ ...form, amount: e.target.value })}
+              onChange={e => { setForm({ ...form, amount: e.target.value }); setError('') }}
               required
             />
+            {error && <span className="sd-field-error">{error}</span>}
           </div>
           <div className="sd-form-group">
             <label>Notes / Proposal Summary</label>
@@ -91,27 +97,85 @@ function BidModal({ project, onClose, onSubmit }) {
   )
 }
 
+// ─── Bid detail modal ────────────────────────────────────────────────────────
+
+function BidDetailModal({ bid, onClose, onWithdraw }) {
+  return (
+    <div className="sd-modal-overlay" onClick={onClose}>
+      <div className="sd-modal" onClick={e => e.stopPropagation()}>
+        <div className="sd-modal-header">
+          <div>
+            <h3>Bid Details</h3>
+            <p className="sd-muted sd-small">{bid.project}</p>
+          </div>
+          <button className="sd-modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="sd-modal-meta">
+          <div><span>Amount</span><strong>{bid.amount}</strong></div>
+          <div><span>Submitted</span><strong>{bid.submitted}</strong></div>
+          <div><span>Status</span><strong><span className={`badge ${BID_STATUS[bid.status] || 'badge-yellow'}`}>{bid.status.replace('_', ' ')}</span></strong></div>
+        </div>
+        <div className="sd-detail-notes">
+          <span className="sd-detail-label">Proposal Notes</span>
+          <p>{bid.notes || 'No notes provided.'}</p>
+        </div>
+        <div className="sd-modal-footer">
+          {(bid.status === 'submitted' || bid.status === 'under_review') && (
+            <button
+              type="button"
+              className="sd-btn-withdraw"
+              onClick={() => { onWithdraw(); onClose() }}
+            >
+              <Trash2 size={14} /> Withdraw Bid
+            </button>
+          )}
+          <button type="button" className="sd-btn-cancel" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Sidebar / Header ────────────────────────────────────────────────────────
+
 function SupplierSidebar({ active }) {
   const navigate = useNavigate()
+  const isActive = (to) => to === '/supplier' ? active === '/supplier' : active.startsWith(to)
   return (
     <aside className="sd-sidebar">
       <div className="sd-sidebar-logo">
-        <span className="lp-logo-icon"><Building2 size={16} /></span>
+        <span className="sd-logo-icon"><Building2 size={16} /></span>
         <div>
-          <div className="lp-logo-name">E-Procurement</div>
-          <div className="lp-logo-sub" style={{ color: '#64748b' }}>Supplier Panel</div>
+          <div className="sd-logo-name">E-Procurement</div>
+          <div className="sd-logo-sub">Supplier Workspace</div>
         </div>
       </div>
-      <nav className="sd-sidebar-nav">
-        {NAV.map(({ icon: Icon, label, to }) => (
-          <Link key={to} to={to} className={`sd-nav-item ${active === to ? 'active' : ''}`}>
-            <Icon size={18} /><span>{label}</span>
-          </Link>
-        ))}
-      </nav>
-      <button className="sd-logout" onClick={() => navigate('/login')}>
-        <LogOut size={16} /><span>Log out</span>
-      </button>
+      <div className="sd-menu-section">
+        <span className="sd-menu-label">MENU</span>
+        <nav className="sd-sidebar-nav">
+          {NAV.map(({ icon: Icon, label, to }) => (
+            <Link key={to} to={to} className={`sd-nav-item${isActive(to) ? ' active' : ''}`}>
+              <Icon size={18} /><span>{label}</span>
+              {isActive(to) && <span className="sd-nav-dot" />}
+            </Link>
+          ))}
+        </nav>
+      </div>
+      <div className="sd-sidebar-footer">
+        <div className="sd-sidebar-user">
+          <div className="sd-sidebar-avatar">S</div>
+          <div className="sd-sidebar-user-info">
+            <span className="sd-sidebar-user-name">Supplier User</span>
+            <span className="sd-sidebar-user-email">supplier@buildright.com</span>
+          </div>
+          <button
+            className="sd-sidebar-expand"
+            onClick={() => { localStorage.removeItem('role'); navigate('/login') }}
+          >
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      </div>
     </aside>
   )
 }
@@ -121,7 +185,10 @@ function SupplierHeader({ title }) {
   const [open, setOpen] = useState(false)
   return (
     <header className="sd-header">
-      <h1 className="sd-page-title">{title}</h1>
+      <div className="sd-header-left">
+        <div className="sd-workspace-label">SUPPLIER WORKSPACE</div>
+        <h1 className="sd-page-title">{title}</h1>
+      </div>
       <div className="sd-header-right">
         <div className="sd-search">
           <Search size={15} />
@@ -156,7 +223,7 @@ function SupplierHeader({ title }) {
                   <Settings size={15} /> Settings
                 </button>
                 <div className="sd-dropdown-divider" />
-                <button className="sd-dropdown-item sd-dropdown-logout" onClick={() => navigate('/login')}>
+                <button className="sd-dropdown-item sd-dropdown-logout" onClick={() => { localStorage.removeItem('role'); navigate('/login') }}>
                   <LogOut size={15} /> Log out
                 </button>
               </div>
@@ -167,6 +234,8 @@ function SupplierHeader({ title }) {
     </header>
   )
 }
+
+// ─── Pages ───────────────────────────────────────────────────────────────────
 
 function SupplierHome({ bids, onBid }) {
   const [modal, setModal] = useState(null)
@@ -179,10 +248,10 @@ function SupplierHome({ bids, onBid }) {
 
       <div className="sd-stats">
         {[
-          { label: 'Open Projects', value: String(OPEN_PROJECTS.length), icon: FolderOpen, color: 'blue' },
-          { label: 'My Active Bids', value: String(bids.length), icon: FileText, color: 'green' },
-          { label: 'Shortlisted', value: String(bids.filter(b => b.status === 'shortlisted').length), icon: CheckCircle2, color: 'purple' },
-          { label: 'Approval Status', value: 'Active', icon: Shield, color: 'green' },
+          { label: 'Open Projects',   value: String(OPEN_PROJECTS.length),                                    icon: FolderOpen,   color: 'blue'   },
+          { label: 'My Active Bids',  value: String(bids.length),                                             icon: FileText,     color: 'green'  },
+          { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'shortlisted').length),     icon: CheckCircle2, color: 'purple' },
+          { label: 'Approval Status', value: 'Active',                                                        icon: Shield,       color: 'green'  },
         ].map(({ label, value, icon: Icon, color }) => (
           <div className="sd-stat-card" key={label}>
             <div className="sd-stat-top">
@@ -258,26 +327,17 @@ function SupplierHome({ bids, onBid }) {
         <div className="sd-status-body">
           <div className="sd-status-item">
             <CheckCircle2 size={18} className="sd-check" />
-            <div>
-              <span className="sd-bold">Account Registered</span>
-              <span className="sd-muted">Jun 1, 2026</span>
-            </div>
+            <div><span className="sd-bold">Account Registered</span><span className="sd-muted">Jun 1, 2026</span></div>
           </div>
           <div className="sd-status-divider" />
           <div className="sd-status-item">
             <CheckCircle2 size={18} className="sd-check" />
-            <div>
-              <span className="sd-bold">Admin Approved</span>
-              <span className="sd-muted">Jun 3, 2026</span>
-            </div>
+            <div><span className="sd-bold">Admin Approved</span><span className="sd-muted">Jun 3, 2026</span></div>
           </div>
           <div className="sd-status-divider" />
           <div className="sd-status-item">
             <CheckCircle2 size={18} className="sd-check" />
-            <div>
-              <span className="sd-bold">Eligible to Bid</span>
-              <span className="sd-muted">Active on all open projects</span>
-            </div>
+            <div><span className="sd-bold">Eligible to Bid</span><span className="sd-muted">Active on all open projects</span></div>
           </div>
         </div>
       </div>
@@ -304,7 +364,10 @@ function SupplierProjects({ bids, onBid }) {
             {OPEN_PROJECTS.map(p => (
               <tr key={p.id}>
                 <td className="sd-mono">{p.id}</td>
-                <td className="sd-bold">{p.name}</td>
+                <td>
+                  <div className="sd-bold">{p.name}</div>
+                  <div className="sd-muted sd-small" style={{ maxWidth: 220 }}>{p.description}</div>
+                </td>
                 <td>{p.budget}</td>
                 <td><span className="badge badge-blue">{p.category}</span></td>
                 <td className="sd-muted">{p.deadline}</td>
@@ -322,9 +385,18 @@ function SupplierProjects({ bids, onBid }) {
   )
 }
 
-function SupplierBids({ bids }) {
+function SupplierBids({ bids, onWithdraw }) {
+  const [detail, setDetail] = useState(null)
+
   return (
     <div className="sd-content">
+      {detail !== null && (
+        <BidDetailModal
+          bid={bids[detail]}
+          onClose={() => setDetail(null)}
+          onWithdraw={() => { onWithdraw(detail); setDetail(null) }}
+        />
+      )}
       <div className="sd-card">
         <div className="sd-card-header">
           <div><h2>My Bids</h2><p>Track all your submitted bids and their evaluation status</p></div>
@@ -336,16 +408,21 @@ function SupplierBids({ bids }) {
         ) : (
           <table className="sd-table">
             <thead>
-              <tr><th>Project</th><th>Amount</th><th>Notes</th><th>Submitted</th><th>Status</th></tr>
+              <tr><th>Project</th><th>Amount</th><th>Notes</th><th>Submitted</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               {bids.map((b, i) => (
                 <tr key={i}>
                   <td className="sd-bold">{b.project}</td>
                   <td>{b.amount}</td>
-                  <td className="sd-muted" style={{ maxWidth: 220, fontSize: 13 }}>{b.notes}</td>
+                  <td className="sd-muted" style={{ maxWidth: 200, fontSize: 13 }}>{b.notes}</td>
                   <td className="sd-muted">{b.submitted}</td>
                   <td><span className={`badge ${BID_STATUS[b.status] || 'badge-yellow'}`}>{b.status.replace('_', ' ')}</span></td>
+                  <td>
+                    <button className="sd-btn-view" onClick={() => setDetail(i)}>
+                      <Eye size={13} /> View
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -356,6 +433,196 @@ function SupplierBids({ bids }) {
   )
 }
 
+function SupplierStatusPage({ bids }) {
+  const steps = [
+    {
+      label: 'Account Registered',
+      date: 'Jun 1, 2026',
+      done: true,
+      desc: 'Your supplier account was created and submitted for review.',
+    },
+    {
+      label: 'Admin Approved',
+      date: 'Jun 3, 2026',
+      done: true,
+      desc: 'Admin verified your company details and approved your account.',
+    },
+    {
+      label: 'Eligible to Bid',
+      date: 'Jun 3, 2026',
+      done: true,
+      desc: 'You are now eligible to submit bids on all published projects.',
+    },
+    {
+      label: 'Bids Submitted',
+      date: bids.length > 0 ? `${bids.length} bid${bids.length > 1 ? 's' : ''} total` : 'No bids yet',
+      done: bids.length > 0,
+      desc: 'Your submitted bids are listed below.',
+    },
+    {
+      label: 'Bid Shortlisted',
+      date: bids.some(b => b.status === 'shortlisted') ? 'Active' : 'Pending evaluation',
+      done: bids.some(b => b.status === 'shortlisted'),
+      desc: 'At least one of your bids has been shortlisted for final evaluation.',
+    },
+    {
+      label: 'Contract Awarded',
+      date: bids.some(b => b.status === 'winner') ? 'Awarded!' : 'Awaiting decision',
+      done: bids.some(b => b.status === 'winner'),
+      desc: 'The procurement office has selected a winner for the project.',
+    },
+  ]
+
+  return (
+    <div className="sd-content">
+      <div className="sd-stats">
+        {[
+          { label: 'Bids Submitted',  value: String(bids.length),                                             icon: FileText,     color: 'blue'   },
+          { label: 'Under Review',    value: String(bids.filter(b => b.status === 'under_review').length),    icon: Clock,        color: 'yellow' },
+          { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'shortlisted').length),     icon: CheckCircle2, color: 'green'  },
+          { label: 'Won',             value: String(bids.filter(b => b.status === 'winner').length),          icon: Trophy,       color: 'purple' },
+        ].map(({ label, value, icon: Icon, color }) => (
+          <div className="sd-stat-card" key={label}>
+            <div className="sd-stat-top">
+              <span className="sd-stat-label">{label}</span>
+              <div className={`sd-stat-icon sd-icon-${color}`}><Icon size={17} /></div>
+            </div>
+            <div className="sd-stat-value">{value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="sd-card">
+        <div className="sd-card-header">
+          <div><h2>Account & Bid Timeline</h2><p>Your progress through the procurement process</p></div>
+        </div>
+        <div className="sd-timeline">
+          {steps.map((step, i) => (
+            <div className={`sd-timeline-step ${step.done ? 'done' : 'pending'}`} key={i}>
+              <div className="sd-tl-left">
+                <div className="sd-tl-dot">{step.done ? <CheckCircle2 size={16} /> : <Clock size={16} />}</div>
+                {i < steps.length - 1 && <div className="sd-tl-line" />}
+              </div>
+              <div className="sd-tl-body">
+                <div className="sd-tl-title">{step.label}</div>
+                <div className="sd-tl-date">{step.date}</div>
+                <div className="sd-tl-desc">{step.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SupplierProfile() {
+  const [editing, setEditing] = useState(false)
+  const [profile, setProfile] = useState({
+    name:     'Supplier User',
+    company:  'BuildRight Corp',
+    email:    'supplier@buildright.com',
+    phone:    '+63 912 345 6789',
+    address:  '123 Builder St., Makati City',
+    category: 'Infrastructure',
+    tin:      '123-456-789-000',
+  })
+  const [form, setForm] = useState(profile)
+  const [saved, setSaved] = useState(false)
+
+  const handleSave = (e) => {
+    e.preventDefault()
+    setProfile(form)
+    setEditing(false)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2500)
+  }
+
+  const fields = [
+    { key: 'name',     label: 'Full Name' },
+    { key: 'company',  label: 'Company Name' },
+    { key: 'email',    label: 'Email Address', type: 'email' },
+    { key: 'phone',    label: 'Phone Number' },
+    { key: 'address',  label: 'Business Address' },
+    { key: 'category', label: 'Category' },
+    { key: 'tin',      label: 'TIN Number' },
+  ]
+
+  return (
+    <div className="sd-content">
+      {saved && (
+        <div className="sd-toast">
+          <CheckCircle2 size={15} /> Profile updated successfully.
+        </div>
+      )}
+
+      <div className="sd-card">
+        <div className="sd-card-header">
+          <div><h2>My Profile</h2><p>Your company and account information</p></div>
+          {!editing && (
+            <button className="sd-btn-primary" onClick={() => { setForm(profile); setEditing(true) }}>
+              Edit Profile
+            </button>
+          )}
+        </div>
+
+        {editing ? (
+          <form onSubmit={handleSave} className="sd-profile-form">
+            {fields.map(({ key, label, type = 'text' }) => (
+              <div className="sd-form-group" key={key}>
+                <label>{label}</label>
+                <input
+                  type={type}
+                  value={form[key]}
+                  onChange={e => setForm({ ...form, [key]: e.target.value })}
+                  required
+                />
+              </div>
+            ))}
+            <div className="sd-profile-actions">
+              <button type="button" className="sd-btn-cancel" onClick={() => setEditing(false)}>Cancel</button>
+              <button type="submit" className="sd-btn-primary">Save Changes</button>
+            </div>
+          </form>
+        ) : (
+          <div className="sd-profile-grid">
+            {fields.map(({ key, label }) => (
+              <div className="sd-profile-field" key={key}>
+                <span className="sd-profile-label">{label}</span>
+                <span className="sd-profile-value">{profile[key]}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="sd-card sd-status-card">
+        <div className="sd-card-header">
+          <div><h2>Account Status</h2><p>Verification and eligibility</p></div>
+        </div>
+        <div className="sd-status-body">
+          <div className="sd-status-item">
+            <CheckCircle2 size={18} className="sd-check" />
+            <div><span className="sd-bold">Account Registered</span><span className="sd-muted">Jun 1, 2026</span></div>
+          </div>
+          <div className="sd-status-divider" />
+          <div className="sd-status-item">
+            <CheckCircle2 size={18} className="sd-check" />
+            <div><span className="sd-bold">Admin Approved</span><span className="sd-muted">Jun 3, 2026</span></div>
+          </div>
+          <div className="sd-status-divider" />
+          <div className="sd-status-item">
+            <CheckCircle2 size={18} className="sd-check" />
+            <div><span className="sd-bold">Eligible to Bid</span><span className="sd-muted">Active on all open projects</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Root ─────────────────────────────────────────────────────────────────────
+
 export default function SupplierDashboard() {
   const loc = useLocation()
   const [bids, setBids] = useState(INITIAL_BIDS)
@@ -363,33 +630,39 @@ export default function SupplierDashboard() {
   const submitBid = (project, form) => {
     const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
     setBids(prev => [{
-      project: project.name,
+      project:   project.name,
       projectId: project.id,
-      amount: form.amount,
+      amount:    form.amount,
       submitted: today,
-      status: 'submitted',
-      notes: form.notes,
+      status:    'submitted',
+      notes:     form.notes,
     }, ...prev])
   }
 
+  const withdrawBid = (idx) => setBids(prev => prev.filter((_, i) => i !== idx))
+
   const TITLES = {
-    '/supplier': 'Dashboard',
-    '/supplier/projects': 'Projects',
-    '/supplier/bids': 'My Bids',
-    '/supplier/status': 'Status',
+    '/supplier':         'Dashboard',
+    '/supplier/projects':'Projects',
+    '/supplier/bids':    'My Bids',
+    '/supplier/status':  'Status',
     '/supplier/profile': 'Profile',
   }
+  const title = Object.entries(TITLES).find(([path]) => loc.pathname === path)?.[1] || 'Dashboard'
+
   return (
     <div className="sd-layout">
       <SupplierSidebar active={loc.pathname} />
       <div className="sd-main">
-        <SupplierHeader title={TITLES[loc.pathname] || 'Dashboard'} />
+        <SupplierHeader title={title} />
         <div className="sd-body">
           <Routes>
             <Route index element={<SupplierHome bids={bids} onBid={submitBid} />} />
             <Route path="projects" element={<SupplierProjects bids={bids} onBid={submitBid} />} />
-            <Route path="bids" element={<SupplierBids bids={bids} />} />
-            <Route path="*" element={<SupplierHome bids={bids} onBid={submitBid} />} />
+            <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} />} />
+            <Route path="status"   element={<SupplierStatusPage bids={bids} />} />
+            <Route path="profile"  element={<SupplierProfile />} />
+            <Route path="*"        element={<SupplierHome bids={bids} onBid={submitBid} />} />
           </Routes>
         </div>
       </div>

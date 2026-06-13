@@ -4,3 +4,9 @@ dist/
 .env.local
 .DS_Store
 *.log
+
+# Python / Django backend
+backend/venv/
+backend/db.sqlite3
+__pycache__/
+*.pyc

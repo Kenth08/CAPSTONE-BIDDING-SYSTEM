@@ -19,8 +19,10 @@ export default function LoginPage() {
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    if (role === 'admin') navigate('/admin')
-    else if (role === 'head') navigate('/head')
+    const savedRole = isRegister ? 'supplier' : role
+    localStorage.setItem('role', savedRole)
+    if (savedRole === 'admin') navigate('/admin')
+    else if (savedRole === 'head') navigate('/head')
     else navigate('/supplier')
   }
 
