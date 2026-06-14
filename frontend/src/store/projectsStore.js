@@ -146,6 +146,12 @@ export async function publishProject(id) {
   upsert(await apiPublishProject(id))
 }
 
+// Force a silent refresh — used after an out-of-store change (e.g. selecting a
+// bid winner flips a project to "awarded" on the backend).
+export function refreshProjects() {
+  return doFetch({ background: true })
+}
+
 // ── Derived helpers (status semantics) ──────────────────────────────────────────
 export const isReviewed = (p) =>
   p.status === 'rejected' ||

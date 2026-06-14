@@ -147,3 +147,17 @@ export const apiSubmitBid = (projectId, amount, notes) =>
   })
 export const apiWithdrawBid = (bidId) =>
   apiFetch(`/bids/${bidId}/`, { method: 'DELETE' })
+
+// ── Bid evaluation (admin) ─────────────────────────────────────────────────────
+export const apiListProjectBids = (projectId) => apiFetch(`/bids/?project=${projectId}`)
+export const apiQualifyBid = (bidId) =>
+  apiFetch(`/bids/${bidId}/qualify/`, { method: 'POST', body: '{}' })
+export const apiDisqualifyBid = (bidId) =>
+  apiFetch(`/bids/${bidId}/disqualify/`, { method: 'POST', body: '{}' })
+export const apiSelectWinner = (bidId) =>
+  apiFetch(`/bids/${bidId}/select-winner/`, { method: 'POST', body: '{}' })
+
+// ── Notifications ──────────────────────────────────────────────────────────────
+export const apiListNotifications = () => apiFetch('/notifications/')
+export const apiMarkNotificationsRead = () =>
+  apiFetch('/notifications/mark-read/', { method: 'POST', body: '{}' })

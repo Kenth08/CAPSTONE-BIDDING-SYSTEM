@@ -9,8 +9,9 @@ import {
 import {
   clearSession, apiListSuppliers, apiGetSupplier,
   apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision,
+  apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner,
 } from '../api'
-import { useProjects, createProject, publishProject } from '../store/projectsStore'
+import { useProjects, createProject, publishProject, refreshProjects } from '../store/projectsStore'
 import { CATEGORIES } from '../constants/categories'
 import '../style/AdminDashboard.css'
 
@@ -1041,6 +1042,8 @@ function Toast({ type, message, onClose }) {
 function BidsPage() {
   const { projects, loading } = useProjects()
   const [filterTab, setFilterTab] = useState('All')
+  const [evalProject, setEvalProject] = useState(null)
+  const [toast, setToast] = useState(null)
   const TABS = ['All', 'Goods', 'Services', 'Infrastructure', 'More']
 
   // Only Head-approved projects can receive/evaluate bids — not drafts, items
@@ -1057,6 +1060,15 @@ function BidsPage() {
 
   return (
     <div className="ad-content">
+      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
+      {evalProject && (
+        <BidEvaluationModal
+          project={evalProject}
+          onClose={() => setEvalProject(null)}
+          onAwarded={(msg) => { setToast({ type: 'success', message: msg }); refreshProjects(); setEvalProject(null) }}
+          onToast={setToast}
+        />
+      )}
       <div>
         <h2 className="ad-bids-title">Select a Project to Evaluate</h2>
         <p className="ad-bids-sub">Click a project below to review and evaluate submitted bids.</p>
@@ -1072,7 +1084,7 @@ function BidsPage() {
           : filtered.length === 0
           ? <div className="ad-empty-msg">No projects available for bidding yet.</div>
           : filtered.map(p => (
-            <div className="ad-bid-card" key={p.id}>
+            <div className="ad-bid-card" key={p.id} onClick={() => setEvalProject(p)} role="button" tabIndex={0}>
               <div className="ad-bid-card-top">
                 <div className="ad-bid-card-icon"><FolderOpen size={18} /></div>
                 <ChevronRight size={16} className="ad-bid-card-arrow" />
@@ -1092,6 +1104,142 @@ function BidsPage() {
             </div>
           ))
         }
+      </div>
+    </div>
+  )
+}
+
+// Qualification status display for bids.
+const QUAL_BID_LABEL = {
+  under_review: 'Under Review', qualified: 'Qualified',
+  disqualified: 'Disqualified', winner: 'Winner Selected',
+}
+const QUAL_BID_CLS = {
+  under_review: 'badge-yellow', qualified: 'badge-green',
+  disqualified: 'badge-red', winner: 'badge-awarded',
+}
+
+// ── Bid evaluation modal (admin) ──────────────────────────────────────────────
+function BidEvaluationModal({ project, onClose, onAwarded, onToast }) {
+  const [bids, setBids] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState(null)
+  const [confirm, setConfirm] = useState(null)   // { bid }
+  const awarded = project.status === 'awarded'
+
+  const load = () => {
+    setLoading(true)
+    apiListProjectBids(project.id)
+      .then(setBids)
+      .catch(() => onToast?.({ type: 'error', message: 'Could not load bids.' }))
+      .finally(() => setLoading(false))
+  }
+  useEffect(load, [project.id])
+
+  const act = async (bid, fn, errMsg) => {
+    setBusyId(bid.id)
+    try { await fn(bid.id); load() }
+    catch (e) { onToast?.({ type: 'error', message: e.message || errMsg }) }
+    finally { setBusyId(null) }
+  }
+
+  const confirmWinner = async () => {
+    const bid = confirm.bid
+    setBusyId(bid.id); setConfirm(null)
+    try {
+      await apiSelectWinner(bid.id)
+      onAwarded(`${bid.supplier_name} selected as winner for ${project.name}.`)
+    } catch (e) {
+      onToast?.({ type: 'error', message: e.message || 'Could not select winner.' })
+      setBusyId(null)
+    }
+  }
+
+  const peso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
+
+  return (
+    <div className="ad-modal-overlay" onClick={onClose}>
+      <div className="ad-modal" onClick={e => e.stopPropagation()}>
+        <div className="ad-modal-header">
+          <div>
+            <h3>Bid Evaluation — {project.name}</h3>
+            <p className="ad-muted ad-small">{project.code} · {project.category} · ABC {project.budget}</p>
+          </div>
+          <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <div className="ad-modal-body">
+          {awarded && (
+            <div className="ad-modal-error" style={{ background: '#f0fdf4', borderColor: '#bbf7d0', color: '#15803d' }}>
+              <CheckCircle2 size={15} /> This procurement has been awarded.
+            </div>
+          )}
+          {loading ? (
+            <div style={{ padding: 30, textAlign: 'center' }}>Loading bids…</div>
+          ) : bids.length === 0 ? (
+            <div style={{ padding: 30, textAlign: 'center', color: 'var(--text-gray)' }}>No bids submitted yet.</div>
+          ) : (
+            <table className="ad-table">
+              <thead>
+                <tr><th>SUPPLIER</th><th>BID AMOUNT</th><th>NOTES</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
+              </thead>
+              <tbody>
+                {bids.map(b => (
+                  <tr key={b.id}>
+                    <td className="ad-bold">{b.supplier_name}</td>
+                    <td>{peso(b.amount)}</td>
+                    <td className="ad-muted" style={{ maxWidth: 200, fontSize: 12 }}>{b.notes || '—'}</td>
+                    <td>
+                      <span className={`badge ${QUAL_BID_CLS[b.status] || 'badge-gray'}`}>
+                        {QUAL_BID_LABEL[b.status] || b.status}
+                      </span>
+                    </td>
+                    <td>
+                      {b.status === 'winner' ? (
+                        <span className="ad-muted ad-small">Winner</span>
+                      ) : awarded ? (
+                        <span className="ad-muted ad-small">—</span>
+                      ) : (
+                        <div className="ad-actions">
+                          {b.status !== 'qualified' && (
+                            <button className="ad-btn-approve" disabled={busyId === b.id}
+                              onClick={() => act(b, apiQualifyBid, 'Could not qualify.')}>
+                              <Check size={12} /> Qualify
+                            </button>
+                          )}
+                          {b.status !== 'disqualified' && (
+                            <button className="ad-btn-reject" disabled={busyId === b.id}
+                              onClick={() => act(b, apiDisqualifyBid, 'Could not disqualify.')}>
+                              <XCircle size={12} /> Disqualify
+                            </button>
+                          )}
+                          {b.status === 'qualified' && (
+                            <button className="ad-btn-publish" disabled={busyId === b.id}
+                              onClick={() => setConfirm({ bid: b })}>
+                              <Award size={12} /> Select Winner
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {confirm && (
+          <ConfirmDialog
+            title="Select winning bid?"
+            message={`Award "${project.name}" to ${confirm.bid.supplier_name} for ${peso(confirm.bid.amount)}? This marks the procurement as Awarded and notifies the bidders.`}
+            tone="green"
+            confirmLabel="Confirm Winner"
+            busy={busyId === confirm.bid.id}
+            onConfirm={confirmWinner}
+            onCancel={() => setConfirm(null)}
+          />
+        )}
       </div>
     </div>
   )

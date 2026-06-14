@@ -9,6 +9,7 @@ import {
 import {
   clearSession, apiGetMySupplier, apiResubmitDocuments,
   apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid,
+  apiListNotifications, apiMarkNotificationsRead,
 } from '../api'
 import '../style/SupplierDashboard.css'
 
@@ -334,6 +335,52 @@ function SupplierSidebar({ active }) {
   )
 }
 
+// Bell with unread count + dropdown list. Opening it marks everything read.
+function NotificationsBell() {
+  const [items, setItems] = useState([])
+  const [open, setOpen] = useState(false)
+  const load = () => { apiListNotifications().then(setItems).catch(() => {}) }
+  useEffect(() => { load() }, [])
+  const unread = items.filter(n => !n.is_read).length
+
+  const toggle = () => {
+    const next = !open
+    setOpen(next)
+    if (next && unread > 0) {
+      apiMarkNotificationsRead()
+        .then(() => setItems(prev => prev.map(n => ({ ...n, is_read: true }))))
+        .catch(() => {})
+    }
+  }
+
+  return (
+    <div className="sd-notif-wrap">
+      <button className="sd-notif" onClick={toggle}>
+        <Bell size={18} />
+        {unread > 0 && <span className="sd-notif-badge">{unread}</span>}
+      </button>
+      {open && (
+        <>
+          <div className="sd-dropdown-backdrop" onClick={() => setOpen(false)} />
+          <div className="sd-notif-dropdown">
+            <div className="sd-notif-head">Notifications</div>
+            {items.length === 0 ? (
+              <div className="sd-notif-empty">No notifications yet.</div>
+            ) : (
+              items.map(n => (
+                <div key={n.id} className="sd-notif-item">
+                  <div className="sd-notif-msg">{n.message}</div>
+                  <div className="sd-notif-time">{new Date(n.created_at).toLocaleString()}</div>
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 function SupplierHeader({ title }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
@@ -348,7 +395,7 @@ function SupplierHeader({ title }) {
           <Search size={15} />
           <input placeholder="Search projects…" />
         </div>
-        <button className="sd-notif"><Bell size={18} /><span className="sd-notif-dot" /></button>
+        <NotificationsBell />
         <div className="sd-user-wrap">
           <div className="sd-user" onClick={() => setOpen(o => !o)}>
             <div className="sd-avatar">S</div>

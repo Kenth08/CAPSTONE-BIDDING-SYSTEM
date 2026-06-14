@@ -13,6 +13,7 @@ from .models import (
     Award,
     Bid,
     Document,
+    Notification,
     Project,
     Supplier,
 )
@@ -23,6 +24,7 @@ from .serializers import (
     AwardSerializer,
     BidSerializer,
     DocumentSerializer,
+    NotificationSerializer,
     ProjectSerializer,
     SupplierDetailSerializer,
     SupplierListSerializer,
@@ -328,3 +330,17 @@ class AwardViewSet(viewsets.ModelViewSet):
 class DocumentViewSet(viewsets.ModelViewSet):
     queryset = Document.objects.select_related("supplier").all()
     serializer_class = DocumentSerializer
+
+
+class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
+    """A user's own in-app notifications + a bulk 'mark read' action."""
+
+    serializer_class = NotificationSerializer
+
+    def get_queryset(self):
+        return Notification.objects.filter(user=self.request.user)
+
+    @action(detail=False, methods=["post"], url_path="mark-read")
+    def mark_read(self, request):
+        self.get_queryset().filter(is_read=False).update(is_read=True)
+        return Response({"detail": "All notifications marked as read."})

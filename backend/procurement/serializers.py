@@ -7,6 +7,7 @@ from .models import (
     Award,
     Bid,
     Document,
+    Notification,
     Project,
     Supplier,
 )
@@ -164,3 +165,9 @@ class DocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Document
         fields = ["id", "supplier", "company", "doc_type", "expiry_date"]
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = ["id", "message", "link", "is_read", "created_at"]

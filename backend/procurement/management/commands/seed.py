@@ -104,8 +104,8 @@ class Command(BaseCommand):
         )
 
         # --- Bids ----------------------------------------------------------
-        b1 = Bid.objects.create(project=p1, supplier=s1, amount=1000, status=Bid.Status.WON)
-        b2 = Bid.objects.create(project=p2, supplier=s1, amount=100000, status=Bid.Status.WON)
+        b1 = Bid.objects.create(project=p1, supplier=s1, amount=1000, status=Bid.Status.WINNER)
+        b2 = Bid.objects.create(project=p2, supplier=s1, amount=100000, status=Bid.Status.WINNER)
 
         # --- Awards --------------------------------------------------------
         Award.objects.create(project=p1, supplier=s1, bid=b1, amount=1000)
