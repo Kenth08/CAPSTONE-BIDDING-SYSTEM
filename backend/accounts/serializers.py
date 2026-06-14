@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from procurement.models import Supplier
@@ -133,8 +134,13 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
 
 
 class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
-    """Adds role + user info to the login response so the frontend can
-    replace its localStorage 'role' hack with the real value."""
+    """Single sign-in for every role.
+
+    Users log in with EITHER their username OR their email (admins/heads can
+    use their email saved in the database, suppliers already use their email as
+    their username). The account's real role is returned so the frontend knows
+    which dashboard to open — no role picker needed. Errors are specific so the
+    user knows exactly what went wrong."""
 
     @classmethod
     def get_token(cls, user):
@@ -143,6 +149,36 @@ class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
-        data = super().validate(attrs)
+        identifier = (attrs.get(self.username_field) or "").strip()
+        password = attrs.get("password") or ""
+
+        if not identifier or not password:
+            raise serializers.ValidationError(
+                {"detail": "Please enter both your username/email and your password."}
+            )
+
+        # Resolve an email to the matching account so login works either way.
+        user_obj = (
+            User.objects.filter(username__iexact=identifier).first()
+            or User.objects.filter(email__iexact=identifier).first()
+        )
+        if user_obj is None:
+            raise serializers.ValidationError(
+                {"detail": "No account found with that username or email."}
+            )
+        if not user_obj.is_active:
+            raise serializers.ValidationError(
+                {"detail": "This account is inactive. Please contact the administrator."}
+            )
+
+        # Authenticate with the resolved username (SimpleJWT uses USERNAME_FIELD).
+        attrs[self.username_field] = user_obj.get_username()
+        try:
+            data = super().validate(attrs)
+        except AuthenticationFailed:
+            raise serializers.ValidationError(
+                {"detail": "Incorrect password. Please try again."}
+            )
+
         data["user"] = UserSerializer(self.user).data
         return data

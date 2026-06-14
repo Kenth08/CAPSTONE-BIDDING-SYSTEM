@@ -54,15 +54,17 @@ class Command(BaseCommand):
             user=supplier_user,
             company="PA co.",
             contact="Kenthcharles Repollo",
-            business_type="IT Equipment, ICT Services",
+            business_type="IT Equipment, Office Supplies",
+            business_types=["IT Equipment", "Office Supplies"],
             status=Supplier.Status.DRAFT,
             qualification_status=Supplier.Qualification.VERIFIED,
             email_verified=True,
         )
         s2 = Supplier.objects.create(
-            company="PA co.",
+            company="BuildRight Inc.",
             contact="coc",
-            business_type="ICT Services",
+            business_type="Construction",
+            business_types=["Construction"],
             status=Supplier.Status.APPROVED,
             qualification_status=Supplier.Qualification.PENDING,
             email_verified=True,
@@ -71,15 +73,34 @@ class Command(BaseCommand):
         # --- Projects ------------------------------------------------------
         p1 = Project.objects.create(
             code="P-2026-001", name="computer", budget=2000,
-            deadline=date(2026, 6, 3), type="ICT Services",
+            deadline=date(2026, 6, 3), type="Goods", category="IT Equipment",
+            delivery_location="Main Campus", expected_delivery_date=date(2026, 6, 20),
             status=Project.Status.AWARDED,
             description="Procurement of computer units for office use.",
         )
         p2 = Project.objects.create(
             code="P-2026-002", name="chair/table", budget=100000,
-            deadline=date(2026, 7, 10), type="IT Equipment",
+            deadline=date(2026, 7, 10), type="Goods", category="Furniture",
+            delivery_location="Main Campus", expected_delivery_date=date(2026, 7, 25),
             status=Project.Status.AWARDED,
             description="Procurement of chairs and tables for conference rooms.",
+        )
+        # Awaiting the Head's approval (shows in Head → Pending Approval).
+        Project.objects.create(
+            code="P-2026-003", name="IT Systems Upgrade", budget=450000,
+            deadline=date(2026, 8, 1), type="Goods", category="IT Equipment",
+            delivery_location="Main Campus", expected_delivery_date=date(2026, 8, 20),
+            status=Project.Status.PENDING_HEAD,
+            description="Upgrade of school IT infrastructure and network systems, "
+                        "including hardware replacement and software licensing.",
+        )
+        # Approved by the Head (shows in Admin → Projects).
+        Project.objects.create(
+            code="P-2026-004", name="Hospital Equipment Procurement", budget=890000,
+            deadline=date(2026, 6, 30), type="Goods", category="Medical Supplies",
+            delivery_location="District Hospital", expected_delivery_date=date(2026, 7, 15),
+            status=Project.Status.APPROVED,
+            description="Procurement of medical equipment for the district hospital.",
         )
 
         # --- Bids ----------------------------------------------------------
@@ -94,4 +115,4 @@ class Command(BaseCommand):
         Document.objects.create(supplier=s1, doc_type="Mayor's Permit", expiry_date=date(2026, 7, 4))
         Document.objects.create(supplier=s1, doc_type="Tax Clearance", expiry_date=date(2026, 7, 3))
 
-        self.stdout.write(self.style.SUCCESS("Seed complete: 2 projects, 2 suppliers, 2 bids, 2 awards, 2 documents."))
+        self.stdout.write(self.style.SUCCESS("Seed complete: 4 projects, 2 suppliers, 2 bids, 2 awards, 2 documents."))

@@ -1,5 +1,6 @@
 from datetime import date
 
+from django.db.models import Count
 from django.utils import timezone
 from rest_framework import status as http_status
 from rest_framework import viewsets
@@ -15,7 +16,9 @@ from .models import (
     Project,
     Supplier,
 )
-from .permissions import IsAdminRole, IsSupplierRole
+from rest_framework import permissions
+
+from .permissions import IsAdminRole, IsHeadRole, IsSupplierRole
 from .serializers import (
     AwardSerializer,
     BidSerializer,
@@ -29,6 +32,66 @@ from .serializers import (
 class ProjectViewSet(viewsets.ModelViewSet):
     queryset = Project.objects.all()
     serializer_class = ProjectSerializer
+    # Creating a procurement uploads the required documents (multipart); reads
+    # and the approve/reject actions use JSON.
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_permissions(self):
+        # Head approves/rejects; suppliers bid; Admin creates & manages; everyone
+        # signed in can read (suppliers see only eligible projects — get_queryset).
+        if self.action in {"approve", "reject"}:
+            return [IsHeadRole()]
+        if self.action == "bid":
+            return [IsSupplierRole()]
+        if self.action in {"list", "retrieve", "stats"}:
+            return [permissions.IsAuthenticated()]
+        return [IsAdminRole()]
+
+    def get_queryset(self):
+        # Annotate the bid count in one query instead of a COUNT per project.
+        qs = Project.objects.annotate(num_bids=Count("bids"))
+        # Suppliers only ever see PUBLISHED procurements whose category matches
+        # one of the categories they registered for (eligibility = category match).
+        if getattr(self.request.user, "role", None) == "supplier":
+            supplier = Supplier.objects.filter(user=self.request.user).first()
+            categories = (supplier.business_types if supplier else []) or ["__no_match__"]
+            qs = qs.filter(status=Project.Status.PUBLISHED, category__in=categories)
+        return qs
+
+    @action(detail=True, methods=["post"])
+    def bid(self, request, pk=None):
+        """A verified, category-matching supplier submits (or updates) a bid on a
+        published procurement. Eligibility is enforced here and by get_queryset."""
+        project = self.get_object()  # 404 already filters to eligible published projects
+        supplier = Supplier.objects.filter(user=request.user).first()
+        if supplier is None:
+            return Response({"detail": "No supplier profile found."}, status=http_status.HTTP_404_NOT_FOUND)
+        if supplier.qualification_status != Supplier.Qualification.VERIFIED:
+            return Response(
+                {"detail": "Your account must be approved before you can submit bids."},
+                status=http_status.HTTP_403_FORBIDDEN,
+            )
+        if project.status != Project.Status.PUBLISHED:
+            return Response({"detail": "This procurement is not open for bidding."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+
+        try:
+            amount = float(request.data.get("amount"))
+            assert amount > 0
+        except (TypeError, ValueError, AssertionError):
+            return Response({"detail": "Enter a valid bid amount."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+
+        bid, created = Bid.objects.get_or_create(
+            project=project, supplier=supplier,
+            defaults={"amount": amount, "notes": request.data.get("notes", "") or ""},
+        )
+        if not created:
+            bid.amount = amount
+            bid.notes = request.data.get("notes", "") or ""
+            bid.status = Bid.Status.UNDER_REVIEW
+            bid.save()
+        return Response(BidSerializer(bid).data, status=http_status.HTTP_201_CREATED)
 
     def perform_create(self, serializer):
         # Auto-generate a code like P-2026-001
@@ -36,7 +99,28 @@ class ProjectViewSet(viewsets.ModelViewSet):
         count = Project.objects.filter(code__startswith=f"P-{year}-").count() + 1
         code = f"P-{year}-{count:03d}"
         user = self.request.user if self.request.user.is_authenticated else None
-        serializer.save(code=code, created_by=user)
+        # Created from Planning → goes straight into the Head's approval queue.
+        serializer.save(code=code, created_by=user, status=Project.Status.PENDING_HEAD)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        """Head approves a pending project — it then appears on the Admin Projects page."""
+        project = self.get_object()
+        project.status = Project.Status.APPROVED
+        project.reject_reason = ""
+        project.reviewed_at = timezone.now()
+        project.save()
+        return Response(self.get_serializer(project).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        """Head rejects a pending project, with an optional reason for the Admin."""
+        project = self.get_object()
+        project.status = Project.Status.REJECTED
+        project.reject_reason = request.data.get("reason", "") or ""
+        project.reviewed_at = timezone.now()
+        project.save()
+        return Response(self.get_serializer(project).data)
 
     @action(detail=True, methods=["post"])
     def publish(self, request, pk=None):
@@ -169,6 +253,71 @@ class SupplierViewSet(viewsets.ModelViewSet):
 class BidViewSet(viewsets.ModelViewSet):
     queryset = Bid.objects.select_related("project", "supplier").all()
     serializer_class = BidSerializer
+
+    def get_permissions(self):
+        # Suppliers list/withdraw their OWN bids (scoped by get_queryset);
+        # Admin lists all + runs the evaluation actions.
+        if self.action in {"list", "retrieve", "destroy"}:
+            return [permissions.IsAuthenticated()]
+        return [IsAdminRole()]
+
+    def get_queryset(self):
+        qs = Bid.objects.select_related("project", "supplier", "supplier__user")
+        role = getattr(self.request.user, "role", None)
+        if role == "supplier":
+            qs = qs.filter(supplier__user=self.request.user)
+        elif role != "admin":
+            return qs.none()
+        # Admin can scope to one project's bids for the evaluation screen.
+        project_id = self.request.query_params.get("project")
+        if project_id:
+            qs = qs.filter(project_id=project_id)
+        return qs
+
+    def _set_status(self, bid, status):
+        bid.status = status
+        bid.save(update_fields=["status"])
+        return Response(self.get_serializer(bid).data)
+
+    @action(detail=True, methods=["post"])
+    def qualify(self, request, pk=None):
+        """Mark a bid Qualified (passed the evaluation criteria)."""
+        return self._set_status(self.get_object(), Bid.Status.QUALIFIED)
+
+    @action(detail=True, methods=["post"])
+    def disqualify(self, request, pk=None):
+        """Mark a bid Disqualified."""
+        return self._set_status(self.get_object(), Bid.Status.DISQUALIFIED)
+
+    @action(detail=True, methods=["post"], url_path="select-winner")
+    def select_winner(self, request, pk=None):
+        """Select this bid as the winner: records the Award, marks the project
+        Awarded, and notifies the participating suppliers."""
+        bid = self.get_object()
+        project = bid.project
+
+        bid.status = Bid.Status.WINNER
+        bid.save(update_fields=["status"])
+
+        Award.objects.get_or_create(
+            project=project, supplier=bid.supplier,
+            defaults={"bid": bid, "amount": bid.amount},
+        )
+        project.status = Project.Status.AWARDED
+        project.save(update_fields=["status"])
+
+        # Notify the winner and the other bidders (skip suppliers with no account).
+        for other in project.bids.select_related("supplier__user"):
+            user = getattr(other.supplier, "user", None)
+            if not user:
+                continue
+            if other.id == bid.id:
+                msg = f"Congratulations! Your bid won \"{project.name}\" ({project.code})."
+            else:
+                msg = f"\"{project.name}\" ({project.code}) has been awarded to another supplier."
+            Notification.objects.create(user=user, message=msg, link="/supplier/bids")
+
+        return Response(self.get_serializer(bid).data)
 
 
 class AwardViewSet(viewsets.ModelViewSet):

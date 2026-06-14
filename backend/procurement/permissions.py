@@ -15,3 +15,11 @@ class IsSupplierRole(permissions.BasePermission):
     def has_permission(self, request, view):
         user = request.user
         return bool(user and user.is_authenticated and getattr(user, "role", None) == "supplier")
+
+
+class IsHeadRole(permissions.BasePermission):
+    """Allow only authenticated users whose account role is 'head'."""
+
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(user and user.is_authenticated and getattr(user, "role", None) == "head")

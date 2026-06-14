@@ -26,6 +26,39 @@ SUPPLIER_DOCUMENT_FIELDS = [
 SUPPLIER_DOCUMENT_KEYS = [key for key, _, _ in SUPPLIER_DOCUMENT_FIELDS]
 
 
+# Single source of truth for procurement/business categories — used BOTH for
+# supplier registration (a supplier may pick several) and for the procurement
+# category on a project (exactly one). Supplier eligibility = the project's
+# category appears in the supplier's selected categories.
+PROCUREMENT_CATEGORIES = [
+    "IT Equipment", "Office Supplies", "Furniture", "Construction",
+    "Electrical Supplies", "Laboratory Equipment", "Printing Services",
+    "Janitorial Supplies", "Food & Catering", "Transportation Services",
+    "Medical Supplies", "Sports Equipment", "Books & Educational Materials",
+]
+
+# Documents the Admin must upload before a procurement can be submitted for
+# approval: (model field, human label, required).
+PROCUREMENT_DOCUMENT_FIELDS = [
+    ("purchase_request", "Purchase Request (PR)", True),
+    ("technical_specifications", "Technical Specifications", True),
+    ("terms_of_reference", "Terms of Reference (TOR)", True),
+    ("approved_budget_document", "Approved Budget Document", True),
+    ("bid_evaluation_criteria", "Bid Evaluation Criteria", True),
+]
+PROCUREMENT_DOCUMENT_KEYS = [key for key, _, _ in PROCUREMENT_DOCUMENT_FIELDS]
+
+
+def procurement_doc_path(instance, filename):
+    """Store each procurement document under a per-project folder with a short,
+    sanitized, unique name."""
+    base, ext = os.path.splitext(filename)
+    base = get_valid_filename(base)[:40] or "doc"
+    ext = ext.lower()[:10]
+    unique = uuid.uuid4().hex[:8]
+    return f"procurement_docs/{instance.pk or 'new'}/{base}_{unique}{ext}"
+
+
 def supplier_doc_path(instance, filename):
     """Store each supplier's document under a per-supplier folder with a short,
     sanitized, unique name (long original filenames would overflow the column
@@ -132,12 +165,13 @@ class Supplier(models.Model):
 
 class Project(models.Model):
     """A procurement project. Flows: draft -> pending_head -> approved ->
-    published -> awarded / closed."""
+    published -> awarded / closed; or pending_head -> rejected (by the Head)."""
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
         PENDING_HEAD = "pending_head", "Pending Head Approval"
         APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
         PUBLISHED = "published", "Published"
         AWARDED = "awarded", "Awarded"
         CLOSED = "closed", "Closed"
@@ -145,11 +179,30 @@ class Project(models.Model):
     code = models.CharField(max_length=20, unique=True)  # e.g. P-2026-001
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    deadline = models.DateField(null=True, blank=True)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)  # Approved Budget (ABC)
+    deadline = models.DateField(null=True, blank=True)  # bid submission deadline
     type = models.CharField(max_length=120, blank=True)
+    # Procurement category (one of PROCUREMENT_CATEGORIES) — drives supplier eligibility.
+    category = models.CharField(max_length=120, blank=True)
+    delivery_location = models.CharField(max_length=255, blank=True)
+    expected_delivery_date = models.DateField(null=True, blank=True)
     eligible_types = models.CharField(max_length=120, default="Open to All")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    # Required procurement documents (blank at model level so drafts can exist;
+    # enforced when submitting for approval — see the serializer).
+    purchase_request = models.FileField(
+        upload_to=procurement_doc_path, blank=True, null=True, validators=[validate_upload])
+    technical_specifications = models.FileField(
+        upload_to=procurement_doc_path, blank=True, null=True, validators=[validate_upload])
+    terms_of_reference = models.FileField(
+        upload_to=procurement_doc_path, blank=True, null=True, validators=[validate_upload])
+    approved_budget_document = models.FileField(
+        upload_to=procurement_doc_path, blank=True, null=True, validators=[validate_upload])
+    bid_evaluation_criteria = models.FileField(
+        upload_to=procurement_doc_path, blank=True, null=True, validators=[validate_upload])
+    # Set when the Head approves/rejects; reject_reason explains a rejection.
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reject_reason = models.TextField(blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -174,19 +227,24 @@ class Bid(models.Model):
     """A supplier's bid on a project."""
 
     class Status(models.TextChoices):
-        SUBMITTED = "submitted", "Submitted"
         UNDER_REVIEW = "under_review", "Under Review"
-        WON = "won", "Won"
-        LOST = "lost", "Lost"
+        QUALIFIED = "qualified", "Qualified"
+        DISQUALIFIED = "disqualified", "Disqualified"
+        WINNER = "winner", "Winner Selected"
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="bids")
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name="bids")
     amount = models.DecimalField(max_digits=14, decimal_places=2)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.SUBMITTED)
+    notes = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.UNDER_REVIEW)
     submitted_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-submitted_at"]
+        # One bid per supplier per project (re-submitting updates the amount).
+        constraints = [
+            models.UniqueConstraint(fields=["project", "supplier"], name="unique_bid_per_supplier_project"),
+        ]
 
     def __str__(self):
         return f"{self.supplier.company} -> {self.project.name} ({self.amount})"
@@ -225,3 +283,20 @@ class Document(models.Model):
 
     def __str__(self):
         return f"{self.supplier.company} - {self.doc_type}"
+
+
+class Notification(models.Model):
+    """A simple in-app notification (e.g. bid evaluation result / award)."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
+    message = models.CharField(max_length=300)
+    link = models.CharField(max_length=200, blank=True)  # e.g. "/supplier/bids"
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.user} - {self.message[:40]}"
