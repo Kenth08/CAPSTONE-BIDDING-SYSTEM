@@ -6,8 +6,24 @@ import {
   Eye, ArrowRight, Shield, User, X, Send, Trophy, Trash2,
   AlertTriangle, Upload, Lock
 } from 'lucide-react'
-import { clearSession, apiGetMySupplier, apiResubmitDocuments } from '../api'
+import {
+  clearSession, apiGetMySupplier, apiResubmitDocuments,
+  apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid,
+} from '../api'
 import '../style/SupplierDashboard.css'
+
+// API → UI mapping (backend uses code/decimal/ISO; the UI shows ₱ + dates).
+const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''
+const fmtPeso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
+const parseAmount = (s) => Number(String(s).replace(/[^\d.]/g, '')) || 0
+const mapProject = (p) => ({
+  id: p.code, pk: p.id, name: p.name, budget: fmtPeso(p.budget),
+  deadline: fmtDate(p.deadline), category: p.category, description: p.description,
+})
+const mapBid = (b) => ({
+  id: b.id, project: b.project_name, projectId: b.project_code,
+  amount: fmtPeso(b.amount), submitted: fmtDate(b.submitted_at), status: b.status, notes: b.notes,
+})
 
 // File rules mirror the registration form.
 const ALLOWED_EXT = ['pdf', 'jpg', 'jpeg', 'png']
@@ -34,23 +50,16 @@ const NAV = [
   { icon: Settings,        label: 'Profile',    to: '/supplier/profile' },
 ]
 
-const OPEN_PROJECTS = [
-  { id: 'P-2026-001', name: 'Road Infrastructure Phase 2',    budget: '$2.4M', deadline: 'Jul 15, 2026', category: 'Infrastructure', description: 'Phase 2 of the road infrastructure project covering districts 3–5.' },
-  { id: 'P-2026-002', name: 'Hospital Equipment Procurement', budget: '$890K', deadline: 'Jun 30, 2026', category: 'Medical',        description: 'Procurement of medical equipment for the district hospital.' },
-  { id: 'P-2026-005', name: 'Water Treatment Facility',       budget: '$1.7M', deadline: 'Sep 10, 2026', category: 'Environment',    description: 'Construction of a water treatment facility for the district.' },
-]
-
-const INITIAL_BIDS = [
-  { project: 'Hospital Equipment Procurement', projectId: 'P-2026-002', amount: '$820K', submitted: 'Jun 1, 2026',  status: 'shortlisted',  notes: 'Full product warranty, 60-day delivery' },
-  { project: 'Road Infrastructure Phase 2',    projectId: 'P-2026-001', amount: '$2.1M', submitted: 'Jun 5, 2026',  status: 'under_review', notes: 'Experienced team, 24-month timeline' },
-]
-
 const BID_STATUS = {
   submitted:    'badge-yellow',
   under_review: 'badge-blue',
   shortlisted:  'badge-green',
+  qualified:    'badge-green',
   winner:       'badge-purple',
+  won:          'badge-purple',
+  disqualified: 'badge-red',
   rejected:     'badge-red',
+  lost:         'badge-red',
 }
 
 // ─── Bid submit modal ────────────────────────────────────────────────────────
@@ -62,7 +71,7 @@ function BidModal({ project, onClose, onSubmit }) {
   const handleSubmit = (e) => {
     e.preventDefault()
     const raw = form.amount.replace(/[^0-9.]/g, '')
-    if (!raw || isNaN(Number(raw))) { setError('Enter a valid bid amount (e.g. $850K or 850000)'); return }
+    if (!raw || isNaN(Number(raw))) { setError('Enter a valid bid amount (e.g. ₱850,000)'); return }
     onSubmit(project, form)
     onClose()
   }
@@ -87,7 +96,7 @@ function BidModal({ project, onClose, onSubmit }) {
             <label>Your Bid Amount</label>
             <input
               type="text"
-              placeholder="e.g. $850K"
+              placeholder="e.g. ₱850,000"
               value={form.amount}
               onChange={e => { setForm({ ...form, amount: e.target.value }); setError('') }}
               required
@@ -382,10 +391,10 @@ function SupplierHeader({ title }) {
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
 
-function SupplierHome({ bids, onBid, eligible, profile, onResubmitted, setToast }) {
+function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted, setToast }) {
   const [modal, setModal] = useState(null)
   const alreadyBid = new Set(bids.map(b => b.projectId))
-  const available = OPEN_PROJECTS.filter(p => !alreadyBid.has(p.id))
+  const available = projects.filter(p => !alreadyBid.has(p.id))
   const approvalLabel = QUAL_STATUS[profile?.qualification_status]?.label || 'Pending'
 
   return (
@@ -397,7 +406,7 @@ function SupplierHome({ bids, onBid, eligible, profile, onResubmitted, setToast 
 
       <div className="sd-stats">
         {[
-          { label: 'Open Projects',   value: String(OPEN_PROJECTS.length),                                    icon: FolderOpen,   color: 'blue'   },
+          { label: 'Eligible Projects', value: String(projects.length),                                       icon: FolderOpen,   color: 'blue'   },
           { label: 'My Active Bids',  value: String(bids.length),                                             icon: FileText,     color: 'green'  },
           { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'shortlisted').length),     icon: CheckCircle2, color: 'purple' },
           { label: 'Approval Status', value: approvalLabel,                                                   icon: Shield,       color: eligible ? 'green' : 'yellow' },
@@ -420,7 +429,9 @@ function SupplierHome({ bids, onBid, eligible, profile, onResubmitted, setToast 
           </div>
           {available.length === 0 ? (
             <div style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
-              You have already submitted bids on all available projects.
+              {projects.length === 0
+                ? 'No open procurements match your registered categories yet.'
+                : 'You have already submitted bids on all eligible procurements.'}
             </div>
           ) : (
             <div className="sd-projects-list">
@@ -496,7 +507,7 @@ function SupplierHome({ bids, onBid, eligible, profile, onResubmitted, setToast 
   )
 }
 
-function SupplierProjects({ bids, onBid, eligible }) {
+function SupplierProjects({ projects, bids, onBid, eligible }) {
   const [modal, setModal] = useState(null)
   const alreadyBid = new Set(bids.map(b => b.projectId))
 
@@ -505,34 +516,40 @@ function SupplierProjects({ bids, onBid, eligible }) {
       {modal && <BidModal project={modal} onClose={() => setModal(null)} onSubmit={(proj, form) => { onBid(proj, form); setModal(null) }} />}
       <div className="sd-card">
         <div className="sd-card-header">
-          <div><h2>Available Projects</h2><p>Browse and bid on open procurement projects</p></div>
+          <div><h2>Open Procurements</h2><p>Procurements open for bidding that match your registered categories</p></div>
         </div>
-        <table className="sd-table">
-          <thead>
-            <tr><th>ID</th><th>Project</th><th>Budget</th><th>Category</th><th>Deadline</th><th></th></tr>
-          </thead>
-          <tbody>
-            {OPEN_PROJECTS.map(p => (
-              <tr key={p.id}>
-                <td className="sd-mono">{p.id}</td>
-                <td>
-                  <div className="sd-bold">{p.name}</div>
-                  <div className="sd-muted sd-small" style={{ maxWidth: 220 }}>{p.description}</div>
-                </td>
-                <td>{p.budget}</td>
-                <td><span className="badge badge-blue">{p.category}</span></td>
-                <td className="sd-muted">{p.deadline}</td>
-                <td>
-                  {alreadyBid.has(p.id)
-                    ? <span className="badge badge-green">Bid Submitted</span>
-                    : eligible
-                    ? <button className="sd-bid-btn-table" onClick={() => setModal(p)}>Submit Bid</button>
-                    : <span className="badge badge-yellow"><Lock size={11} /> Locked</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {projects.length === 0 ? (
+          <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
+            No open procurements match your categories right now. Check back later.
+          </div>
+        ) : (
+          <table className="sd-table">
+            <thead>
+              <tr><th>ID</th><th>Project</th><th>Budget</th><th>Category</th><th>Deadline</th><th></th></tr>
+            </thead>
+            <tbody>
+              {projects.map(p => (
+                <tr key={p.id}>
+                  <td className="sd-mono">{p.id}</td>
+                  <td>
+                    <div className="sd-bold">{p.name}</div>
+                    <div className="sd-muted sd-small" style={{ maxWidth: 220 }}>{p.description}</div>
+                  </td>
+                  <td>{p.budget}</td>
+                  <td><span className="badge badge-blue">{p.category}</span></td>
+                  <td className="sd-muted">{p.deadline}</td>
+                  <td>
+                    {alreadyBid.has(p.id)
+                      ? <span className="badge badge-green">Bid Submitted</span>
+                      : eligible
+                      ? <button className="sd-bid-btn-table" onClick={() => setModal(p)}>Submit Bid</button>
+                      : <span className="badge badge-yellow"><Lock size={11} /> Locked</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   )
@@ -547,7 +564,7 @@ function SupplierBids({ bids, onWithdraw }) {
         <BidDetailModal
           bid={bids[detail]}
           onClose={() => setDetail(null)}
-          onWithdraw={() => { onWithdraw(detail); setDetail(null) }}
+          onWithdraw={() => { onWithdraw(bids[detail].id); setDetail(null) }}
         />
       )}
       <div className="sd-card">
@@ -782,35 +799,50 @@ function SupplierProfile() {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 
+// Module-level cache so the supplier's profile shows instantly on revisit
+// instead of flashing empty while it refetches.
+let myProfileCache = null
+
 export default function SupplierDashboard() {
   const loc = useLocation()
-  const [bids, setBids] = useState(INITIAL_BIDS)
-  const [profile, setProfile] = useState(null)
+  const [profile, setProfile] = useState(myProfileCache)
+  const [projects, setProjects] = useState([])   // eligible (published + category match)
+  const [bids, setBids] = useState([])
   const [toast, setToast] = useState(null)
 
   const loadProfile = () => {
     apiGetMySupplier()
-      .then(setProfile)
-      .catch(() => setProfile(null))
+      .then(p => { myProfileCache = p; setProfile(p) })
+      // Keep showing cached profile if a background refresh fails.
+      .catch(() => { if (!myProfileCache) setProfile(null) })
   }
-  useEffect(loadProfile, [])
+  // Backend returns only the projects this supplier is eligible for.
+  const loadProjects = () => { apiListProjects().then(d => setProjects(d.map(mapProject))).catch(() => {}) }
+  const loadBids = () => { apiListMyBids().then(d => setBids(d.map(mapBid))).catch(() => {}) }
+  useEffect(() => { loadProfile(); loadProjects(); loadBids() }, [])
 
   // Verification is the real bidding gate (the admin approve action sets this).
   const eligible = profile?.qualification_status === 'verified'
 
-  const submitBid = (project, form) => {
-    const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-    setBids(prev => [{
-      project:   project.name,
-      projectId: project.id,
-      amount:    form.amount,
-      submitted: today,
-      status:    'submitted',
-      notes:     form.notes,
-    }, ...prev])
+  const submitBid = async (project, form) => {
+    try {
+      await apiSubmitBid(project.pk, parseAmount(form.amount), form.notes || '')
+      loadBids()
+      setToast({ type: 'success', message: 'Bid submitted successfully.' })
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Could not submit your bid.' })
+    }
   }
 
-  const withdrawBid = (idx) => setBids(prev => prev.filter((_, i) => i !== idx))
+  const withdrawBid = async (bidId) => {
+    try {
+      await apiWithdrawBid(bidId)
+      loadBids()
+      setToast({ type: 'success', message: 'Bid withdrawn.' })
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Could not withdraw the bid.' })
+    }
+  }
 
   const TITLES = {
     '/supplier':         'Dashboard',
@@ -829,12 +861,12 @@ export default function SupplierDashboard() {
         {toast && <SupplierToast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
         <div className="sd-body">
           <Routes>
-            <Route index element={<SupplierHome bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} />} />
-            <Route path="projects" element={<SupplierProjects bids={bids} onBid={submitBid} eligible={eligible} />} />
+            <Route index element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} />} />
+            <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} />} />
             <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="profile"  element={<SupplierProfile />} />
-            <Route path="*"        element={<SupplierHome bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} />} />
+            <Route path="*"        element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} />} />
           </Routes>
         </div>
       </div>

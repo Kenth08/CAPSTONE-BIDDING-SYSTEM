@@ -37,38 +37,11 @@
   color: var(--text-dark);
   margin-bottom: 8px;
 }
-.login-left > p {
+.login-subtitle {
   font-size: 14px;
   color: var(--text-gray);
   margin-bottom: 28px;
   line-height: 1.6;
-}
-.login-role-tabs {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 24px;
-  background: var(--light-bg);
-  border-radius: 10px;
-  padding: 4px;
-}
-.login-role-tabs button {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px;
-  border-radius: 7px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-gray);
-  background: transparent;
-  transition: all 0.2s;
-}
-.login-role-tabs button.active {
-  background: white;
-  color: var(--text-dark);
-  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
 }
 .login-form {
   display: flex;
@@ -132,11 +105,6 @@
   font-weight: 500;
   padding: 10px 12px;
   border-radius: 8px;
-}
-.login-hint {
-  font-size: 12px;
-  color: var(--text-gray);
-  text-align: center;
 }
 .login-switch {
   text-align: center;

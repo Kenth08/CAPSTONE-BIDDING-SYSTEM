@@ -19,14 +19,35 @@ export function clearSession() {
 export const getToken = () => localStorage.getItem('access')
 export const getRole = () => localStorage.getItem('role')
 
+// Pulls a readable message out of a DRF error body, whatever its shape:
+// { detail: "x" } | { detail: ["x"] } | { field: ["x"] } | "x".
+function readError(body, fallback) {
+  if (!body) return fallback
+  if (typeof body === 'string') return body
+  if (body.detail) return Array.isArray(body.detail) ? body.detail.join(' ') : body.detail
+  const first = Object.values(body)[0]
+  if (first) return Array.isArray(first) ? first.join(' ') : String(first)
+  return fallback
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
-export async function apiLogin(username, password) {
-  const res = await fetch(`${API_URL}/auth/login/`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  })
-  if (!res.ok) throw new Error('Invalid username or password.')
+// `identifier` is the username OR email — the backend accepts either and returns
+// the account's real role, so there is a single login for all roles.
+export async function apiLogin(identifier, password) {
+  let res
+  try {
+    res = await fetch(`${API_URL}/auth/login/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: identifier, password }),
+    })
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(readError(body, 'Unable to sign in. Please check your credentials.'))
+  }
   return res.json() // { access, refresh, user }
 }
 
@@ -84,8 +105,8 @@ async function apiUpload(path, formData, method = 'POST') {
     throw new Error('Session expired. Please log in again.')
   }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `Upload failed (${res.status}).`)
+    const err = await res.json().catch(() => null)
+    throw new Error(readError(err, `Upload failed (${res.status}).`))
   }
   return res.status === 204 ? null : res.json()
 }
@@ -106,3 +127,23 @@ export const apiSupplierRequestRevision = (id, { note, documents }) =>
 // Logged-in supplier's own profile + document re-submission.
 export const apiGetMySupplier = () => apiFetch('/suppliers/me/')
 export const apiResubmitDocuments = (formData) => apiUpload('/suppliers/resubmit/', formData)
+
+// ── Projects (admin create + head approval flow) ───────────────────────────────
+export const apiListProjects = () => apiFetch('/projects/')
+// Create is multipart (procurement documents are uploaded with the form).
+export const apiCreateProject = (formData) => apiUpload('/projects/', formData)
+export const apiApproveProject = (id) =>
+  apiFetch(`/projects/${id}/approve/`, { method: 'POST', body: '{}' })
+export const apiRejectProject = (id, reason) =>
+  apiFetch(`/projects/${id}/reject/`, { method: 'POST', body: JSON.stringify({ reason }) })
+export const apiPublishProject = (id) =>
+  apiFetch(`/projects/${id}/publish/`, { method: 'POST', body: '{}' })
+
+// ── Bidding (supplier) ─────────────────────────────────────────────────────────
+export const apiListMyBids = () => apiFetch('/bids/')
+export const apiSubmitBid = (projectId, amount, notes) =>
+  apiFetch(`/projects/${projectId}/bid/`, {
+    method: 'POST', body: JSON.stringify({ amount, notes }),
+  })
+export const apiWithdrawBid = (bidId) =>
+  apiFetch(`/bids/${bidId}/`, { method: 'DELETE' })

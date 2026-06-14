@@ -5,17 +5,14 @@ import {
   CheckCircle2, AlertCircle,
 } from 'lucide-react'
 import { apiRegisterSupplier } from '../api'
+import { CATEGORIES } from '../constants/categories'
 import '../style/SupplierRegister.css'
 
 // ── Static config ─────────────────────────────────────────────────────────────
 const STEPS = ['Basic Info', 'Documents', 'Declaration', 'Submit']
 
-const BUSINESS_TYPES = [
-  'IT Equipment', 'Office Supplies', 'Construction Materials', 'Medical Supplies',
-  'ICT Services', 'Electrical Supplies', 'Furniture and Fixtures', 'Janitorial Supplies',
-  'Food and Catering Services', 'Printing Services', 'Repair and Maintenance Services',
-  'Security Services', 'Transportation Services', 'Agricultural Supplies', 'Other',
-]
+// Shared with the procurement category list so eligibility matching lines up.
+const BUSINESS_TYPES = CATEGORIES
 
 // key = backend field name, required = must upload to register
 const LEGAL_DOCS = [

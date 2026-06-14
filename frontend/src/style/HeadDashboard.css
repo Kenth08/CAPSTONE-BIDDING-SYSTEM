@@ -667,6 +667,37 @@
 }
 .hd-pending-desc-meta > div { display: flex; flex-direction: column; gap: 2px; }
 
+.hd-doc-review {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--light-border);
+}
+.hd-doc-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.hd-doc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary, #10b981);
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.hd-doc-link:hover { background: #dcfce7; }
+.hd-doc-missing {
+  color: #94a3b8;
+  background: #f8fafc;
+  border-color: var(--light-border);
+  font-weight: 500;
+}
+
 /* SMALL APPROVE / REJECT BUTTONS IN CARD */
 .hd-btn-approve {
   display: inline-flex;

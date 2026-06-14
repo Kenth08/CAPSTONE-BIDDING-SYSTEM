@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
@@ -10,6 +10,8 @@ import {
   clearSession, apiListSuppliers, apiGetSupplier,
   apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision,
 } from '../api'
+import { useProjects, createProject, publishProject } from '../store/projectsStore'
+import { CATEGORIES } from '../constants/categories'
 import '../style/AdminDashboard.css'
 
 const NAV = [
@@ -20,23 +22,6 @@ const NAV = [
   { icon: Pencil,          label: 'Bids',      to: '/admin/bids' },
   { icon: Award,           label: 'Awards',    to: '/admin/awards' },
   { icon: BarChart2,       label: 'Reports',   to: '/admin/reports' },
-]
-
-const INITIAL_PROJECTS = [
-  {
-    id: 'P-2026-001', name: 'computer',
-    budget: '₱2,000', deadline: '6/3/2026',
-    type: 'ICT Services', eligibleTypes: 'Open to All',
-    bids: 1, status: 'awarded',
-    description: 'Procurement of computer units for office use.',
-  },
-  {
-    id: 'P-2026-002', name: 'chair/table',
-    budget: '₱100,000', deadline: '7/10/2026',
-    type: 'IT Equipment', eligibleTypes: 'Open to All',
-    bids: 1, status: 'awarded',
-    description: 'Procurement of chairs and tables for conference rooms.',
-  },
 ]
 
 const INITIAL_AWARDS = [
@@ -50,11 +35,11 @@ const EXPIRING_DOCS = [
 ]
 
 const STATUS_LABEL = {
-  draft: 'Draft', pending_head: 'Pending', approved: 'Approved',
-  published: 'Active', awarded: 'Awarded', closed: 'Closed', active: 'Active',
+  draft: 'Draft', pending_head: 'Pending', approved: 'Approved', rejected: 'Rejected',
+  published: 'Open for Bidding', awarded: 'Awarded', closed: 'Closed', active: 'Active',
 }
 const STATUS_CLS = {
-  draft: 'badge-gray', pending_head: 'badge-yellow', approved: 'badge-green',
+  draft: 'badge-gray', pending_head: 'badge-yellow', approved: 'badge-green', rejected: 'badge-red',
   published: 'badge-blue', awarded: 'badge-awarded', active: 'badge-blue',
 }
 
@@ -157,7 +142,9 @@ function Header({ title }) {
 
 // ── Dashboard Home ────────────────────────────────────────────────────────────
 
-function DashboardHome({ projects, awards }) {
+function DashboardHome() {
+  const { projects, loading } = useProjects()
+  const awards = INITIAL_AWARDS
   const [tab, setTab] = useState('All')
   const TABS = ['All', 'Draft', 'Active', 'Closed', 'Awarded']
 
@@ -216,7 +203,9 @@ function DashboardHome({ projects, awards }) {
               ))}
             </div>
             <div className="ad-project-list">
-              {filtered.length === 0
+              {loading && filtered.length === 0
+                ? <div className="ad-empty-msg">Loading projects…</div>
+                : filtered.length === 0
                 ? <div className="ad-empty-msg">No projects in this category.</div>
                 : filtered.map(p => (
                   <div className="ad-project-row" key={p.id}>
@@ -288,29 +277,23 @@ function DashboardHome({ projects, awards }) {
 
 // ── Projects Page ─────────────────────────────────────────────────────────────
 
-function ProjectsPage({ projects, onAdd }) {
+function ProjectsPage() {
+  const { projects, loading } = useProjects()
   const [filterTab, setFilterTab] = useState('All')
   const [search, setSearch] = useState('')
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ name: '', budget: '', deadline: '', type: 'ICT Services', description: '' })
-  const FILTER_TABS = ['All', 'Draft', 'Active', 'Closed', 'Awarded']
-  const TYPES = ['ICT Services', 'IT Equipment', 'Infrastructure', 'Medical', 'Education', 'Other']
+  const FILTER_TABS = ['All', 'Active', 'Closed', 'Awarded']
 
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    onAdd(form)
-    setForm({ name: '', budget: '', deadline: '', type: 'ICT Services', description: '' })
-    setShowForm(false)
-  }
+  // Only projects the Head has already approved appear here. Projects still being
+  // planned, awaiting approval, or rejected stay on the Planning page.
+  const approved = projects.filter(p => !['draft', 'pending_head', 'rejected'].includes(p.status))
 
-  const filtered = projects.filter(p => {
+  const filtered = approved.filter(p => {
     const q = search.toLowerCase()
     const matchSearch = !q || p.name.toLowerCase().includes(q)
     const matchTab =
       filterTab === 'All'     ? true :
       filterTab === 'Awarded' ? p.status === 'awarded' :
-      filterTab === 'Active'  ? (p.status === 'published' || p.status === 'active') :
-      filterTab === 'Draft'   ? p.status === 'draft' :
+      filterTab === 'Active'  ? (p.status === 'approved' || p.status === 'published' || p.status === 'active') :
       filterTab === 'Closed'  ? p.status === 'closed' : true
     return matchSearch && matchTab
   })
@@ -329,45 +312,8 @@ function ProjectsPage({ projects, onAdd }) {
               <Search size={14} />
               <input placeholder="Search projects" value={search} onChange={e => setSearch(e.target.value)} />
             </div>
-            <button className="ad-btn-primary" onClick={() => setShowForm(v => !v)}>
-              <Plus size={14} /> {showForm ? 'Cancel' : 'Create Project'}
-            </button>
           </div>
         </div>
-
-        {showForm && (
-          <div className="ad-form-wrap">
-            <div className="ad-form-title">Create New Project</div>
-            <form onSubmit={handleSubmit} className="ad-form-grid">
-              <div className="ad-form-group">
-                <label>Project Title</label>
-                <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required />
-              </div>
-              <div className="ad-form-group">
-                <label>Budget</label>
-                <input value={form.budget} onChange={e => setForm({ ...form, budget: e.target.value })} placeholder="e.g. ₱50,000" required />
-              </div>
-              <div className="ad-form-group">
-                <label>Deadline</label>
-                <input type="date" value={form.deadline} onChange={e => setForm({ ...form, deadline: e.target.value })} required />
-              </div>
-              <div className="ad-form-group">
-                <label>Type</label>
-                <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
-                  {TYPES.map(t => <option key={t}>{t}</option>)}
-                </select>
-              </div>
-              <div className="ad-form-group ad-form-full">
-                <label>Description</label>
-                <textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={3} required />
-              </div>
-              <div className="ad-form-actions">
-                <button type="button" className="ad-btn-cancel" onClick={() => setShowForm(false)}>Cancel</button>
-                <button type="submit" className="ad-btn-primary">Create Project</button>
-              </div>
-            </form>
-          </div>
-        )}
 
         <table className="ad-table">
           <thead>
@@ -377,8 +323,10 @@ function ProjectsPage({ projects, onAdd }) {
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0
-              ? <tr><td colSpan={7} className="ad-empty-row">No projects found.</td></tr>
+            {loading && filtered.length === 0
+              ? <tr><td colSpan={7} className="ad-empty-row">Loading projects…</td></tr>
+              : filtered.length === 0
+              ? <tr><td colSpan={7} className="ad-empty-row">No approved projects yet.</td></tr>
               : filtered.map(p => (
                 <tr key={p.id}>
                   <td className="ad-bold">{p.name}</td>
@@ -393,8 +341,8 @@ function ProjectsPage({ projects, onAdd }) {
                   </td>
                   <td>
                     <div className="ad-actions">
+                      {p.status === 'approved' && <PublishButton project={p} />}
                       <button className="ad-btn-view-sm"><Eye size={12} /> View Bids</button>
-                      <button className="ad-btn-archive">Archive</button>
                     </div>
                   </td>
                 </tr>
@@ -407,11 +355,113 @@ function ProjectsPage({ projects, onAdd }) {
   )
 }
 
+// Publishes an approved procurement so eligible suppliers can start bidding.
+function PublishButton({ project }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const onPublish = async () => {
+    setBusy(true); setErr('')
+    try { await publishProject(project.id) }
+    catch (e) { setErr(e.message || 'Publish failed.'); setBusy(false) }
+  }
+  return (
+    <>
+      <button className="ad-btn-publish" onClick={onPublish} disabled={busy}>
+        {busy ? 'Publishing…' : 'Publish'}
+      </button>
+      {err && <span style={{ color: '#ef4444', fontSize: 11, marginLeft: 6 }}>{err}</span>}
+    </>
+  )
+}
+
 // ── Planning Page ─────────────────────────────────────────────────────────────
 
-function PlanningPage({ projects }) {
+const PROCUREMENT_TYPES = ['Goods', 'Services', 'Infrastructure', 'Consulting Services']
+const EMPTY_PROJECT = {
+  name: '', category: '', type: 'Goods', budget: '',
+  delivery_location: '', deadline: '', expected_delivery_date: '', description: '',
+}
+const REQUIRED_PROCUREMENT_DOCS = [
+  { key: 'purchase_request', label: 'Purchase Request (PR)' },
+  { key: 'technical_specifications', label: 'Technical Specifications' },
+  { key: 'terms_of_reference', label: 'Terms of Reference (TOR)' },
+  { key: 'approved_budget_document', label: 'Approved Budget Document' },
+  { key: 'bid_evaluation_criteria', label: 'Bid Evaluation Criteria' },
+]
+const DOC_EXT = ['pdf', 'jpg', 'jpeg', 'png']
+const checkDoc = (f) => {
+  const ext = f.name.split('.').pop().toLowerCase()
+  if (!DOC_EXT.includes(ext)) return `Unsupported type ".${ext}". Use PDF, JPG, or PNG.`
+  if (f.size > 5 * 1024 * 1024) return 'File is too large (max 5 MB).'
+  return ''
+}
+
+// Single document upload control used in the procurement creation form.
+function DocUploader({ doc, file, onFile, onRemove }) {
+  const inputId = `doc-${doc.key}`
+  return (
+    <div className="ad-doc-field">
+      <div className="ad-doc-label">{doc.label} <span className="ad-doc-req">Required</span></div>
+      {file ? (
+        <div className="ad-doc-file">
+          <FileText size={14} />
+          <span className="ad-doc-name" title={file.name}>{file.name}</span>
+          <button type="button" onClick={onRemove} aria-label="Remove"><X size={14} /></button>
+        </div>
+      ) : (
+        <label htmlFor={inputId} className="ad-doc-upload">
+          <FileText size={14} /> Upload file
+        </label>
+      )}
+      <input id={inputId} type="file" accept=".pdf,.jpg,.jpeg,.png" hidden
+        onChange={e => onFile(doc.key, e.target.files[0])} />
+    </div>
+  )
+}
+
+function PlanningPage() {
+  const { projects, loading } = useProjects()
   const [search, setSearch] = useState('')
-  const filtered = projects.filter(p => {
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState(EMPTY_PROJECT)
+  const [files, setFiles] = useState({})        // { docKey: File }
+  const [submitting, setSubmitting] = useState(false)
+  const [submitErr, setSubmitErr] = useState('')
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  const onDoc = (key, file) => {
+    if (!file) return
+    const msg = checkDoc(file)
+    if (msg) { setSubmitErr(`${key.replace(/_/g, ' ')}: ${msg}`); return }
+    setSubmitErr('')
+    setFiles(f => ({ ...f, [key]: file }))
+  }
+
+  const resetForm = () => { setForm(EMPTY_PROJECT); setFiles({}); setShowForm(false) }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    const missingDocs = REQUIRED_PROCUREMENT_DOCS.filter(d => !files[d.key])
+    if (!form.category) { setSubmitErr('Select a procurement category.'); return }
+    if (missingDocs.length) {
+      setSubmitErr(`Upload all required documents (${missingDocs.length} missing).`); return
+    }
+    setSubmitErr(''); setSubmitting(true)
+    try {
+      await createProject(form, files)
+      resetForm()
+    } catch (err) {
+      setSubmitErr(err.message || 'Could not create the project. Please try again.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  // Planning holds projects still in the pipeline: drafts, those awaiting the
+  // Head's approval, and any the Head rejected. Approved projects move to Projects.
+  const planning = projects.filter(p => ['draft', 'pending_head', 'rejected'].includes(p.status))
+
+  const filtered = planning.filter(p => {
     const q = search.toLowerCase()
     return !q || p.name.toLowerCase().includes(q) || p.type.toLowerCase().includes(q)
   })
@@ -424,8 +474,83 @@ function PlanningPage({ projects }) {
             <Search size={14} />
             <input placeholder="Search by title or type" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
-          <button className="ad-btn-primary"><Plus size={14} /> New Request</button>
+          <button className="ad-btn-primary" onClick={() => setShowForm(v => !v)}>
+            <Plus size={14} /> {showForm ? 'Cancel' : 'Create Project'}
+          </button>
         </div>
+
+        {showForm && (
+          <div className="ad-form-wrap">
+            <div className="ad-form-title">Create New Procurement</div>
+            <form onSubmit={handleSubmit} className="ad-form-grid">
+              <div className="ad-form-group ad-form-full">
+                <label>Project Title</label>
+                <input value={form.name} onChange={e => set('name', e.target.value)} required />
+              </div>
+              <div className="ad-form-group">
+                <label>Procurement Category</label>
+                <select value={form.category} onChange={e => set('category', e.target.value)} required>
+                  <option value="" disabled>Select a category…</option>
+                  {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="ad-form-group">
+                <label>Procurement Type</label>
+                <select value={form.type} onChange={e => set('type', e.target.value)}>
+                  {PROCUREMENT_TYPES.map(t => <option key={t}>{t}</option>)}
+                </select>
+              </div>
+              <div className="ad-form-group">
+                <label>Approved Budget (ABC)</label>
+                <input value={form.budget} onChange={e => set('budget', e.target.value)} placeholder="e.g. ₱50,000" required />
+              </div>
+              <div className="ad-form-group">
+                <label>Delivery Location</label>
+                <input value={form.delivery_location} onChange={e => set('delivery_location', e.target.value)} placeholder="e.g. Main Campus" required />
+              </div>
+              <div className="ad-form-group">
+                <label>Bid Submission Deadline</label>
+                <input type="date" value={form.deadline} onChange={e => set('deadline', e.target.value)} required />
+              </div>
+              <div className="ad-form-group">
+                <label>Expected Delivery Date</label>
+                <input type="date" value={form.expected_delivery_date} onChange={e => set('expected_delivery_date', e.target.value)} required />
+              </div>
+              <div className="ad-form-group ad-form-full">
+                <label>Project Description</label>
+                <textarea value={form.description} onChange={e => set('description', e.target.value)} rows={3} required />
+              </div>
+
+              <div className="ad-form-full">
+                <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-dark)' }}>
+                  Required Procurement Documents
+                </label>
+                <div className="ad-muted ad-small" style={{ marginBottom: 10 }}>
+                  PDF, JPG, or PNG · max 5 MB each. All are required before submitting for approval.
+                </div>
+                <div className="ad-doc-grid">
+                  {REQUIRED_PROCUREMENT_DOCS.map(d => (
+                    <DocUploader key={d.key} doc={d} file={files[d.key]} onFile={onDoc}
+                      onRemove={() => setFiles(f => { const n = { ...f }; delete n[d.key]; return n })} />
+                  ))}
+                </div>
+              </div>
+
+              {submitErr && (
+                <div className="ad-form-full" style={{ color: '#ef4444', fontSize: 13, fontWeight: 500 }}>
+                  {submitErr}
+                </div>
+              )}
+              <div className="ad-form-actions">
+                <button type="button" className="ad-btn-cancel" onClick={resetForm}>Cancel</button>
+                <button type="submit" className="ad-btn-primary" disabled={submitting}>
+                  {submitting ? 'Submitting…' : 'Submit for Head Approval'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
         <table className="ad-table">
           <thead>
             <tr>
@@ -434,19 +559,31 @@ function PlanningPage({ projects }) {
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0
-              ? <tr><td colSpan={6} className="ad-empty-row">No planning requests found.</td></tr>
+            {loading && filtered.length === 0
+              ? <tr><td colSpan={6} className="ad-empty-row">Loading projects…</td></tr>
+              : filtered.length === 0
+              ? <tr><td colSpan={6} className="ad-empty-row">No planning requests yet. Click “Create Project” to add one.</td></tr>
               : filtered.map(p => (
                 <tr key={p.id}>
-                  <td className="ad-bold">{p.name}</td>
+                  <td className="ad-bold">
+                    {p.name}
+                    {p.status === 'rejected' && p.rejectReason && (
+                      <div className="ad-muted ad-small" style={{ fontWeight: 400, marginTop: 2 }}>
+                        Reason: {p.rejectReason}
+                      </div>
+                    )}
+                  </td>
                   <td>{p.budget}</td>
                   <td>{p.type}</td>
                   <td className="ad-muted">{p.deadline}</td>
-                  <td><span className="badge badge-green">• Approved</span></td>
+                  <td>
+                    <span className={`badge ${STATUS_CLS[p.status] || 'badge-gray'}`}>
+                      • {STATUS_LABEL[p.status] || p.status}
+                    </span>
+                  </td>
                   <td>
                     <div className="ad-actions">
                       <button className="ad-btn-view-sm"><Eye size={12} /> View Details</button>
-                      <button className="ad-btn-publish">Published</button>
                     </div>
                   </td>
                 </tr>
@@ -478,9 +615,26 @@ const SUP_STATUS_CLS = {
   rejected: 'badge-red', pending: 'badge-yellow',
 }
 
+// Module-level cache: the supplier list survives navigating away and back, so
+// returning to this page shows data instantly instead of a full "Loading…" pass.
+let supplierCache = null
+
+// Placeholder row shown while the supplier list loads (matches the 8 columns).
+function SupplierRowSkeleton() {
+  const widths = ['70%', '60%', '80%', '50%', '65%', '55%', '60%', '40%']
+  return (
+    <tr>
+      {widths.map((w, i) => (
+        <td key={i}><span className="ad-skel" style={{ width: w }} /></td>
+      ))}
+    </tr>
+  )
+}
+
 function SuppliersPage() {
-  const [suppliers, setSuppliers] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [suppliers, setSuppliers] = useState(supplierCache || [])
+  // Only show the loader on the very first load (when we have nothing cached yet).
+  const [loading, setLoading] = useState(supplierCache === null)
   const [error, setError] = useState('')
   const [filterTab, setFilterTab] = useState('All')
   const [search, setSearch] = useState('')
@@ -488,14 +642,19 @@ function SuppliersPage() {
   const [toast, setToast] = useState(null) // { type, message }
   const TABS = ['All', 'Pending', 'Approved', 'Rejected']
 
-  const load = () => {
-    setLoading(true)
+  // `background` = refresh silently without blanking the table (used on revisit
+  // and after a review action, since we already have data to show).
+  const load = ({ background = false } = {}) => {
+    if (!background) setLoading(true)
     apiListSuppliers()
-      .then(data => { setSuppliers(data); setError('') })
-      .catch(err => setError(err.message))
+      .then(data => { supplierCache = data; setSuppliers(data); setError('') })
+      // A failed background refresh must NOT wipe data we're already showing —
+      // only surface the error when the table is empty (i.e. the first load).
+      .catch(err => { if (!supplierCache) setError(err.message) })
       .finally(() => setLoading(false))
   }
-  useEffect(load, [])
+  // First visit: show the loader. Revisit (cache present): refresh in background.
+  useEffect(() => { load({ background: supplierCache !== null }) }, [])
 
   const showToast = (type, message) => setToast({ type, message })
 
@@ -521,7 +680,7 @@ function SuppliersPage() {
         <SupplierDetailModal
           supplierId={viewId}
           onClose={() => setViewId(null)}
-          onReviewed={(message) => { showToast('success', message); load() }}
+          onReviewed={(message) => { showToast('success', message); load({ background: true }) }}
         />
       )}
 
@@ -546,7 +705,7 @@ function SuppliersPage() {
           </thead>
           <tbody>
             {loading
-              ? <tr><td colSpan={8} className="ad-empty-row">Loading suppliers…</td></tr>
+              ? Array.from({ length: 5 }).map((_, i) => <SupplierRowSkeleton key={i} />)
               : error
               ? <tr><td colSpan={8} className="ad-empty-row">{error}</td></tr>
               : filtered.length === 0
@@ -585,28 +744,68 @@ function SuppliersPage() {
 
 // ── Supplier detail / review modal ────────────────────────────────────────────
 
+// Per-supplier detail cache so reopening the same supplier's profile is instant.
+const supplierDetailCache = new Map()
+
+// Placeholder layout shown while a supplier's profile loads in the modal.
+function SupplierDetailSkeleton() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <span className="ad-skel" style={{ width: 90, height: 22, borderRadius: 12 }} />
+        <span className="ad-skel" style={{ width: 120, height: 22, borderRadius: 12 }} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <span className="ad-skel" style={{ width: '40%', height: 10 }} />
+            <span className="ad-skel" style={{ width: '75%' }} />
+          </div>
+        ))}
+      </div>
+      {Array.from({ length: 3 }).map((_, i) => (
+        <span key={i} className="ad-skel" style={{ width: '100%', height: 40, borderRadius: 8 }} />
+      ))}
+    </div>
+  )
+}
+
+// Builds the initial "needs revision" flags from a supplier's documents.
+const initFlagsFrom = (data) => {
+  const initial = {}
+  ;(data?.documents || []).forEach(d => {
+    if (d.review_status === 'needs_revision') initial[d.key] = { checked: true, note: d.review_note || '' }
+  })
+  return initial
+}
+
 function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
-  const [supplier, setSupplier] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const cached = supplierDetailCache.get(supplierId)
+  const [supplier, setSupplier] = useState(cached || null)
+  const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState('')
-  const [flags, setFlags] = useState({})   // { key: { checked, note } }
-  const [note, setNote] = useState('')      // overall message
+  // Seed the editable fields from cache so a reopened modal is fully populated.
+  const [flags, setFlags] = useState(() => initFlagsFrom(cached))   // { key: { checked, note } }
+  const [note, setNote] = useState(cached?.admin_notes || '')        // overall message
   const [confirm, setConfirm] = useState(null) // { title, message, tone, onConfirm }
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
+    const hadCache = supplierDetailCache.has(supplierId)
+    if (!hadCache) setLoading(true)
     apiGetSupplier(supplierId)
       .then(data => {
+        supplierDetailCache.set(supplierId, data)
         setSupplier(data)
-        setNote(data.admin_notes || '')
-        // Pre-fill flags from any existing revision request.
-        const initial = {}
-        ;(data.documents || []).forEach(d => {
-          if (d.review_status === 'needs_revision') initial[d.key] = { checked: true, note: d.review_note || '' }
-        })
-        setFlags(initial)
+        // Only seed the editable fields on the first load — don't overwrite the
+        // admin's in-progress edits when a background refresh resolves.
+        if (!hadCache) {
+          setNote(data.admin_notes || '')
+          setFlags(initFlagsFrom(data))
+        }
       })
-      .catch(err => setError(err.message))
+      // A failed background refresh keeps the cached profile on screen.
+      .catch(err => { if (!supplierDetailCache.has(supplierId)) setError(err.message) })
       .finally(() => setLoading(false))
   }, [supplierId])
 
@@ -625,6 +824,9 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
     setBusy(true)
     try {
       await fn()
+      // The action changed this supplier — drop the stale detail cache so a
+      // reopen reloads fresh (the list refresh is handled by onReviewed).
+      supplierDetailCache.delete(supplierId)
       onReviewed(successMsg)
       onClose()
     } catch (err) {
@@ -674,7 +876,9 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
       <div className="ad-modal" onClick={e => e.stopPropagation()}>
         <div className="ad-modal-header">
           <div>
-            <h3>{loading ? 'Loading…' : supplier?.company}</h3>
+            {loading
+              ? <span className="ad-skel" style={{ width: 180, height: 18 }} />
+              : <h3>{supplier?.company}</h3>}
             {!loading && supplier && (
               <p className="ad-muted ad-small">{supplier.full_name || supplier.contact} · {supplier.email}</p>
             )}
@@ -683,7 +887,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
         </div>
 
         {loading ? (
-          <div className="ad-modal-body" style={{ padding: 40, textAlign: 'center' }}>Loading supplier profile…</div>
+          <div className="ad-modal-body"><SupplierDetailSkeleton /></div>
         ) : !supplier ? (
           <div className="ad-modal-body" style={{ padding: 40, textAlign: 'center' }}>{error || 'Could not load supplier.'}</div>
         ) : (
@@ -834,11 +1038,16 @@ function Toast({ type, message, onClose }) {
 
 // ── Bids Page ─────────────────────────────────────────────────────────────────
 
-function BidsPage({ projects }) {
+function BidsPage() {
+  const { projects, loading } = useProjects()
   const [filterTab, setFilterTab] = useState('All')
   const TABS = ['All', 'Goods', 'Services', 'Infrastructure', 'More']
 
-  const filtered = projects.filter(p => {
+  // Only Head-approved projects can receive/evaluate bids — not drafts, items
+  // still awaiting approval, or rejected ones (those stay in Planning).
+  const biddable = projects.filter(p => !['draft', 'pending_head', 'rejected'].includes(p.status))
+
+  const filtered = biddable.filter(p => {
     if (filterTab === 'All')            return true
     if (filterTab === 'Services')       return p.type.includes('Services')
     if (filterTab === 'Goods')          return p.type.includes('Equipment') || p.type.includes('Goods')
@@ -858,8 +1067,10 @@ function BidsPage({ projects }) {
         ))}
       </div>
       <div className="ad-bid-cards">
-        {filtered.length === 0
-          ? <div className="ad-empty-msg">No projects found.</div>
+        {loading && filtered.length === 0
+          ? <div className="ad-empty-msg">Loading projects…</div>
+          : filtered.length === 0
+          ? <div className="ad-empty-msg">No projects available for bidding yet.</div>
           : filtered.map(p => (
             <div className="ad-bid-card" key={p.id}>
               <div className="ad-bid-card-top">
@@ -888,7 +1099,8 @@ function BidsPage({ projects }) {
 
 // ── Awards Page ───────────────────────────────────────────────────────────────
 
-function AwardsPage({ awards }) {
+function AwardsPage() {
+  const awards = INITIAL_AWARDS
   const [search, setSearch] = useState('')
   const filtered = awards.filter(a => {
     const q = search.toLowerCase()
@@ -977,7 +1189,9 @@ function AwardsPage({ awards }) {
 
 // ── Reports Page ──────────────────────────────────────────────────────────────
 
-function ReportsPage({ projects, awards }) {
+function ReportsPage() {
+  const { projects } = useProjects()
+  const awards = INITIAL_AWARDS
   const [reportTab, setReportTab] = useState('procurement')
 
   const totalProjects  = projects.length
@@ -1073,18 +1287,7 @@ function ReportsPage({ projects, awards }) {
 
 export default function AdminDashboard() {
   const loc = useLocation()
-  const idRef = useRef(3)
-  const [projects, setProjects] = useState(INITIAL_PROJECTS)
-  const [awards] = useState(INITIAL_AWARDS)
-
-  const addProject = (form) => {
-    setProjects(prev => [{
-      id: `P-2026-00${idRef.current++}`,
-      name: form.name, budget: form.budget, deadline: form.deadline,
-      type: form.type, eligibleTypes: 'Open to All',
-      bids: 0, status: 'draft', description: form.description,
-    }, ...prev])
-  }
+  // The dashboard shell holds no data — each page below loads its own.
 
   const PAGE_TITLES = {
     '/admin':           'Admin Dashboard',
@@ -1104,14 +1307,14 @@ export default function AdminDashboard() {
         <Header title={title} />
         <div className="ad-body">
           <Routes>
-            <Route index element={<DashboardHome projects={projects} awards={awards} />} />
-            <Route path="projects"  element={<ProjectsPage projects={projects} onAdd={addProject} />} />
-            <Route path="planning"  element={<PlanningPage projects={projects} />} />
+            <Route index element={<DashboardHome />} />
+            <Route path="projects"  element={<ProjectsPage />} />
+            <Route path="planning"  element={<PlanningPage />} />
             <Route path="suppliers" element={<SuppliersPage />} />
-            <Route path="bids"      element={<BidsPage projects={projects} />} />
-            <Route path="awards"    element={<AwardsPage awards={awards} />} />
-            <Route path="reports"   element={<ReportsPage projects={projects} awards={awards} />} />
-            <Route path="*"         element={<DashboardHome projects={projects} awards={awards} />} />
+            <Route path="bids"      element={<BidsPage />} />
+            <Route path="awards"    element={<AwardsPage />} />
+            <Route path="reports"   element={<ReportsPage />} />
+            <Route path="*"         element={<DashboardHome />} />
           </Routes>
         </div>
       </div>

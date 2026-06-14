@@ -688,6 +688,83 @@
   font-size: 13px;
 }
 
+/* ── SKELETON LOADERS ─────────────────────────────────── */
+/* Placeholder shapes shown while data loads so it doesn't pop in abruptly. */
+.ad-skel {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #eef1f5 25%, #e2e8f0 37%, #eef1f5 63%);
+  background-size: 400% 100%;
+  animation: ad-skel-shimmer 1.4s ease infinite;
+}
+@keyframes ad-skel-shimmer {
+  0%   { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ad-skel { animation: none; }
+}
+
+/* ── PROCUREMENT DOC UPLOADERS ────────────────────────── */
+.ad-doc-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.ad-doc-field {
+  border: 1px solid var(--light-border, #e2e8f0);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+}
+.ad-doc-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dark, #0f172a);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ad-doc-req {
+  font-size: 10px;
+  font-weight: 700;
+  color: #b45309;
+  background: #fef3c7;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.ad-doc-upload {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary, #10b981);
+  background: #f0fdf4;
+  border: 1px dashed var(--primary, #10b981);
+  border-radius: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+  width: 100%;
+  justify-content: center;
+}
+.ad-doc-upload:hover { background: #dcfce7; }
+.ad-doc-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dark, #0f172a);
+  background: #f8fafc;
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+.ad-doc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-doc-file button { color: #ef4444; display: flex; }
+@media (max-width: 640px) { .ad-doc-grid { grid-template-columns: 1fr; } }
+
 /* ── BADGES ───────────────────────────────────────────── */
 .badge {
   display: inline-flex;

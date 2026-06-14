@@ -1,20 +1,13 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Shield, Eye, EyeOff, Building2, ArrowLeft, ClipboardCheck } from 'lucide-react'
+import { Shield, Eye, EyeOff, ArrowLeft } from 'lucide-react'
 import { apiLogin, saveSession } from '../api'
 import '../style/LoginPage.css'
-
-const ROLES = [
-  { key: 'admin', label: 'Admin', icon: Shield },
-  { key: 'head', label: 'Head', icon: ClipboardCheck },
-  { key: 'supplier', label: 'Supplier', icon: Building2 },
-]
 
 export default function LoginPage() {
   const navigate = useNavigate()
   const [showPass, setShowPass] = useState(false)
-  const [role, setRole] = useState('admin')
-  const [form, setForm] = useState({ username: '', password: '' })
+  const [form, setForm] = useState({ identifier: '', password: '' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -29,7 +22,7 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      const session = await apiLogin(form.username, form.password)
+      const session = await apiLogin(form.identifier.trim(), form.password)
       saveSession(session)
       goToDashboard(session.user.role)
     } catch (err) {
@@ -38,8 +31,6 @@ export default function LoginPage() {
       setLoading(false)
     }
   }
-
-  const roleLabel = ROLES.find(r => r.key === role)?.label || 'Admin'
 
   return (
     <div className="login-page">
@@ -54,24 +45,12 @@ export default function LoginPage() {
             </div>
           </div>
           <h1>Welcome Back</h1>
-          <p>Select your role and sign in to continue.</p>
-
-          <div className="login-role-tabs">
-            {ROLES.map(({ key, label, icon: Icon }) => (
-              <button
-                key={key}
-                className={role === key ? 'active' : ''}
-                onClick={() => setRole(key)}
-              >
-                <Icon size={13} /> {label}
-              </button>
-            ))}
-          </div>
+          <p className="login-subtitle">Sign in with your username or email to continue.</p>
 
           <form onSubmit={handleSubmit} className="login-form">
             <div className="form-group">
-              <label>Username</label>
-              <input type="text" placeholder="admin" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} required />
+              <label>Username or Email</label>
+              <input type="text" placeholder="you@example.com" value={form.identifier} onChange={e => setForm({ ...form, identifier: e.target.value })} required />
             </div>
             <div className="form-group">
               <label>Password</label>
@@ -89,10 +68,9 @@ export default function LoginPage() {
               </div>
             </div>
             {error && <div className="login-error">{error}</div>}
-            <span className="login-hint">Demo accounts: <b>admin</b> / <b>head</b> / <b>supplier</b> — password <b>password123</b></span>
             <a href="#" className="login-forgot">Forgot password?</a>
             <button type="submit" className="login-submit" disabled={loading}>
-              {loading ? 'Please wait…' : `Sign in as ${roleLabel}`}
+              {loading ? 'Please wait…' : 'Sign In'}
             </button>
           </form>
 
