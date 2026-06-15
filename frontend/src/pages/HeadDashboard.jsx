@@ -1,16 +1,18 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
-  Bell, Search, ChevronDown, ChevronRight, LogOut,
+  Search, ChevronDown, ChevronRight, LogOut,
   ClipboardCheck, AlertCircle, FolderOpen, Eye,
-  ThumbsUp, ThumbsDown, FileText
+  ThumbsUp, ThumbsDown, FileText, Menu
 } from 'lucide-react'
 import { clearSession } from '../api'
 import {
   useProjects, approveProject as storeApprove, rejectProject as storeReject,
   isReviewed, decisionOf,
 } from '../store/projectsStore'
+import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
+import NotificationBell from '../components/NotificationBell'
 import '../style/HeadDashboard.css'
 
 const NAV = [
@@ -19,10 +21,10 @@ const NAV = [
   { icon: CheckCircle2, label: 'Reviewed Projects', to: '/head/approved' },
 ]
 
-function Sidebar({ active }) {
+function Sidebar({ active, open, onClose }) {
   const navigate = useNavigate()
   return (
-    <aside className="hd-sidebar">
+    <aside className={`hd-sidebar${open ? ' open' : ''}`}>
       <div className="hd-sidebar-logo">
         <span className="hd-logo-icon"><ClipboardCheck size={16} /></span>
         <div>
@@ -34,7 +36,7 @@ function Sidebar({ active }) {
         <span className="hd-menu-label">MENU</span>
         <nav className="hd-sidebar-nav">
           {NAV.map(({ icon: Icon, label, to }) => (
-            <Link key={to} to={to} className={`hd-nav-item${active === to ? ' active' : ''}`}>
+            <Link key={to} to={to} className={`hd-nav-item${active === to ? ' active' : ''}`} onClick={onClose}>
               <Icon size={18} /><span>{label}</span>
               {active === to && <span className="hd-nav-dot" />}
             </Link>
@@ -60,18 +62,21 @@ function Sidebar({ active }) {
   )
 }
 
-function Header({ title }) {
+function Header({ title, onMenu }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   return (
     <header className="hd-header">
       <div className="hd-header-left">
-        <div className="hd-workspace-label">HEAD WORKSPACE</div>
-        <h1 className="hd-page-title">{title}</h1>
+        <button className="hd-menu-btn" onClick={onMenu} aria-label="Open menu"><Menu size={20} /></button>
+        <div>
+          <div className="hd-workspace-label">HEAD WORKSPACE</div>
+          <h1 className="hd-page-title">{title}</h1>
+        </div>
       </div>
       <div className="hd-header-right">
         <div className="hd-search"><Search size={15} /><input placeholder="Search…" /></div>
-        <button className="hd-notif"><Bell size={18} /><span className="hd-notif-dot" /></button>
+        <NotificationBell />
         <div className="hd-user-wrap">
           <div className="hd-user" onClick={() => setOpen(o => !o)}>
             <div className="hd-avatar">H</div>
@@ -254,7 +259,7 @@ function HeadHome() {
           <Link to="/head/pending" className="hd-view-all">View all →</Link>
         </div>
         {loading && pending.length === 0 ? (
-          <div className="hd-empty"><p>Loading projects…</p></div>
+          <div style={{ padding: '8px 4px' }}><ListSkeleton rows={2} height={70} /></div>
         ) : pending.length === 0 ? (
           <div className="hd-empty">
             <CheckCircle2 size={32} className="hd-empty-icon" />
@@ -320,7 +325,7 @@ function PendingPage() {
           </span>
         </div>
         {loading && pending.length === 0 ? (
-          <div className="hd-empty"><p>Loading projects…</p></div>
+          <div style={{ padding: '8px 4px' }}><ListSkeleton rows={2} height={70} /></div>
         ) : pending.length === 0 ? (
           <div className="hd-empty">
             <CheckCircle2 size={40} className="hd-empty-icon" />
@@ -392,7 +397,8 @@ function ApprovedPage() {
 
 export default function HeadDashboard() {
   const loc = useLocation()
-  // The dashboard shell holds no data — each page below loads its own.
+  const [navOpen, setNavOpen] = useState(false)
+  useEffect(() => { setNavOpen(false) }, [loc.pathname])
 
   const PAGE_TITLES = {
     '/head': 'Dashboard',
@@ -402,9 +408,10 @@ export default function HeadDashboard() {
 
   return (
     <div className="hd-layout">
-      <Sidebar active={loc.pathname} />
+      <Sidebar active={loc.pathname} open={navOpen} onClose={() => setNavOpen(false)} />
+      {navOpen && <div className="hd-nav-backdrop" onClick={() => setNavOpen(false)} />}
       <div className="hd-main">
-        <Header title={PAGE_TITLES[loc.pathname] || 'Dashboard'} />
+        <Header title={PAGE_TITLES[loc.pathname] || 'Dashboard'} onMenu={() => setNavOpen(true)} />
         <div className="hd-body">
           <Routes>
             <Route index element={<HeadHome />} />

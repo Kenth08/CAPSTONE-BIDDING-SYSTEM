@@ -257,3 +257,12 @@
   .sr-main { padding: 28px 20px; }
   .sr-row, .sr-grid, .sr-checks, .sr-review { grid-template-columns: 1fr; }
 }
+@media (max-width: 560px) {
+  /* Show just the numbered step circles + connector lines — labels would overflow. */
+  .sr-step-wrap > span { display: none; }
+  .sr-main { padding: 20px 14px; }
+  .sr-aside { padding: 18px 16px; }
+  .sr-main h2 { font-size: 21px; }
+  .sr-nav { flex-wrap: wrap; gap: 10px; }
+  .sr-checks { grid-template-columns: 1fr; }
+}

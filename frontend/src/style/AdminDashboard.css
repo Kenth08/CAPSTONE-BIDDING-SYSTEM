@@ -197,6 +197,8 @@
 /* ── MAIN ─────────────────────────────────────────────── */
 .ad-main {
   flex: 1;
+  min-width: 0;            /* allow the column to shrink so inner tables scroll
+                              instead of stretching the page sideways */
   margin-left: 260px;
   display: flex;
   flex-direction: column;
@@ -765,6 +767,78 @@
 .ad-doc-file button { color: #ef4444; display: flex; }
 @media (max-width: 640px) { .ad-doc-grid { grid-template-columns: 1fr; } }
 
+/* ── BID EVALUATION: back link + step progress ────────── */
+.ad-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary, #10b981);
+  background: transparent;
+  margin-bottom: 16px;
+  cursor: pointer;
+}
+.ad-back-link:hover { text-decoration: underline; }
+
+.ad-stepper {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 20px;
+  overflow-x: auto;
+}
+.ad-step {
+  flex: 1 0 0;
+  min-width: 86px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  position: relative;
+}
+/* connecting line into each step (from the previous one) */
+.ad-step:not(:first-child)::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: -50%;
+  width: 100%;
+  height: 2px;
+  background: #e2e8f0;
+  z-index: 0;
+}
+.ad-step.done::before,
+.ad-step.active::before { background: var(--primary, #10b981); }
+.ad-step-dot {
+  position: relative;
+  z-index: 1;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e2e8f0;
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 700;
+}
+.ad-step.done .ad-step-dot { background: var(--primary, #10b981); color: #fff; }
+.ad-step.active .ad-step-dot {
+  background: var(--primary, #10b981);
+  color: #fff;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.2);
+}
+.ad-step-label {
+  margin-top: 7px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #94a3b8;
+  max-width: 92px;
+}
+.ad-step.done .ad-step-label,
+.ad-step.active .ad-step-label { color: var(--text-dark, #0f172a); font-weight: 600; }
+
 /* ── BADGES ───────────────────────────────────────────── */
 .badge {
   display: inline-flex;
@@ -1184,6 +1258,15 @@
 }
 
 /* ── RESPONSIVE ───────────────────────────────────────── */
+/* Hamburger button (shown only on small screens) + drawer transition. */
+.ad-menu-btn { display: none; background: transparent; color: #fff; padding: 4px; }
+.ad-header-left { flex-direction: row; align-items: center; gap: 12px; }
+.ad-sidebar { transition: transform 0.25s ease; }
+.ad-nav-backdrop {
+  position: fixed; inset: 0; z-index: 45;
+  background: rgba(2, 6, 23, 0.55);
+}
+
 @media (max-width: 1300px) {
   .ad-report-stats { grid-template-columns: repeat(3, 1fr); }
   .ad-dash-grid    { grid-template-columns: 1fr; }
@@ -1192,13 +1275,31 @@
 @media (max-width: 1100px) {
   .ad-stats { grid-template-columns: repeat(2, 1fr); }
   .ad-bid-cards { grid-template-columns: 1fr; }
+  /* Wide tables scroll inside their card at any size the layout gets narrow. */
+  .ad-card { overflow-x: auto; }
+  .ad-table { min-width: 620px; }
 }
 
 @media (max-width: 768px) {
   .ad-sidebar { transform: translateX(-100%); }
+  .ad-sidebar.open { transform: translateX(0); }
   .ad-main    { margin-left: 0; }
-  .ad-stats   { grid-template-columns: 1fr 1fr; }
-  .ad-report-stats { grid-template-columns: repeat(2, 1fr); }
+  .ad-menu-btn { display: inline-flex; align-items: center; }
+  .ad-search { display: none; }            /* free up space; nav has search via pages */
+  .ad-header { padding: 0 16px; }
+  .ad-body, .ad-content { padding: 16px; }
+  .ad-stats, .ad-report-stats { grid-template-columns: 1fr 1fr; }
+  .ad-card-header { flex-wrap: wrap; gap: 10px; }
+  .ad-form-grid { grid-template-columns: 1fr; }
+  .ad-doc-grid { grid-template-columns: 1fr; }
+  .ad-info-grid { grid-template-columns: 1fr; }
+  .ad-user-name { display: none; }          /* keep just the avatar on phones */
+}
+
+@media (max-width: 480px) {
+  .ad-stats, .ad-report-stats { grid-template-columns: 1fr; }
+  .ad-stepper { gap: 2px; }
+  .ad-step-label { font-size: 9px; }
 }
 
 /* ── SUPPLIER REVIEW: badge, modal, docs, confirm, toast ──────────────── */
@@ -1257,12 +1358,34 @@
   margin-bottom: 12px;
 }
 .ad-docs-head .ad-small { margin-left: auto; font-weight: 400; }
+.ad-docs-hint {
+  display: flex; align-items: flex-start; gap: 8px;
+  background: rgba(249,115,22,0.08);
+  border: 1px solid rgba(249,115,22,0.25);
+  border-left: 3px solid #f97316;
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;
+  font-size: 12.5px; line-height: 1.5; color: #9a3412;
+}
+.ad-docs-hint svg { color: #f97316; flex-shrink: 0; margin-top: 1px; }
+.ad-docs-hint strong { color: #c2410c; font-weight: 600; }
 .ad-docs-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
 .ad-doc-row {
   border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px;
   transition: border-color .15s, background .15s;
 }
 .ad-doc-row.flagged { border-color: rgba(249,115,22,0.5); background: rgba(249,115,22,0.05); }
+.ad-doc-row.resubmitted { border-color: rgba(59,130,246,0.45); background: rgba(59,130,246,0.05); }
+.ad-doc-status {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; padding: 2px 7px; border-radius: 5px;
+  text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600;
+}
+.ad-doc-ok { background: rgba(16,185,129,0.12); color: #059669; }
+.ad-doc-resub { background: rgba(59,130,246,0.12); color: #2563eb; }
+.ad-doc-flag { background: rgba(249,115,22,0.12); color: #ea580c; }
+.ad-doc-prevnote {
+  margin: 8px 0 2px 30px; font-size: 12px; color: #64748b; font-style: italic;
+}
 .ad-doc-main { display: flex; align-items: center; gap: 10px; }
 .ad-doc-check { display: flex; align-items: center; }
 .ad-doc-check input { width: 16px; height: 16px; cursor: pointer; accent-color: #f97316; }

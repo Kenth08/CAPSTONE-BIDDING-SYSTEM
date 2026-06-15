@@ -4,13 +4,14 @@ import {
   LayoutDashboard, FolderOpen, FileText, Clock, CheckCircle2,
   Building2, Bell, Search, ChevronDown, ChevronRight, LogOut, Settings,
   Eye, ArrowRight, Shield, User, X, Send, Trophy, Trash2,
-  AlertTriangle, Upload, Lock
+  AlertTriangle, Upload, Lock, Menu
 } from 'lucide-react'
 import {
   clearSession, apiGetMySupplier, apiResubmitDocuments,
   apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid,
   apiListNotifications, apiMarkNotificationsRead,
 } from '../api'
+import { TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import '../style/SupplierDashboard.css'
 
 // API → UI mapping (backend uses code/decimal/ISO; the UI shows ₱ + dates).
@@ -45,7 +46,7 @@ const QUAL_STATUS = {
 
 const NAV = [
   { icon: LayoutDashboard, label: 'Dashboard',  to: '/supplier' },
-  { icon: FolderOpen,      label: 'Projects',   to: '/supplier/projects' },
+  { icon: FolderOpen,      label: 'Bid Opportunities', to: '/supplier/projects' },
   { icon: FileText,        label: 'My Bids',    to: '/supplier/bids' },
   { icon: Clock,           label: 'Status',     to: '/supplier/status' },
   { icon: Settings,        label: 'Profile',    to: '/supplier/profile' },
@@ -293,11 +294,11 @@ function RevisionPanel({ profile, onResubmitted, setToast }) {
 
 // ─── Sidebar / Header ────────────────────────────────────────────────────────
 
-function SupplierSidebar({ active }) {
+function SupplierSidebar({ active, open, onClose }) {
   const navigate = useNavigate()
   const isActive = (to) => to === '/supplier' ? active === '/supplier' : active.startsWith(to)
   return (
-    <aside className="sd-sidebar">
+    <aside className={`sd-sidebar${open ? ' open' : ''}`}>
       <div className="sd-sidebar-logo">
         <span className="sd-logo-icon"><Building2 size={16} /></span>
         <div>
@@ -309,7 +310,7 @@ function SupplierSidebar({ active }) {
         <span className="sd-menu-label">MENU</span>
         <nav className="sd-sidebar-nav">
           {NAV.map(({ icon: Icon, label, to }) => (
-            <Link key={to} to={to} className={`sd-nav-item${isActive(to) ? ' active' : ''}`}>
+            <Link key={to} to={to} className={`sd-nav-item${isActive(to) ? ' active' : ''}`} onClick={onClose}>
               <Icon size={18} /><span>{label}</span>
               {isActive(to) && <span className="sd-nav-dot" />}
             </Link>
@@ -381,14 +382,17 @@ function NotificationsBell() {
   )
 }
 
-function SupplierHeader({ title }) {
+function SupplierHeader({ title, onMenu }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   return (
     <header className="sd-header">
       <div className="sd-header-left">
-        <div className="sd-workspace-label">SUPPLIER WORKSPACE</div>
-        <h1 className="sd-page-title">{title}</h1>
+        <button className="sd-menu-btn" onClick={onMenu} aria-label="Open menu"><Menu size={20} /></button>
+        <div>
+          <div className="sd-workspace-label">SUPPLIER WORKSPACE</div>
+          <h1 className="sd-page-title">{title}</h1>
+        </div>
       </div>
       <div className="sd-header-right">
         <div className="sd-search">
@@ -438,7 +442,7 @@ function SupplierHeader({ title }) {
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
 
-function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted, setToast }) {
+function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted, setToast, loadingProjects, loadingBids }) {
   const [modal, setModal] = useState(null)
   const alreadyBid = new Set(bids.map(b => b.projectId))
   const available = projects.filter(p => !alreadyBid.has(p.id))
@@ -471,10 +475,12 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
       <div className="sd-grid">
         <div className="sd-card sd-card-wide">
           <div className="sd-card-header">
-            <div><h2>Available Projects</h2><p>Open projects you can bid on</p></div>
+            <div><h2>Bid Opportunities</h2><p>Open procurements matching your business that you can bid on</p></div>
             <Link to="/supplier/projects" className="sd-view-all">View all →</Link>
           </div>
-          {available.length === 0 ? (
+          {loadingProjects && projects.length === 0 ? (
+            <div style={{ padding: '12px 24px' }}><ListSkeleton rows={3} height={52} /></div>
+          ) : available.length === 0 ? (
             <div style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
               {projects.length === 0
                 ? 'No open procurements match your registered categories yet.'
@@ -506,7 +512,9 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
           <div className="sd-card-header">
             <div><h2>My Bids</h2><p>Your submitted bids</p></div>
           </div>
-          {bids.length === 0 ? (
+          {loadingBids && bids.length === 0 ? (
+            <div style={{ padding: '12px 24px' }}><ListSkeleton rows={2} height={48} /></div>
+          ) : bids.length === 0 ? (
             <div style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
               No bids submitted yet.
             </div>
@@ -554,7 +562,7 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
   )
 }
 
-function SupplierProjects({ projects, bids, onBid, eligible }) {
+function SupplierProjects({ projects, bids, onBid, eligible, loading }) {
   const [modal, setModal] = useState(null)
   const alreadyBid = new Set(bids.map(b => b.projectId))
 
@@ -563,9 +571,16 @@ function SupplierProjects({ projects, bids, onBid, eligible }) {
       {modal && <BidModal project={modal} onClose={() => setModal(null)} onSubmit={(proj, form) => { onBid(proj, form); setModal(null) }} />}
       <div className="sd-card">
         <div className="sd-card-header">
-          <div><h2>Open Procurements</h2><p>Procurements open for bidding that match your registered categories</p></div>
+          <div><h2>Bid Opportunities</h2><p>Procurements open for bidding that match your registered business categories</p></div>
         </div>
-        {projects.length === 0 ? (
+        {loading && projects.length === 0 ? (
+          <table className="sd-table">
+            <thead>
+              <tr><th>ID</th><th>Project</th><th>Budget</th><th>Category</th><th>Deadline</th><th></th></tr>
+            </thead>
+            <tbody><TableSkeleton rows={4} cols={6} /></tbody>
+          </table>
+        ) : projects.length === 0 ? (
           <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
             No open procurements match your categories right now. Check back later.
           </div>
@@ -602,7 +617,7 @@ function SupplierProjects({ projects, bids, onBid, eligible }) {
   )
 }
 
-function SupplierBids({ bids, onWithdraw }) {
+function SupplierBids({ bids, onWithdraw, loading }) {
   const [detail, setDetail] = useState(null)
 
   return (
@@ -618,7 +633,14 @@ function SupplierBids({ bids, onWithdraw }) {
         <div className="sd-card-header">
           <div><h2>My Bids</h2><p>Track all your submitted bids and their evaluation status</p></div>
         </div>
-        {bids.length === 0 ? (
+        {loading && bids.length === 0 ? (
+          <table className="sd-table">
+            <thead>
+              <tr><th>Project</th><th>Amount</th><th>Notes</th><th>Submitted</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody><TableSkeleton rows={3} cols={6} /></tbody>
+          </table>
+        ) : bids.length === 0 ? (
           <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
             No bids submitted yet. Browse projects to submit your first bid.
           </div>
@@ -855,7 +877,11 @@ export default function SupplierDashboard() {
   const [profile, setProfile] = useState(myProfileCache)
   const [projects, setProjects] = useState([])   // eligible (published + category match)
   const [bids, setBids] = useState([])
+  const [loadingProjects, setLoadingProjects] = useState(true)
+  const [loadingBids, setLoadingBids] = useState(true)
   const [toast, setToast] = useState(null)
+  const [navOpen, setNavOpen] = useState(false)
+  useEffect(() => { setNavOpen(false) }, [loc.pathname])
 
   const loadProfile = () => {
     apiGetMySupplier()
@@ -864,8 +890,14 @@ export default function SupplierDashboard() {
       .catch(() => { if (!myProfileCache) setProfile(null) })
   }
   // Backend returns only the projects this supplier is eligible for.
-  const loadProjects = () => { apiListProjects().then(d => setProjects(d.map(mapProject))).catch(() => {}) }
-  const loadBids = () => { apiListMyBids().then(d => setBids(d.map(mapBid))).catch(() => {}) }
+  const loadProjects = () => {
+    setLoadingProjects(true)
+    apiListProjects().then(d => setProjects(d.map(mapProject))).catch(() => {}).finally(() => setLoadingProjects(false))
+  }
+  const loadBids = () => {
+    setLoadingBids(true)
+    apiListMyBids().then(d => setBids(d.map(mapBid))).catch(() => {}).finally(() => setLoadingBids(false))
+  }
   useEffect(() => { loadProfile(); loadProjects(); loadBids() }, [])
 
   // Verification is the real bidding gate (the admin approve action sets this).
@@ -893,7 +925,7 @@ export default function SupplierDashboard() {
 
   const TITLES = {
     '/supplier':         'Dashboard',
-    '/supplier/projects':'Projects',
+    '/supplier/projects':'Bid Opportunities',
     '/supplier/bids':    'My Bids',
     '/supplier/status':  'Status',
     '/supplier/profile': 'Profile',
@@ -902,18 +934,19 @@ export default function SupplierDashboard() {
 
   return (
     <div className="sd-layout">
-      <SupplierSidebar active={loc.pathname} />
+      <SupplierSidebar active={loc.pathname} open={navOpen} onClose={() => setNavOpen(false)} />
+      {navOpen && <div className="sd-nav-backdrop" onClick={() => setNavOpen(false)} />}
       <div className="sd-main">
-        <SupplierHeader title={title} />
+        <SupplierHeader title={title} onMenu={() => setNavOpen(true)} />
         {toast && <SupplierToast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
         <div className="sd-body">
           <Routes>
-            <Route index element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} />} />
-            <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} />} />
-            <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} />} />
+            <Route index element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
+            <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} loading={loadingProjects} />} />
+            <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} loading={loadingBids} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="profile"  element={<SupplierProfile />} />
-            <Route path="*"        element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} />} />
+            <Route path="*"        element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
           </Routes>
         </div>
       </div>

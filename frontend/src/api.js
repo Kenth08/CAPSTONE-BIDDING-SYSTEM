@@ -1,5 +1,7 @@
 // Central API layer for talking to the Django backend.
-const API_URL = 'http://127.0.0.1:8000/api'
+// In production set VITE_API_URL (e.g. https://api.yourdomain.com/api); locally
+// it falls back to the dev server so nothing changes during development.
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 
 // ── Session storage ───────────────────────────────────────────────────────────
 export function saveSession({ access, refresh, user }) {
@@ -130,6 +132,7 @@ export const apiResubmitDocuments = (formData) => apiUpload('/suppliers/resubmit
 
 // ── Projects (admin create + head approval flow) ───────────────────────────────
 export const apiListProjects = () => apiFetch('/projects/')
+export const apiGetProject = (id) => apiFetch(`/projects/${id}/`)
 // Create is multipart (procurement documents are uploaded with the form).
 export const apiCreateProject = (formData) => apiUpload('/projects/', formData)
 export const apiApproveProject = (id) =>

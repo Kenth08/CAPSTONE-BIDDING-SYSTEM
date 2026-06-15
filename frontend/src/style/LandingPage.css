@@ -455,4 +455,10 @@
   .lp-steps { grid-template-columns: repeat(2, 1fr); }
   .lp-features-grid { grid-template-columns: 1fr; }
   .lp-footer-top { grid-template-columns: 1fr; }
+  .lp-hero-content h1 { font-size: 34px; }
+  .lp-hero-btns { flex-direction: column; align-items: stretch; }
+}
+@media (max-width: 420px) {
+  .lp-steps { grid-template-columns: 1fr; }
+  .lp-hero-content h1 { font-size: 28px; }
 }

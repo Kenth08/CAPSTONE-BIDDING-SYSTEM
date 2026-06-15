@@ -1,18 +1,20 @@
 import { useState, useEffect } from 'react'
-import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
+import { Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
-  Bell, Search, ChevronRight, LogOut, Shield,
+  Search, ChevronRight, LogOut, Shield,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
-  CheckCircle2, AlertTriangle, XCircle, Check
+  CheckCircle2, AlertTriangle, XCircle, Check, Menu
 } from 'lucide-react'
 import {
   clearSession, apiListSuppliers, apiGetSupplier,
   apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision,
-  apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner,
+  apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
 } from '../api'
 import { useProjects, createProject, publishProject, refreshProjects } from '../store/projectsStore'
 import { CATEGORIES } from '../constants/categories'
+import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
+import NotificationBell from '../components/NotificationBell'
 import '../style/AdminDashboard.css'
 
 const NAV = [
@@ -46,10 +48,10 @@ const STATUS_CLS = {
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
-function Sidebar({ active }) {
+function Sidebar({ active, open, onClose }) {
   const navigate = useNavigate()
   return (
-    <aside className="ad-sidebar">
+    <aside className={`ad-sidebar${open ? ' open' : ''}`}>
       <div className="ad-sidebar-logo">
         <span className="ad-logo-icon"><Shield size={16} /></span>
         <div>
@@ -62,7 +64,7 @@ function Sidebar({ active }) {
         <span className="ad-menu-label">MENU</span>
         <nav className="ad-sidebar-nav">
           {NAV.map(({ icon: Icon, label, to }) => (
-            <Link key={to} to={to} className={`ad-nav-item${active === to ? ' active' : ''}`}>
+            <Link key={to} to={to} className={`ad-nav-item${active === to ? ' active' : ''}`} onClick={onClose}>
               <Icon size={18} />
               <span>{label}</span>
               {active === to && <span className="ad-nav-dot" />}
@@ -92,14 +94,17 @@ function Sidebar({ active }) {
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
-function Header({ title }) {
+function Header({ title, onMenu }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   return (
     <header className="ad-header">
       <div className="ad-header-left">
-        <div className="ad-workspace-label">ADMIN WORKSPACE</div>
-        <h1 className="ad-page-title">{title}</h1>
+        <button className="ad-menu-btn" onClick={onMenu} aria-label="Open menu"><Menu size={20} /></button>
+        <div>
+          <div className="ad-workspace-label">ADMIN WORKSPACE</div>
+          <h1 className="ad-page-title">{title}</h1>
+        </div>
       </div>
       <div className="ad-header-right">
         <div className="ad-search">
@@ -107,9 +112,7 @@ function Header({ title }) {
           <input placeholder="Search..." />
           <span className="ad-search-shortcut">Ctrl+4</span>
         </div>
-        <button className="ad-notif">
-          <Bell size={18} /><span className="ad-notif-dot" />
-        </button>
+        <NotificationBell />
         <div className="ad-user-wrap">
           <div className="ad-user" onClick={() => setOpen(o => !o)}>
             <div className="ad-avatar">S</div>
@@ -205,7 +208,7 @@ function DashboardHome() {
             </div>
             <div className="ad-project-list">
               {loading && filtered.length === 0
-                ? <div className="ad-empty-msg">Loading projects…</div>
+                ? <ListSkeleton rows={4} height={48} />
                 : filtered.length === 0
                 ? <div className="ad-empty-msg">No projects in this category.</div>
                 : filtered.map(p => (
@@ -325,7 +328,7 @@ function ProjectsPage() {
           </thead>
           <tbody>
             {loading && filtered.length === 0
-              ? <tr><td colSpan={7} className="ad-empty-row">Loading projects…</td></tr>
+              ? <TableSkeleton rows={4} cols={7} />
               : filtered.length === 0
               ? <tr><td colSpan={7} className="ad-empty-row">No approved projects yet.</td></tr>
               : filtered.map(p => (
@@ -561,7 +564,7 @@ function PlanningPage() {
           </thead>
           <tbody>
             {loading && filtered.length === 0
-              ? <tr><td colSpan={6} className="ad-empty-row">Loading projects…</td></tr>
+              ? <TableSkeleton rows={4} cols={6} />
               : filtered.length === 0
               ? <tr><td colSpan={6} className="ad-empty-row">No planning requests yet. Click “Create Project” to add one.</td></tr>
               : filtered.map(p => (
@@ -916,38 +919,61 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
 
               <div className="ad-docs-head">
                 <FileText size={15} /> Uploaded Documents
-                <span className="ad-muted ad-small">Check a document to flag it for revision.</span>
+              </div>
+              <div className="ad-docs-hint">
+                <Info size={15} />
+                <span>
+                  <strong>Tick the checkbox</strong> next to any document that has a problem to flag it for revision,
+                  then click <strong>Request Revision</strong> to send it back to the supplier.
+                </span>
               </div>
               <div className="ad-docs-list">
-                {supplier.documents.map(d => (
-                  <div className={`ad-doc-row${flags[d.key]?.checked ? ' flagged' : ''}`} key={d.key}>
-                    <div className="ad-doc-main">
-                      <label className="ad-doc-check">
-                        <input
-                          type="checkbox"
-                          checked={!!flags[d.key]?.checked}
-                          disabled={!d.url}
-                          onChange={() => toggleFlag(d.key)}
-                        />
-                      </label>
-                      <div className="ad-doc-name">
-                        <span className="ad-bold">{d.label}</span>
-                        <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+                {supplier.documents.map(d => {
+                  const checked = !!flags[d.key]?.checked
+                  const rs = d.review_status
+                  const rowCls = checked ? ' flagged' : rs === 'resubmitted' ? ' resubmitted' : ''
+                  return (
+                    <div className={`ad-doc-row${rowCls}`} key={d.key}>
+                      <div className="ad-doc-main">
+                        <label className="ad-doc-check">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={!d.url}
+                            onChange={() => toggleFlag(d.key)}
+                          />
+                        </label>
+                        <div className="ad-doc-name">
+                          <span className="ad-bold">{d.label}</span>
+                          <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+                          {/* Review state at a glance — the admin can still re-check any doc to double-check it. */}
+                          {checked
+                            ? <span className="ad-doc-status ad-doc-flag">Flagged for revision</span>
+                            : rs === 'resubmitted'
+                              ? <span className="ad-doc-status ad-doc-resub">Resubmitted — please review</span>
+                              : rs === 'approved'
+                                ? <span className="ad-doc-status ad-doc-ok"><Check size={11} /> Reviewed</span>
+                                : null}
+                        </div>
+                        {d.url
+                          ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                          : <span className="ad-doc-missing">Not uploaded</span>}
                       </div>
-                      {d.url
-                        ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
-                        : <span className="ad-doc-missing">Not uploaded</span>}
+                      {/* Remind the admin why this doc was sent back, now that it's been re-uploaded. */}
+                      {!checked && rs === 'resubmitted' && d.review_note && (
+                        <div className="ad-doc-prevnote">Previously flagged: “{d.review_note}”</div>
+                      )}
+                      {checked && (
+                        <input
+                          className="ad-doc-note"
+                          placeholder="What needs fixing? (e.g. blurry scan, expired)"
+                          value={flags[d.key]?.note || ''}
+                          onChange={e => setFlagNote(d.key, e.target.value)}
+                        />
+                      )}
                     </div>
-                    {flags[d.key]?.checked && (
-                      <input
-                        className="ad-doc-note"
-                        placeholder="What needs fixing? (e.g. blurry scan, expired)"
-                        value={flags[d.key]?.note || ''}
-                        onChange={e => setFlagNote(d.key, e.target.value)}
-                      />
-                    )}
-                  </div>
-                ))}
+                  )
+                })}
               </div>
 
               <div className="ad-field">
@@ -1041,9 +1067,8 @@ function Toast({ type, message, onClose }) {
 
 function BidsPage() {
   const { projects, loading } = useProjects()
+  const navigate = useNavigate()
   const [filterTab, setFilterTab] = useState('All')
-  const [evalProject, setEvalProject] = useState(null)
-  const [toast, setToast] = useState(null)
   const TABS = ['All', 'Goods', 'Services', 'Infrastructure', 'More']
 
   // Only Head-approved projects can receive/evaluate bids — not drafts, items
@@ -1060,15 +1085,6 @@ function BidsPage() {
 
   return (
     <div className="ad-content">
-      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
-      {evalProject && (
-        <BidEvaluationModal
-          project={evalProject}
-          onClose={() => setEvalProject(null)}
-          onAwarded={(msg) => { setToast({ type: 'success', message: msg }); refreshProjects(); setEvalProject(null) }}
-          onToast={setToast}
-        />
-      )}
       <div>
         <h2 className="ad-bids-title">Select a Project to Evaluate</h2>
         <p className="ad-bids-sub">Click a project below to review and evaluate submitted bids.</p>
@@ -1080,11 +1096,18 @@ function BidsPage() {
       </div>
       <div className="ad-bid-cards">
         {loading && filtered.length === 0
-          ? <div className="ad-empty-msg">Loading projects…</div>
+          ? Array.from({ length: 3 }).map((_, i) => (
+              <div className="ad-bid-card" key={i}>
+                <Skeleton width={40} height={40} radius={10} />
+                <Skeleton width="70%" height={16} style={{ marginTop: 14 }} />
+                <Skeleton width="40%" style={{ marginTop: 10 }} />
+                <Skeleton width="100%" height={36} radius={8} style={{ marginTop: 14 }} />
+              </div>
+            ))
           : filtered.length === 0
           ? <div className="ad-empty-msg">No projects available for bidding yet.</div>
           : filtered.map(p => (
-            <div className="ad-bid-card" key={p.id} onClick={() => setEvalProject(p)} role="button" tabIndex={0}>
+            <div className="ad-bid-card" key={p.id} onClick={() => navigate(`/admin/bids/${p.id}`)} role="button" tabIndex={0}>
               <div className="ad-bid-card-top">
                 <div className="ad-bid-card-icon"><FolderOpen size={18} /></div>
                 <ChevronRight size={16} className="ad-bid-card-arrow" />
@@ -1119,27 +1142,69 @@ const QUAL_BID_CLS = {
   disqualified: 'badge-red', winner: 'badge-awarded',
 }
 
-// ── Bid evaluation modal (admin) ──────────────────────────────────────────────
-function BidEvaluationModal({ project, onClose, onAwarded, onToast }) {
+// ── Bid evaluation progress bar ───────────────────────────────────────────────
+const EVAL_STEPS = [
+  'Bid Created', 'Submitted for Approval', 'Approved by Head',
+  'Bid Published', 'Bids Received', 'Evaluation', 'Awarded',
+]
+// Map the project's current status (+ bid activity) to the active step index.
+function evalStepIndex(status, bids) {
+  if (status === 'awarded') return 6
+  if (status === 'published') {
+    if (bids.some(b => b.status !== 'under_review')) return 5  // Evaluation
+    if (bids.length > 0) return 4                              // Bids Received
+    return 3                                                   // Bid Published
+  }
+  if (status === 'approved') return 2
+  if (status === 'pending_head') return 1
+  return 0  // draft
+}
+
+function EvalProgressBar({ status, bids }) {
+  const current = evalStepIndex(status, bids)
+  return (
+    <div className="ad-stepper">
+      {EVAL_STEPS.map((label, i) => {
+        const state = i < current ? 'done' : i === current ? 'active' : ''
+        return (
+          <div className={`ad-step ${state}`} key={label}>
+            <div className="ad-step-dot">{i < current ? <Check size={15} /> : i + 1}</div>
+            <div className="ad-step-label">{label}</div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Bid evaluation detail page (admin) — /admin/bids/:id ───────────────────────
+function BidEvaluationPage() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const [project, setProject] = useState(null)
   const [bids, setBids] = useState([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
   const [confirm, setConfirm] = useState(null)   // { bid }
-  const awarded = project.status === 'awarded'
+  const [toast, setToast] = useState(null)
 
   const load = () => {
     setLoading(true)
-    apiListProjectBids(project.id)
-      .then(setBids)
-      .catch(() => onToast?.({ type: 'error', message: 'Could not load bids.' }))
+    Promise.all([apiGetProject(id), apiListProjectBids(id)])
+      .then(([proj, bidList]) => { setProject(proj); setBids(bidList) })
+      .catch(() => setToast({ type: 'error', message: 'Could not load this procurement.' }))
       .finally(() => setLoading(false))
   }
-  useEffect(load, [project.id])
+  useEffect(load, [id])
+
+  const awarded = project?.status === 'awarded'
+  const peso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
+  const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
   const act = async (bid, fn, errMsg) => {
     setBusyId(bid.id)
     try { await fn(bid.id); load() }
-    catch (e) { onToast?.({ type: 'error', message: e.message || errMsg }) }
+    catch (e) { setToast({ type: 'error', message: e.message || errMsg }) }
     finally { setBusyId(null) }
   }
 
@@ -1148,99 +1213,124 @@ function BidEvaluationModal({ project, onClose, onAwarded, onToast }) {
     setBusyId(bid.id); setConfirm(null)
     try {
       await apiSelectWinner(bid.id)
-      onAwarded(`${bid.supplier_name} selected as winner for ${project.name}.`)
+      await load()
+      refreshProjects()  // the project is now Awarded — refresh the shared store
+      setToast({ type: 'success', message: `${bid.supplier_name} selected as the winning bidder.` })
     } catch (e) {
-      onToast?.({ type: 'error', message: e.message || 'Could not select winner.' })
+      setToast({ type: 'error', message: e.message || 'Could not select winner.' })
+    } finally {
       setBusyId(null)
     }
   }
 
-  const peso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
-
   return (
-    <div className="ad-modal-overlay" onClick={onClose}>
-      <div className="ad-modal" onClick={e => e.stopPropagation()}>
-        <div className="ad-modal-header">
-          <div>
-            <h3>Bid Evaluation — {project.name}</h3>
-            <p className="ad-muted ad-small">{project.code} · {project.category} · ABC {project.budget}</p>
-          </div>
-          <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
-        </div>
+    <div className="ad-content">
+      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
 
-        <div className="ad-modal-body">
-          {awarded && (
-            <div className="ad-modal-error" style={{ background: '#f0fdf4', borderColor: '#bbf7d0', color: '#15803d' }}>
-              <CheckCircle2 size={15} /> This procurement has been awarded.
+      <button className="ad-back-link" onClick={() => navigate('/admin/bids')}>
+        <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} /> Back to projects
+      </button>
+
+      {loading && !project ? (
+        <div className="ad-card" style={{ padding: '20px 24px' }}>
+          <Skeleton width="40%" height={20} />
+          <Skeleton width="60%" style={{ marginTop: 10 }} />
+          <div style={{ display: 'flex', gap: 24, marginTop: 24 }}>
+            {Array.from({ length: 7 }).map((_, i) => (
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, flex: 1 }}>
+                <Skeleton width={30} height={30} radius={15} />
+                <Skeleton width="80%" height={9} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : !project ? (
+        <div className="ad-card"><div className="ad-empty-row">Procurement not found.</div></div>
+      ) : (
+        <>
+          <div className="ad-card" style={{ padding: '20px 24px' }}>
+            <h2 style={{ margin: 0 }}>{project.name}</h2>
+            <p className="ad-muted ad-small" style={{ marginTop: 4 }}>
+              {project.code} · {project.category || '—'} · ABC {peso(project.budget)}
+            </p>
+            <EvalProgressBar status={project.status} bids={bids} />
+          </div>
+
+          <div className="ad-card">
+            <div className="ad-card-header">
+              <div>
+                <h2>Submitted Bids</h2>
+                <p className="ad-muted ad-small">Suppliers who submitted a bid for this procurement</p>
+              </div>
+              {awarded && <span className="badge badge-awarded">• Awarded</span>}
             </div>
-          )}
-          {loading ? (
-            <div style={{ padding: 30, textAlign: 'center' }}>Loading bids…</div>
-          ) : bids.length === 0 ? (
-            <div style={{ padding: 30, textAlign: 'center', color: 'var(--text-gray)' }}>No bids submitted yet.</div>
-          ) : (
             <table className="ad-table">
               <thead>
-                <tr><th>SUPPLIER</th><th>BID AMOUNT</th><th>NOTES</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
+                <tr><th>SUPPLIER</th><th>BID AMOUNT</th><th>SUBMITTED</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
               </thead>
               <tbody>
-                {bids.map(b => (
-                  <tr key={b.id}>
-                    <td className="ad-bold">{b.supplier_name}</td>
-                    <td>{peso(b.amount)}</td>
-                    <td className="ad-muted" style={{ maxWidth: 200, fontSize: 12 }}>{b.notes || '—'}</td>
-                    <td>
-                      <span className={`badge ${QUAL_BID_CLS[b.status] || 'badge-gray'}`}>
-                        {QUAL_BID_LABEL[b.status] || b.status}
-                      </span>
-                    </td>
-                    <td>
-                      {b.status === 'winner' ? (
-                        <span className="ad-muted ad-small">Winner</span>
-                      ) : awarded ? (
-                        <span className="ad-muted ad-small">—</span>
-                      ) : (
-                        <div className="ad-actions">
-                          {b.status !== 'qualified' && (
-                            <button className="ad-btn-approve" disabled={busyId === b.id}
-                              onClick={() => act(b, apiQualifyBid, 'Could not qualify.')}>
-                              <Check size={12} /> Qualify
-                            </button>
-                          )}
-                          {b.status !== 'disqualified' && (
-                            <button className="ad-btn-reject" disabled={busyId === b.id}
-                              onClick={() => act(b, apiDisqualifyBid, 'Could not disqualify.')}>
-                              <XCircle size={12} /> Disqualify
-                            </button>
-                          )}
-                          {b.status === 'qualified' && (
-                            <button className="ad-btn-publish" disabled={busyId === b.id}
-                              onClick={() => setConfirm({ bid: b })}>
-                              <Award size={12} /> Select Winner
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {loading
+                  ? <TableSkeleton rows={3} cols={5} />
+                  : bids.length === 0
+                  ? <tr><td colSpan={5} className="ad-empty-row">No bids submitted yet.</td></tr>
+                  : bids.map(b => (
+                    <tr key={b.id}>
+                      <td className="ad-bold">{b.supplier_name}</td>
+                      <td>{peso(b.amount)}</td>
+                      <td className="ad-muted">{fmtDate(b.submitted_at)}</td>
+                      <td>
+                        <span className={`badge ${QUAL_BID_CLS[b.status] || 'badge-gray'}`}>
+                          {QUAL_BID_LABEL[b.status] || b.status}
+                        </span>
+                      </td>
+                      <td>
+                        {b.status === 'winner' ? (
+                          <span className="badge badge-awarded">• Winning Bidder</span>
+                        ) : awarded ? (
+                          <span className="ad-muted ad-small">—</span>
+                        ) : (
+                          <div className="ad-actions">
+                            {b.status !== 'qualified' && (
+                              <button className="ad-btn-approve" disabled={busyId === b.id}
+                                onClick={() => act(b, apiQualifyBid, 'Could not qualify.')}>
+                                <Check size={12} /> Qualify
+                              </button>
+                            )}
+                            {b.status !== 'disqualified' && (
+                              <button className="ad-btn-reject" disabled={busyId === b.id}
+                                onClick={() => act(b, apiDisqualifyBid, 'Could not disqualify.')}>
+                                <XCircle size={12} /> Disqualify
+                              </button>
+                            )}
+                            {b.status === 'qualified' && (
+                              <button className="ad-btn-publish" disabled={busyId === b.id}
+                                onClick={() => setConfirm({ bid: b })}>
+                                <Award size={12} /> Mark as Winner
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                }
               </tbody>
             </table>
-          )}
-        </div>
+          </div>
+        </>
+      )}
 
-        {confirm && (
-          <ConfirmDialog
-            title="Select winning bid?"
-            message={`Award "${project.name}" to ${confirm.bid.supplier_name} for ${peso(confirm.bid.amount)}? This marks the procurement as Awarded and notifies the bidders.`}
-            tone="green"
-            confirmLabel="Confirm Winner"
-            busy={busyId === confirm.bid.id}
-            onConfirm={confirmWinner}
-            onCancel={() => setConfirm(null)}
-          />
-        )}
-      </div>
+      {confirm && (
+        <ConfirmDialog
+          title="Select winning bidder?"
+          message={`Award "${project.name}" to ${confirm.bid.supplier_name} for ${peso(confirm.bid.amount)}? This marks the procurement as Awarded and notifies the bidders.`}
+          tone="green"
+          confirmLabel="Confirm Winner"
+          busy={busyId === confirm.bid?.id}
+          onConfirm={confirmWinner}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
     </div>
   )
 }
@@ -1435,7 +1525,9 @@ function ReportsPage() {
 
 export default function AdminDashboard() {
   const loc = useLocation()
-  // The dashboard shell holds no data — each page below loads its own.
+  const [navOpen, setNavOpen] = useState(false)
+  // Close the mobile drawer whenever the route changes.
+  useEffect(() => { setNavOpen(false) }, [loc.pathname])
 
   const PAGE_TITLES = {
     '/admin':           'Admin Dashboard',
@@ -1446,13 +1538,15 @@ export default function AdminDashboard() {
     '/admin/awards':    'Awarding',
     '/admin/reports':   'Reports & Analytics',
   }
-  const title = PAGE_TITLES[loc.pathname] || 'Admin Dashboard'
+  const title = PAGE_TITLES[loc.pathname]
+    || (loc.pathname.startsWith('/admin/bids/') ? 'Bid Evaluation' : 'Admin Dashboard')
 
   return (
     <div className="ad-layout">
-      <Sidebar active={loc.pathname} />
+      <Sidebar active={loc.pathname} open={navOpen} onClose={() => setNavOpen(false)} />
+      {navOpen && <div className="ad-nav-backdrop" onClick={() => setNavOpen(false)} />}
       <div className="ad-main">
-        <Header title={title} />
+        <Header title={title} onMenu={() => setNavOpen(true)} />
         <div className="ad-body">
           <Routes>
             <Route index element={<DashboardHome />} />
@@ -1460,6 +1554,7 @@ export default function AdminDashboard() {
             <Route path="planning"  element={<PlanningPage />} />
             <Route path="suppliers" element={<SuppliersPage />} />
             <Route path="bids"      element={<BidsPage />} />
+            <Route path="bids/:id"  element={<BidEvaluationPage />} />
             <Route path="awards"    element={<AwardsPage />} />
             <Route path="reports"   element={<ReportsPage />} />
             <Route path="*"         element={<DashboardHome />} />
