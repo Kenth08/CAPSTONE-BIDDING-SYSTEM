@@ -283,8 +283,10 @@ function DashboardHome() {
 
 function ProjectsPage() {
   const { projects, loading } = useProjects()
+  const navigate = useNavigate()
   const [filterTab, setFilterTab] = useState('All')
   const [search, setSearch] = useState('')
+  const [toast, setToast] = useState(null)
   const FILTER_TABS = ['All', 'Active', 'Closed', 'Awarded']
 
   // Only projects the Head has already approved appear here. Projects still being
@@ -304,6 +306,7 @@ function ProjectsPage() {
 
   return (
     <div className="ad-content">
+      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
       <div className="ad-card">
         <div className="ad-card-header">
           <div className="ad-filter-pills">
@@ -319,6 +322,7 @@ function ProjectsPage() {
           </div>
         </div>
 
+        <div className="ad-table-scroll">
         <table className="ad-table">
           <thead>
             <tr>
@@ -345,8 +349,18 @@ function ProjectsPage() {
                   </td>
                   <td>
                     <div className="ad-actions">
-                      {p.status === 'approved' && <PublishButton project={p} />}
-                      <button className="ad-btn-view-sm"><Eye size={12} /> View Bids</button>
+                      {p.status === 'approved' && (
+                        <PublishButton
+                          project={p}
+                          onPublished={(proj) => setToast({
+                            type: 'success',
+                            message: `"${proj.name}" published — suppliers can now submit bids.`,
+                          })}
+                        />
+                      )}
+                      <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/bids/${p.id}`)}>
+                        <Eye size={12} /> View Bids
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -354,18 +368,22 @@ function ProjectsPage() {
             }
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   )
 }
 
 // Publishes an approved procurement so eligible suppliers can start bidding.
-function PublishButton({ project }) {
+function PublishButton({ project, onPublished }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const onPublish = async () => {
     setBusy(true); setErr('')
-    try { await publishProject(project.id) }
+    try {
+      await publishProject(project.id)
+      onPublished?.(project)
+    }
     catch (e) { setErr(e.message || 'Publish failed.'); setBusy(false) }
   }
   return (
@@ -423,6 +441,66 @@ function DocUploader({ doc, file, onFile, onRemove }) {
   )
 }
 
+// Read-only detail view for a planning procurement: its info + uploaded documents.
+function ProjectDetailModal({ project, onClose }) {
+  return (
+    <div className="ad-modal-overlay" onClick={onClose}>
+      <div className="ad-modal" onClick={e => e.stopPropagation()}>
+        <div className="ad-modal-header">
+          <div>
+            <h3>{project.name}</h3>
+            <p className="ad-muted ad-small">{project.code} · {project.category || '—'}</p>
+          </div>
+          <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <div className="ad-modal-body">
+          <div className="ad-modal-badges">
+            <span className={`badge ${STATUS_CLS[project.status] || 'badge-gray'}`}>
+              • {STATUS_LABEL[project.status] || project.status}
+            </span>
+          </div>
+
+          {project.status === 'rejected' && project.rejectReason && (
+            <div className="ad-modal-error"><AlertTriangle size={15} /> Reason: {project.rejectReason}</div>
+          )}
+
+          <div className="ad-info-grid">
+            <Info2 label="Procurement Type" value={project.type} />
+            <Info2 label="Approved Budget (ABC)" value={project.budget} />
+            <Info2 label="Bid Submission Deadline" value={project.deadline} />
+            <Info2 label="Expected Delivery" value={project.expectedDelivery} />
+            <Info2 label="Delivery Location" value={project.deliveryLocation} />
+            <Info2 label="Submitted" value={project.submittedAt} />
+            <Info2 label="Description" value={project.description} full />
+          </div>
+
+          <div className="ad-docs-head"><FileText size={15} /> Procurement Documents</div>
+          <div className="ad-docs-list">
+            {project.documents.map(d => (
+              <div className="ad-doc-row" key={d.key}>
+                <div className="ad-doc-main">
+                  <div className="ad-doc-name">
+                    <span className="ad-bold">{d.label}</span>
+                    <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+                  </div>
+                  {d.url
+                    ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                    : <span className="ad-doc-missing">Not uploaded</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="ad-modal-footer">
+          <button className="ad-btn-cancel" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PlanningPage() {
   const { projects, loading } = useProjects()
   const [search, setSearch] = useState('')
@@ -431,6 +509,8 @@ function PlanningPage() {
   const [files, setFiles] = useState({})        // { docKey: File }
   const [submitting, setSubmitting] = useState(false)
   const [submitErr, setSubmitErr] = useState('')
+  const [toast, setToast] = useState(null)      // { type, message }
+  const [viewProject, setViewProject] = useState(null) // project shown in detail modal
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   const onDoc = (key, file) => {
@@ -454,6 +534,7 @@ function PlanningPage() {
     try {
       await createProject(form, files)
       resetForm()
+      setToast({ type: 'success', message: 'Procurement submitted to the Head for approval.' })
     } catch (err) {
       setSubmitErr(err.message || 'Could not create the project. Please try again.')
     } finally {
@@ -472,6 +553,8 @@ function PlanningPage() {
 
   return (
     <div className="ad-content">
+      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
+      {viewProject && <ProjectDetailModal project={viewProject} onClose={() => setViewProject(null)} />}
       <div className="ad-card">
         <div className="ad-card-header">
           <div className="ad-search-inline">
@@ -555,6 +638,7 @@ function PlanningPage() {
           </div>
         )}
 
+        <div className="ad-table-scroll">
         <table className="ad-table">
           <thead>
             <tr>
@@ -587,7 +671,9 @@ function PlanningPage() {
                   </td>
                   <td>
                     <div className="ad-actions">
-                      <button className="ad-btn-view-sm"><Eye size={12} /> View Details</button>
+                      <button className="ad-btn-view-sm" onClick={() => setViewProject(p)}>
+                        <Eye size={12} /> View Details
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -595,6 +681,7 @@ function PlanningPage() {
             }
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   )
@@ -700,6 +787,7 @@ function SuppliersPage() {
             <input placeholder="Search by company or name" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
         </div>
+        <div className="ad-table-scroll">
         <table className="ad-table">
           <thead>
             <tr>
@@ -741,6 +829,7 @@ function SuppliersPage() {
             }
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   )
@@ -875,6 +964,10 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
     onConfirm: () => runAction(() => apiSupplierReject(supplierId, note), 'Supplier rejected.'),
   })
 
+  // Once a supplier has been approved (or rejected), the modal becomes a
+  // read-only profile view — no checkboxes, no decision footer.
+  const decided = supplier?.qualification_status === 'verified' || supplier?.qualification_status === 'rejected'
+
   return (
     <div className="ad-modal-overlay" onClick={onClose}>
       <div className="ad-modal" onClick={e => e.stopPropagation()}>
@@ -912,7 +1005,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                 <Info2 label="Phone" value={supplier.phone_number} />
                 <Info2 label="TIN" value={supplier.tin} />
                 <Info2 label="Address" value={supplier.company_address} full />
-                <Info2 label="Business Types" value={(supplier.business_types || []).join(', ') || supplier.business_type} full />
+                <BusinessTypesInfo supplier={supplier} />
                 <Info2 label="Registered" value={supplier.registered} />
                 <Info2 label="Financial Year" value={supplier.financial_statement_year} />
               </div>
@@ -920,13 +1013,15 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
               <div className="ad-docs-head">
                 <FileText size={15} /> Uploaded Documents
               </div>
-              <div className="ad-docs-hint">
-                <Info size={15} />
-                <span>
-                  <strong>Tick the checkbox</strong> next to any document that has a problem to flag it for revision,
-                  then click <strong>Request Revision</strong> to send it back to the supplier.
-                </span>
-              </div>
+              {!decided && (
+                <div className="ad-docs-hint">
+                  <Info size={15} />
+                  <span>
+                    <strong>Tick the checkbox</strong> next to any document that has a problem to flag it for revision,
+                    then click <strong>Request Revision</strong> to send it back to the supplier.
+                  </span>
+                </div>
+              )}
               <div className="ad-docs-list">
                 {supplier.documents.map(d => {
                   const checked = !!flags[d.key]?.checked
@@ -935,14 +1030,16 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                   return (
                     <div className={`ad-doc-row${rowCls}`} key={d.key}>
                       <div className="ad-doc-main">
-                        <label className="ad-doc-check">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={!d.url}
-                            onChange={() => toggleFlag(d.key)}
-                          />
-                        </label>
+                        {!decided && (
+                          <label className="ad-doc-check">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!d.url}
+                              onChange={() => toggleFlag(d.key)}
+                            />
+                          </label>
+                        )}
                         <div className="ad-doc-name">
                           <span className="ad-bold">{d.label}</span>
                           <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
@@ -976,30 +1073,41 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                 })}
               </div>
 
-              <div className="ad-field">
-                <label>Message to supplier (overall note)</label>
-                <textarea
-                  rows={2}
-                  placeholder="Optional message shown to the supplier with your decision…"
-                  value={note}
-                  onChange={e => setNote(e.target.value)}
-                />
-              </div>
+              {decided ? (
+                supplier.admin_notes ? (
+                  <div className="ad-field">
+                    <label>Message to supplier</label>
+                    <p className="ad-muted ad-small" style={{ margin: 0 }}>{supplier.admin_notes}</p>
+                  </div>
+                ) : null
+              ) : (
+                <div className="ad-field">
+                  <label>Message to supplier (overall note)</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Optional message shown to the supplier with your decision…"
+                    value={note}
+                    onChange={e => setNote(e.target.value)}
+                  />
+                </div>
+              )}
             </div>
 
             <div className="ad-modal-footer">
               <button className="ad-btn-cancel" onClick={onClose}>Close</button>
-              <div className="ad-modal-footer-actions">
-                <button className="ad-btn-reject" disabled={busy} onClick={handleReject}>
-                  <XCircle size={14} /> Reject
-                </button>
-                <button className="ad-btn-revision" disabled={busy} onClick={handleRequestRevision}>
-                  <AlertTriangle size={14} /> Request Revision
-                </button>
-                <button className="ad-btn-approve" disabled={busy} onClick={handleApprove}>
-                  <Check size={14} /> Approve
-                </button>
-              </div>
+              {!decided && (
+                <div className="ad-modal-footer-actions">
+                  <button className="ad-btn-reject" disabled={busy} onClick={handleReject}>
+                    <XCircle size={14} /> Reject
+                  </button>
+                  <button className="ad-btn-revision" disabled={busy} onClick={handleRequestRevision}>
+                    <AlertTriangle size={14} /> Request Revision
+                  </button>
+                  <button className="ad-btn-approve" disabled={busy} onClick={handleApprove}>
+                    <Check size={14} /> Approve
+                  </button>
+                </div>
+              )}
             </div>
           </>
         )}
@@ -1021,6 +1129,33 @@ function Info2({ label, value, full }) {
     <div className={`ad-info-item${full ? ' ad-info-full' : ''}`}>
       <span className="ad-info-label">{label}</span>
       <span className="ad-info-value">{value || '—'}</span>
+    </div>
+  )
+}
+
+// Normalize a supplier's business types into a list (the JSON list is the source
+// of truth; fall back to splitting the legacy comma-joined string).
+function supplierBusinessTypes(supplier) {
+  if (Array.isArray(supplier?.business_types) && supplier.business_types.length) {
+    return supplier.business_types
+  }
+  return (supplier?.business_type || '')
+    .split(',').map(s => s.trim()).filter(Boolean)
+}
+
+// Shows every category the supplier registered for as chips (handles many).
+function BusinessTypesInfo({ supplier }) {
+  const types = supplierBusinessTypes(supplier)
+  return (
+    <div className="ad-info-item ad-info-full">
+      <span className="ad-info-label">Business Types</span>
+      {types.length === 0 ? (
+        <span className="ad-info-value">—</span>
+      ) : (
+        <div className="ad-chips">
+          {types.map(t => <span className="ad-chip" key={t}>{t}</span>)}
+        </div>
+      )}
     </div>
   )
 }
@@ -1065,23 +1200,52 @@ function Toast({ type, message, onClose }) {
 
 // ── Bids Page ─────────────────────────────────────────────────────────────────
 
+// Status groups for the evaluation list. "Active" hides finished (awarded/closed)
+// projects so the ones still needing a decision are front and centre.
+const BID_STATUS_FILTERS = {
+  active:  { label: 'Active (needs review)', test: p => ['approved', 'published', 'active'].includes(p.status) },
+  awarded: { label: 'Awarded',              test: p => p.status === 'awarded' },
+  all:     { label: 'All statuses',         test: () => true },
+}
+const BID_SORTS = {
+  bids_desc: { label: 'Most bids',        cmp: (a, b) => b.bids - a.bids },
+  deadline:  { label: 'Deadline soonest', cmp: (a, b) => bidDeadlineVal(a) - bidDeadlineVal(b) },
+  name:      { label: 'Name (A–Z)',       cmp: (a, b) => a.name.localeCompare(b.name) },
+}
+// Sort projects with no/invalid deadline to the end.
+function bidDeadlineVal(p) {
+  const t = new Date(p.deadline).getTime()
+  return Number.isNaN(t) ? Infinity : t
+}
+
 function BidsPage() {
   const { projects, loading } = useProjects()
   const navigate = useNavigate()
   const [filterTab, setFilterTab] = useState('All')
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('active')
+  const [sort, setSort] = useState('bids_desc')
   const TABS = ['All', 'Goods', 'Services', 'Infrastructure', 'More']
 
   // Only Head-approved projects can receive/evaluate bids — not drafts, items
   // still awaiting approval, or rejected ones (those stay in Planning).
   const biddable = projects.filter(p => !['draft', 'pending_head', 'rejected'].includes(p.status))
 
-  const filtered = biddable.filter(p => {
-    if (filterTab === 'All')            return true
+  const matchesType = (p) => {
     if (filterTab === 'Services')       return p.type.includes('Services')
     if (filterTab === 'Goods')          return p.type.includes('Equipment') || p.type.includes('Goods')
     if (filterTab === 'Infrastructure') return p.type.includes('Infrastructure')
-    return true
-  })
+    return true  // 'All' and 'More'
+  }
+
+  const q = search.trim().toLowerCase()
+  const filtered = biddable
+    .filter(p =>
+      matchesType(p) &&
+      BID_STATUS_FILTERS[statusFilter].test(p) &&
+      (!q || p.name.toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q))
+    )
+    .sort(BID_SORTS[sort].cmp)
 
   return (
     <div className="ad-content">
@@ -1089,11 +1253,48 @@ function BidsPage() {
         <h2 className="ad-bids-title">Select a Project to Evaluate</h2>
         <p className="ad-bids-sub">Click a project below to review and evaluate submitted bids.</p>
       </div>
+
+      <div className="ad-bids-toolbar">
+        <div className="ad-search-inline">
+          <Search size={14} />
+          <input
+            placeholder="Search by project name or code"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="ad-bids-toolbar-right">
+          <label className="ad-select-wrap">
+            <span>Status</span>
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+              {Object.entries(BID_STATUS_FILTERS).map(([key, { label }]) => (
+                <option key={key} value={key}>{label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="ad-select-wrap">
+            <span>Sort</span>
+            <select value={sort} onChange={e => setSort(e.target.value)}>
+              {Object.entries(BID_SORTS).map(([key, { label }]) => (
+                <option key={key} value={key}>{label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
+
       <div className="ad-filter-pills">
         {TABS.map(t => (
           <button key={t} className={`ad-pill${filterTab === t ? ' ad-pill-active' : ''}`} onClick={() => setFilterTab(t)}>{t}</button>
         ))}
       </div>
+
+      {!loading && (
+        <div className="ad-bids-count">
+          Showing {filtered.length} of {biddable.length} project{biddable.length !== 1 ? 's' : ''}
+        </div>
+      )}
+
       <div className="ad-bid-cards">
         {loading && filtered.length === 0
           ? Array.from({ length: 3 }).map((_, i) => (
@@ -1105,7 +1306,11 @@ function BidsPage() {
               </div>
             ))
           : filtered.length === 0
-          ? <div className="ad-empty-msg">No projects available for bidding yet.</div>
+          ? <div className="ad-empty-msg">
+              {biddable.length === 0
+                ? 'No projects available for bidding yet.'
+                : 'No projects match your search or filters.'}
+            </div>
           : filtered.map(p => (
             <div className="ad-bid-card" key={p.id} onClick={() => navigate(`/admin/bids/${p.id}`)} role="button" tabIndex={0}>
               <div className="ad-bid-card-top">

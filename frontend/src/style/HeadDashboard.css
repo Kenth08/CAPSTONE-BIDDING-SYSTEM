@@ -1,6 +1,7 @@
 .hd-layout {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;          /* lock to the viewport so the page itself doesn't scroll */
+  overflow: hidden;
   background: #f1f5f9;
 }
 
@@ -130,7 +131,7 @@
 }
 .hd-sidebar-expand:hover { background: rgba(255,255,255,0.08); color: white; }
 
-.hd-main { flex: 1; min-width: 0; margin-left: 260px; display: flex; flex-direction: column; }
+.hd-main { flex: 1; min-width: 0; margin-left: 260px; display: flex; flex-direction: column; height: 100vh; min-height: 0; }
 .hd-header {
   height: 64px;
   background: #0a0f1e;
@@ -232,8 +233,8 @@
 .hd-user-info span:first-child { font-size: 13px; font-weight: 700; color: white; }
 .hd-user-info span:last-child { font-size: 11px; color: var(--text-muted); }
 
-.hd-body { padding: 28px; }
-.hd-content { display: flex; flex-direction: column; gap: 24px; }
+.hd-body { padding: 28px; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.hd-content { display: flex; flex-direction: column; gap: 24px; flex: 1; min-height: 0; }
 
 .hd-stats {
   display: grid;
@@ -276,6 +277,31 @@
 }
 .hd-card-header h2 { font-size: 16px; font-weight: 700; color: var(--text-dark); }
 .hd-card-header p { font-size: 13px; color: var(--text-gray); margin-top: 2px; }
+
+/* Filter pills (All / Approved / Rejected) on the Reviewed Projects page */
+.hd-filter-pills {
+  display: flex; align-items: center; gap: 6px;
+  padding: 14px 24px; border-bottom: 1px solid var(--light-border);
+  flex-wrap: wrap;
+}
+.hd-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 999px;
+  font-size: 13px; font-weight: 500; color: var(--text-gray);
+  background: transparent; border: 1.5px solid var(--light-border);
+  cursor: pointer; transition: all 0.15s;
+}
+.hd-pill:hover { border-color: var(--primary); color: var(--primary); }
+.hd-pill-active {
+  background: var(--primary); color: #fff;
+  border-color: var(--primary); font-weight: 600;
+}
+.hd-pill-count {
+  font-size: 11px; font-weight: 700; line-height: 1;
+  padding: 2px 6px; border-radius: 999px;
+  background: rgba(0,0,0,0.08);
+}
+.hd-pill-active .hd-pill-count { background: rgba(255,255,255,0.25); }
 .hd-pending-badge {
   background: rgba(245,158,11,0.1);
   color: #f59e0b;
@@ -399,7 +425,8 @@
 .hd-btn-outline:hover { border-color: #8b5cf6; color: #8b5cf6; }
 
 /* TABLE */
-.hd-table-wrap { overflow-x: auto; }
+/* Scroll long tables inside their card; the header row stays pinned. */
+.hd-table-wrap { overflow: auto; max-height: calc(100vh - 260px); }
 .hd-table {
   width: 100%;
   border-collapse: collapse;
@@ -413,6 +440,9 @@
   padding: 12px 24px;
   background: var(--light-bg);
   border-bottom: 1px solid var(--light-border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 .hd-table td {
   padding: 14px 24px;
@@ -619,7 +649,12 @@
 .hd-btn-review:hover { background: #d97706; }
 
 /* PENDING CARDS */
-.hd-pending-list { display: flex; flex-direction: column; gap: 0; }
+.hd-pending-list {
+  display: flex; flex-direction: column; gap: 0;
+  /* Long queues scroll within the card instead of the whole page. */
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+}
 .hd-pending-card {
   border-bottom: 1px solid var(--light-border);
   padding: 18px 24px;

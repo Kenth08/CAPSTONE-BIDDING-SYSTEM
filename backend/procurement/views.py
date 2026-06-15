@@ -7,8 +7,10 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .models import (
+    SUPPLIER_DOCUMENT_FIELDS,
     SUPPLIER_DOCUMENT_KEYS,
     Award,
     Bid,
@@ -19,6 +21,7 @@ from .models import (
 )
 from rest_framework import permissions
 
+from .notifications import notify_admins, notify_heads, notify_supplier, notify_users
 from .permissions import IsAdminRole, IsHeadRole, IsSupplierRole
 from .serializers import (
     AwardSerializer,
@@ -29,6 +32,58 @@ from .serializers import (
     SupplierDetailSerializer,
     SupplierListSerializer,
 )
+
+
+class PublicProcurementView(APIView):
+    """Unauthenticated public window into the procurement process.
+
+    Anyone — no account, no login — can see the procurements currently open for
+    bidding and the contracts that have already been awarded. This powers the
+    public "Public Results" page; bidding itself still requires a verified
+    supplier account, so the page only exposes read-only summary data (never
+    documents, bid amounts, or supplier contact details)."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        published = (
+            Project.objects.filter(status=Project.Status.PUBLISHED)
+            .annotate(num_bids=Count("bids"))
+            .order_by("deadline", "-created_at")
+        )
+        biddings = [
+            {
+                "code": p.code,
+                "name": p.name,
+                "category": p.category,
+                "type": p.type,
+                "budget": str(p.budget),
+                "deadline": p.deadline,
+                "delivery_location": p.delivery_location,
+                "bids": p.num_bids,
+            }
+            for p in published
+        ]
+
+        awards = (
+            Award.objects.select_related("project", "supplier")
+            .filter(status=Award.Status.WON)
+            .order_by("-awarded_at")
+        )
+        winners = [
+            {
+                "code": a.project.code,
+                "name": a.project.name,
+                "category": a.project.category,
+                "winner": a.supplier.company,
+                "amount": str(a.amount),
+                "awarded_at": a.awarded_at,
+            }
+            for a in awards
+        ]
+
+        return Response({"biddings": biddings, "winners": winners})
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
@@ -93,6 +148,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
             bid.notes = request.data.get("notes", "") or ""
             bid.status = Bid.Status.UNDER_REVIEW
             bid.save()
+        verb = "submitted a bid on" if created else "updated their bid on"
+        notify_admins(
+            f"{supplier.company} {verb} \"{project.name}\" ({project.code}).",
+            link="/admin/bids",
+        )
         return Response(BidSerializer(bid).data, status=http_status.HTTP_201_CREATED)
 
     def perform_create(self, serializer):
@@ -102,7 +162,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
         code = f"P-{year}-{count:03d}"
         user = self.request.user if self.request.user.is_authenticated else None
         # Created from Planning → goes straight into the Head's approval queue.
-        serializer.save(code=code, created_by=user, status=Project.Status.PENDING_HEAD)
+        project = serializer.save(code=code, created_by=user, status=Project.Status.PENDING_HEAD)
+        notify_heads(
+            f"New procurement \"{project.name}\" ({project.code}) needs your approval.",
+            link="/head/pending",
+        )
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
@@ -112,6 +176,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
         project.reject_reason = ""
         project.reviewed_at = timezone.now()
         project.save()
+        notify_users(
+            [project.created_by],
+            f"Your procurement \"{project.name}\" ({project.code}) was approved by the Head.",
+            link="/admin/projects",
+        )
         return Response(self.get_serializer(project).data)
 
     @action(detail=True, methods=["post"])
@@ -122,6 +191,13 @@ class ProjectViewSet(viewsets.ModelViewSet):
         project.reject_reason = request.data.get("reason", "") or ""
         project.reviewed_at = timezone.now()
         project.save()
+        reason = project.reject_reason.strip()
+        notify_users(
+            [project.created_by],
+            f"Your procurement \"{project.name}\" ({project.code}) was rejected by the Head."
+            + (f" Reason: {reason}" if reason else ""),
+            link="/admin/projects",
+        )
         return Response(self.get_serializer(project).data)
 
     @action(detail=True, methods=["post"])
@@ -129,6 +205,20 @@ class ProjectViewSet(viewsets.ModelViewSet):
         project = self.get_object()
         project.status = Project.Status.PUBLISHED
         project.save()
+        # Notify verified suppliers whose categories match — the ones who can bid.
+        # Filtered in Python (mirrors get_queryset) to avoid JSONField lookup quirks.
+        if project.category:
+            verified = Supplier.objects.select_related("user").filter(
+                qualification_status=Supplier.Qualification.VERIFIED,
+            )
+            recipients = [
+                s.user for s in verified if project.category in (s.business_types or [])
+            ]
+            notify_users(
+                recipients,
+                f"New procurement open for bidding: \"{project.name}\" ({project.code}).",
+                link="/supplier/projects",
+            )
         return Response(self.get_serializer(project).data)
 
     @action(detail=False, methods=["get"])
@@ -178,7 +268,12 @@ class SupplierViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"])
     def resubmit(self, request):
-        """Supplier re-uploads documents the admin flagged, then re-enters the queue."""
+        """Supplier re-uploads documents the admin flagged, then re-enters the queue.
+
+        Each re-uploaded document is marked 'resubmitted' (not just cleared) so the
+        admin can tell at a glance which file is new and needs a fresh look, while
+        the documents that were already accepted stay marked 'approved'.
+        """
         supplier = self._own_supplier(request)
         if supplier is None:
             return Response({"detail": "No supplier profile found."}, status=http_status.HTTP_404_NOT_FOUND)
@@ -189,7 +284,10 @@ class SupplierViewSet(viewsets.ModelViewSet):
             uploaded = request.FILES.get(key)
             if uploaded:
                 setattr(supplier, key, uploaded)
-                reviews.pop(key, None)  # clear the revision flag for this doc
+                prev_note = (reviews.get(key) or {}).get("note", "")
+                # Mark as resubmitted (carry the original note for context) instead
+                # of removing it, so the admin sees exactly what changed.
+                reviews[key] = {"status": "resubmitted", "note": prev_note}
                 updated.append(key)
 
         if not updated:
@@ -202,6 +300,12 @@ class SupplierViewSet(viewsets.ModelViewSet):
         supplier.qualification_status = Supplier.Qualification.PENDING
         supplier.reviewed_at = None
         supplier.save()
+
+        # Tell the admins this supplier re-submitted so it returns to their queue.
+        notify_admins(
+            f"{supplier.company} re-submitted {len(updated)} document(s) for review.",
+            link="/admin/suppliers",
+        )
         return self._detail_response(supplier)
 
     # ── Admin review decisions ────────────────────────────────────────────
@@ -214,6 +318,11 @@ class SupplierViewSet(viewsets.ModelViewSet):
         supplier.admin_notes = request.data.get("note", "") or supplier.admin_notes
         supplier.reviewed_at = timezone.now()
         supplier.save()
+        notify_supplier(
+            supplier,
+            "Your supplier account has been verified. You can now submit bids.",
+            link="/supplier/projects",
+        )
         return self._detail_response(supplier)
 
     @action(detail=True, methods=["post"])
@@ -223,6 +332,12 @@ class SupplierViewSet(viewsets.ModelViewSet):
         supplier.admin_notes = request.data.get("note", "")
         supplier.reviewed_at = timezone.now()
         supplier.save()
+        reason = (supplier.admin_notes or "").strip()
+        notify_supplier(
+            supplier,
+            "Your supplier registration was rejected." + (f" Reason: {reason}" if reason else ""),
+            link="/supplier/profile",
+        )
         return self._detail_response(supplier)
 
     @action(detail=True, methods=["post"], url_path="request-revision")
@@ -235,20 +350,39 @@ class SupplierViewSet(viewsets.ModelViewSet):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        reviews = {}
-        for key, note in documents.items():
+        # Start from the existing review state so we don't lose context, then:
+        #  - flagged documents     -> needs_revision (with the admin's note)
+        #  - every other uploaded  -> approved (so the supplier/admin can see the
+        #                             rest were accepted and only fix what's flagged)
+        reviews = dict(supplier.document_reviews or {})
+        for key in documents:
             if key not in SUPPLIER_DOCUMENT_KEYS:
                 return Response(
                     {"detail": f"Unknown document '{key}'."},
                     status=http_status.HTTP_400_BAD_REQUEST,
                 )
-            reviews[key] = {"status": "needs_revision", "note": note or ""}
+        for key in SUPPLIER_DOCUMENT_KEYS:
+            if key in documents:
+                reviews[key] = {"status": "needs_revision", "note": documents[key] or ""}
+            elif getattr(supplier, key, None):
+                reviews[key] = {"status": "approved", "note": ""}
+            else:
+                reviews.pop(key, None)
 
         supplier.document_reviews = reviews
         supplier.qualification_status = Supplier.Qualification.NEEDS_REVISION
         supplier.admin_notes = request.data.get("note", "")
         supplier.reviewed_at = timezone.now()
         supplier.save()
+
+        flagged = ", ".join(
+            label for key, label, _ in SUPPLIER_DOCUMENT_FIELDS if key in documents
+        )
+        notify_supplier(
+            supplier,
+            f"Revision requested on: {flagged}. Please re-upload the flagged document(s).",
+            link="/supplier/profile",
+        )
         return self._detail_response(supplier)
 
 
@@ -284,12 +418,24 @@ class BidViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def qualify(self, request, pk=None):
         """Mark a bid Qualified (passed the evaluation criteria)."""
-        return self._set_status(self.get_object(), Bid.Status.QUALIFIED)
+        bid = self.get_object()
+        notify_supplier(
+            bid.supplier,
+            f"Your bid on \"{bid.project.name}\" ({bid.project.code}) qualified for evaluation.",
+            link="/supplier/bids",
+        )
+        return self._set_status(bid, Bid.Status.QUALIFIED)
 
     @action(detail=True, methods=["post"])
     def disqualify(self, request, pk=None):
         """Mark a bid Disqualified."""
-        return self._set_status(self.get_object(), Bid.Status.DISQUALIFIED)
+        bid = self.get_object()
+        notify_supplier(
+            bid.supplier,
+            f"Your bid on \"{bid.project.name}\" ({bid.project.code}) was disqualified.",
+            link="/supplier/bids",
+        )
+        return self._set_status(bid, Bid.Status.DISQUALIFIED)
 
     @action(detail=True, methods=["post"], url_path="select-winner")
     def select_winner(self, request, pk=None):

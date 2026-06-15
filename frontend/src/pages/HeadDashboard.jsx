@@ -344,9 +344,23 @@ function PendingPage() {
   )
 }
 
+const REVIEW_TABS = ['All', 'Approved', 'Rejected']
+
 function ApprovedPage() {
   const { projects, loading } = useProjects()
-  const approved = projects.filter(isReviewed)
+  const [tab, setTab] = useState('All')
+  const reviewed = projects.filter(isReviewed)
+  const approvedCount = reviewed.filter(p => decisionOf(p) === 'approved').length
+  const rejectedCount = reviewed.filter(p => decisionOf(p) === 'rejected').length
+
+  // Apply the active filter tab.
+  const filtered = reviewed.filter(p =>
+    tab === 'Approved' ? decisionOf(p) === 'approved' :
+    tab === 'Rejected' ? decisionOf(p) === 'rejected' : true
+  )
+
+  const tabCount = (t) => t === 'Approved' ? approvedCount : t === 'Rejected' ? rejectedCount : reviewed.length
+
   return (
     <div className="hd-content">
       <div className="hd-card">
@@ -355,14 +369,27 @@ function ApprovedPage() {
             <h2>Reviewed Projects</h2>
             <p>All projects you have approved or rejected</p>
           </div>
-          <span className="badge badge-green">{approved.filter(p => decisionOf(p) === 'approved').length} approved</span>
+          <span className="badge badge-green">{approvedCount} approved</span>
         </div>
-        {loading && approved.length === 0 ? (
+
+        <div className="hd-filter-pills">
+          {REVIEW_TABS.map(t => (
+            <button
+              key={t}
+              className={`hd-pill${tab === t ? ' hd-pill-active' : ''}`}
+              onClick={() => setTab(t)}
+            >
+              {t} <span className="hd-pill-count">{tabCount(t)}</span>
+            </button>
+          ))}
+        </div>
+
+        {loading && reviewed.length === 0 ? (
           <div className="hd-empty"><p>Loading projects…</p></div>
-        ) : approved.length === 0 ? (
+        ) : filtered.length === 0 ? (
           <div className="hd-empty">
             <FolderOpen size={36} className="hd-empty-icon" />
-            <p>No reviewed projects yet.</p>
+            <p>{reviewed.length === 0 ? 'No reviewed projects yet.' : `No ${tab.toLowerCase()} projects.`}</p>
           </div>
         ) : (
           <div className="hd-table-wrap">
@@ -371,7 +398,7 @@ function ApprovedPage() {
                 <tr><th>ID</th><th>Project Name</th><th>Category</th><th>Budget</th><th>Deadline</th><th>Reviewed On</th><th>Decision</th></tr>
               </thead>
               <tbody>
-                {approved.map(p => (
+                {filtered.map(p => (
                   <tr key={p.id}>
                     <td className="hd-id">{p.code}</td>
                     <td className="hd-bold">{p.name}</td>

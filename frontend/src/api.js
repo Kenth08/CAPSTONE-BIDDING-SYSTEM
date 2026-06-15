@@ -71,6 +71,20 @@ export async function apiRegisterSupplier(formData) {
   return res.json()
 }
 
+// ── Public (no auth) ────────────────────────────────────────────────────────
+// The public "Public Results" page anyone can browse: procurements open for
+// bidding + already-awarded contracts. No token is sent.
+export async function apiPublicProcurement() {
+  let res
+  try {
+    res = await fetch(`${API_URL}/public/procurement/`)
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (!res.ok) throw new Error('Unable to load public results right now. Please try again later.')
+  return res.json() // { biddings: [...], winners: [...] }
+}
+
 // ── Authenticated requests (for wiring dashboard data later) ───────────────────
 export async function apiFetch(path, options = {}) {
   const token = getToken()

@@ -294,9 +294,12 @@ function RevisionPanel({ profile, onResubmitted, setToast }) {
 
 // ─── Sidebar / Header ────────────────────────────────────────────────────────
 
-function SupplierSidebar({ active, open, onClose }) {
+function SupplierSidebar({ active, open, onClose, profile }) {
   const navigate = useNavigate()
   const isActive = (to) => to === '/supplier' ? active === '/supplier' : active.startsWith(to)
+  const name = profile?.full_name || profile?.contact || 'Supplier User'
+  const email = profile?.email || ''
+  const initial = (name || 'S').trim().charAt(0).toUpperCase()
   return (
     <aside className={`sd-sidebar${open ? ' open' : ''}`}>
       <div className="sd-sidebar-logo">
@@ -319,10 +322,10 @@ function SupplierSidebar({ active, open, onClose }) {
       </div>
       <div className="sd-sidebar-footer">
         <div className="sd-sidebar-user">
-          <div className="sd-sidebar-avatar">S</div>
+          <div className="sd-sidebar-avatar">{initial}</div>
           <div className="sd-sidebar-user-info">
-            <span className="sd-sidebar-user-name">Supplier User</span>
-            <span className="sd-sidebar-user-email">supplier@buildright.com</span>
+            <span className="sd-sidebar-user-name">{name}</span>
+            <span className="sd-sidebar-user-email">{email}</span>
           </div>
           <button
             className="sd-sidebar-expand"
@@ -382,9 +385,13 @@ function NotificationsBell() {
   )
 }
 
-function SupplierHeader({ title, onMenu }) {
+function SupplierHeader({ title, onMenu, profile }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
+  const name = profile?.full_name || profile?.contact || 'Supplier User'
+  const company = profile?.company || ''
+  const email = profile?.email || ''
+  const initial = (name || 'S').trim().charAt(0).toUpperCase()
   return (
     <header className="sd-header">
       <div className="sd-header-left">
@@ -402,10 +409,10 @@ function SupplierHeader({ title, onMenu }) {
         <NotificationsBell />
         <div className="sd-user-wrap">
           <div className="sd-user" onClick={() => setOpen(o => !o)}>
-            <div className="sd-avatar">S</div>
+            <div className="sd-avatar">{initial}</div>
             <div className="sd-user-info">
-              <span>Supplier User</span>
-              <span>BuildRight Corp</span>
+              <span>{name}</span>
+              <span>{company}</span>
             </div>
             <ChevronDown size={14} color="#64748b" />
           </div>
@@ -414,10 +421,10 @@ function SupplierHeader({ title, onMenu }) {
               <div className="sd-dropdown-backdrop" onClick={() => setOpen(false)} />
               <div className="sd-dropdown">
                 <div className="sd-dropdown-header">
-                  <div className="sd-avatar">S</div>
+                  <div className="sd-avatar">{initial}</div>
                   <div>
-                    <div className="sd-dropdown-name">Supplier User</div>
-                    <div className="sd-dropdown-email">supplier@buildright.com</div>
+                    <div className="sd-dropdown-name">{name}</div>
+                    <div className="sd-dropdown-email">{email}</div>
                   </div>
                 </div>
                 <div className="sd-dropdown-divider" />
@@ -585,6 +592,7 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading }) {
             No open procurements match your categories right now. Check back later.
           </div>
         ) : (
+          <div className="sd-table-scroll">
           <table className="sd-table">
             <thead>
               <tr><th>ID</th><th>Project</th><th>Budget</th><th>Category</th><th>Deadline</th><th></th></tr>
@@ -611,6 +619,7 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>
@@ -645,6 +654,7 @@ function SupplierBids({ bids, onWithdraw, loading }) {
             No bids submitted yet. Browse projects to submit your first bid.
           </div>
         ) : (
+          <div className="sd-table-scroll">
           <table className="sd-table">
             <thead>
               <tr><th>Project</th><th>Amount</th><th>Notes</th><th>Submitted</th><th>Status</th><th></th></tr>
@@ -666,6 +676,7 @@ function SupplierBids({ bids, onWithdraw, loading }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>
@@ -761,84 +772,68 @@ function SupplierStatusPage({ bids, profile, eligible }) {
   )
 }
 
-function SupplierProfile() {
-  const [editing, setEditing] = useState(false)
-  const [profile, setProfile] = useState({
-    name:     'Supplier User',
-    company:  'BuildRight Corp',
-    email:    'supplier@buildright.com',
-    phone:    '+63 912 345 6789',
-    address:  '123 Builder St., Makati City',
-    category: 'Infrastructure',
-    tin:      '123-456-789-000',
-  })
-  const [form, setForm] = useState(profile)
-  const [saved, setSaved] = useState(false)
+// Normalize the supplier's registered categories into a list. The JSON list is
+// the source of truth; fall back to the legacy comma-joined string.
+function profileBusinessTypes(profile) {
+  if (Array.isArray(profile?.business_types) && profile.business_types.length) {
+    return profile.business_types
+  }
+  return (profile?.business_type || '')
+    .split(',').map(s => s.trim()).filter(Boolean)
+}
 
-  const handleSave = (e) => {
-    e.preventDefault()
-    setProfile(form)
-    setEditing(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2500)
+function SupplierProfile({ profile, eligible }) {
+  if (!profile) {
+    return (
+      <div className="sd-content">
+        <div className="sd-card">
+          <div style={{ padding: '40px 24px' }}><ListSkeleton rows={4} height={48} /></div>
+        </div>
+      </div>
+    )
   }
 
+  const businessTypes = profileBusinessTypes(profile)
   const fields = [
-    { key: 'name',     label: 'Full Name' },
-    { key: 'company',  label: 'Company Name' },
-    { key: 'email',    label: 'Email Address', type: 'email' },
-    { key: 'phone',    label: 'Phone Number' },
-    { key: 'address',  label: 'Business Address' },
-    { key: 'category', label: 'Category' },
-    { key: 'tin',      label: 'TIN Number' },
+    { label: 'Full Name',        value: profile.full_name || profile.contact },
+    { label: 'Company Name',     value: profile.company },
+    { label: 'Email Address',    value: profile.email },
+    { label: 'Phone Number',     value: profile.phone_number },
+    { label: 'Business Address', value: profile.company_address },
+    { label: 'TIN Number',       value: profile.tin },
   ]
+
+  const qs = profile.qualification_status
+  const verifyDate = qs === 'verified'
+    ? (profile.reviewed_at ? new Date(profile.reviewed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Approved')
+    : QUAL_STATUS[qs]?.label || 'Pending review'
 
   return (
     <div className="sd-content">
-      {saved && (
-        <div className="sd-toast">
-          <CheckCircle2 size={15} /> Profile updated successfully.
-        </div>
-      )}
-
       <div className="sd-card">
         <div className="sd-card-header">
           <div><h2>My Profile</h2><p>Your company and account information</p></div>
-          {!editing && (
-            <button className="sd-btn-primary" onClick={() => { setForm(profile); setEditing(true) }}>
-              Edit Profile
-            </button>
-          )}
         </div>
 
-        {editing ? (
-          <form onSubmit={handleSave} className="sd-profile-form">
-            {fields.map(({ key, label, type = 'text' }) => (
-              <div className="sd-form-group" key={key}>
-                <label>{label}</label>
-                <input
-                  type={type}
-                  value={form[key]}
-                  onChange={e => setForm({ ...form, [key]: e.target.value })}
-                  required
-                />
-              </div>
-            ))}
-            <div className="sd-profile-actions">
-              <button type="button" className="sd-btn-cancel" onClick={() => setEditing(false)}>Cancel</button>
-              <button type="submit" className="sd-btn-primary">Save Changes</button>
+        <div className="sd-profile-grid">
+          {fields.map(({ label, value }) => (
+            <div className="sd-profile-field" key={label}>
+              <span className="sd-profile-label">{label}</span>
+              <span className="sd-profile-value">{value || '—'}</span>
             </div>
-          </form>
-        ) : (
-          <div className="sd-profile-grid">
-            {fields.map(({ key, label }) => (
-              <div className="sd-profile-field" key={key}>
-                <span className="sd-profile-label">{label}</span>
-                <span className="sd-profile-value">{profile[key]}</span>
+          ))}
+          {/* All registered categories — a supplier can pick several at sign-up. */}
+          <div className="sd-profile-field sd-profile-field-full">
+            <span className="sd-profile-label">Business Types</span>
+            {businessTypes.length === 0 ? (
+              <span className="sd-profile-value">—</span>
+            ) : (
+              <div className="sd-chips">
+                {businessTypes.map(t => <span className="sd-chip" key={t}>{t}</span>)}
               </div>
-            ))}
+            )}
           </div>
-        )}
+        </div>
       </div>
 
       <div className="sd-card sd-status-card">
@@ -848,17 +843,17 @@ function SupplierProfile() {
         <div className="sd-status-body">
           <div className="sd-status-item">
             <CheckCircle2 size={18} className="sd-check" />
-            <div><span className="sd-bold">Account Registered</span><span className="sd-muted">Jun 1, 2026</span></div>
+            <div><span className="sd-bold">Account Registered</span><span className="sd-muted">{profile.registered || '—'}</span></div>
           </div>
           <div className="sd-status-divider" />
           <div className="sd-status-item">
-            <CheckCircle2 size={18} className="sd-check" />
-            <div><span className="sd-bold">Admin Approved</span><span className="sd-muted">Jun 3, 2026</span></div>
+            {eligible ? <CheckCircle2 size={18} className="sd-check" /> : <Clock size={18} className="sd-clock" />}
+            <div><span className="sd-bold">Admin Verification</span><span className="sd-muted">{verifyDate}</span></div>
           </div>
           <div className="sd-status-divider" />
           <div className="sd-status-item">
-            <CheckCircle2 size={18} className="sd-check" />
-            <div><span className="sd-bold">Eligible to Bid</span><span className="sd-muted">Active on all open projects</span></div>
+            {eligible ? <CheckCircle2 size={18} className="sd-check" /> : <Lock size={18} className="sd-clock" />}
+            <div><span className="sd-bold">Eligible to Bid</span><span className="sd-muted">{eligible ? 'Active on all matching projects' : 'Locked until approved'}</span></div>
           </div>
         </div>
       </div>
@@ -934,10 +929,10 @@ export default function SupplierDashboard() {
 
   return (
     <div className="sd-layout">
-      <SupplierSidebar active={loc.pathname} open={navOpen} onClose={() => setNavOpen(false)} />
+      <SupplierSidebar active={loc.pathname} open={navOpen} onClose={() => setNavOpen(false)} profile={profile} />
       {navOpen && <div className="sd-nav-backdrop" onClick={() => setNavOpen(false)} />}
       <div className="sd-main">
-        <SupplierHeader title={title} onMenu={() => setNavOpen(true)} />
+        <SupplierHeader title={title} onMenu={() => setNavOpen(true)} profile={profile} />
         {toast && <SupplierToast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
         <div className="sd-body">
           <Routes>
@@ -945,7 +940,7 @@ export default function SupplierDashboard() {
             <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} loading={loadingProjects} />} />
             <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} loading={loadingBids} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
-            <Route path="profile"  element={<SupplierProfile />} />
+            <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} />} />
             <Route path="*"        element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
           </Routes>
         </div>

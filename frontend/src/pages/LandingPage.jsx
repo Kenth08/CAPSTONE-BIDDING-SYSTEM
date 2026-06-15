@@ -71,7 +71,7 @@ export default function LandingPage() {
           <a href="#roles">Roles</a>
         </div>
         <div className="lp-nav-right">
-          <Link to="/" className="lp-public-btn"><Eye size={14} /> Public Results</Link>
+          <Link to="/public" className="lp-public-btn"><Eye size={14} /> Public Results</Link>
           <Link to="/login" className="btn-primary lp-login-btn">Login</Link>
         </div>
       </nav>

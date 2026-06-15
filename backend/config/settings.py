@@ -97,6 +97,11 @@ if os.environ.get('DB_HOST'):
             'HOST': os.environ.get('DB_HOST'),
             'PORT': os.environ.get('DB_PORT', '5432'),
             'OPTIONS': {'sslmode': 'require'},
+            # Reuse connections across requests instead of opening a fresh
+            # SSL connection to the remote DB every time (the main cause of
+            # slow login/registration). Safe with Supabase's session pooler.
+            'CONN_MAX_AGE': 600,
+            'CONN_HEALTH_CHECKS': True,
         }
     }
 else:
@@ -104,6 +109,28 @@ else:
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
+
+
+# Cache
+# Throttle/rate-limit counters live in the cache. By default Django uses a
+# per-process in-memory cache, which is fine for development and a single-worker
+# deployment. In production with multiple workers/instances, set REDIS_URL in
+# .env (e.g. redis://127.0.0.1:6379/1) so every worker shares one counter and
+# the login limit is enforced across the whole fleet.
+if os.environ.get('REDIS_URL'):
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': os.environ['REDIS_URL'],
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'eprocurement-throttle',
         }
     }
 
@@ -146,7 +173,10 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 # Uploaded supplier documents
-MEDIA_URL = 'media/'
+# Leading slash matters: file URLs are built with request.build_absolute_uri()
+# from /api/... requests, so a relative 'media/' would resolve to /api/media/...
+# (404). '/media/' resolves to the media route registered in config/urls.py.
+MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -162,6 +192,19 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    # Rate limiting (throttling) applied to EVERY endpoint:
+    #  - anonymous callers are limited by IP, authenticated users by account.
+    # The login route additionally enforces a much stricter 5-per-15-minutes
+    # limit via accounts.throttling.LoginRateThrottle (see LoginView).
+    'DEFAULT_THROTTLE_CLASSES': (
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '60/min',
+        'user': '240/min',
+        'login': '5/15m',
+    },
 }
 
 # JWT lifetimes

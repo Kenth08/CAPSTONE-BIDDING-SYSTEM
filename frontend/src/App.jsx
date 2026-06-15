@@ -5,6 +5,7 @@ import SupplierDashboard from './pages/SupplierDashboard'
 import HeadDashboard from './pages/HeadDashboard'
 import LoginPage from './pages/LoginPage'
 import SupplierRegister from './pages/SupplierRegister'
+import PublicResultsPage from './pages/PublicResultsPage'
 import { getToken, getRole } from './api'
 
 function ProtectedRoute({ children, role }) {
@@ -22,6 +23,7 @@ function App() {
         <Route path="/"           element={<LandingPage />} />
         <Route path="/login"      element={<LoginPage />} />
         <Route path="/register"   element={<SupplierRegister />} />
+        <Route path="/public"     element={<PublicResultsPage />} />
         <Route path="/admin/*"    element={<ProtectedRoute role="admin"><AdminDashboard /></ProtectedRoute>} />
         <Route path="/supplier/*" element={<ProtectedRoute role="supplier"><SupplierDashboard /></ProtectedRoute>} />
         <Route path="/head/*"     element={<ProtectedRoute role="head"><HeadDashboard /></ProtectedRoute>} />

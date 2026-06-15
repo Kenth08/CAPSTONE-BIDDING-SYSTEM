@@ -1,7 +1,8 @@
 /* ── LAYOUT ───────────────────────────────────────────── */
 .ad-layout {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;          /* lock to the viewport so the page itself doesn't scroll */
+  overflow: hidden;
   background: #f1f5f9;
 }
 
@@ -202,6 +203,8 @@
   margin-left: 260px;
   display: flex;
   flex-direction: column;
+  height: 100vh;          /* fixed-height column: header stays, body scrolls */
+  min-height: 0;
 }
 
 /* ── HEADER ───────────────────────────────────────────── */
@@ -415,12 +418,19 @@
 /* ── BODY / CONTENT ───────────────────────────────────── */
 .ad-body {
   padding: 28px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;       /* fallback scroll if a page's content can't fit */
 }
 
 .ad-content {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  flex: 1;
+  min-height: 0;          /* let inner scroll regions size to the viewport */
 }
 
 /* ── STAT CARDS ───────────────────────────────────────── */
@@ -490,22 +500,39 @@
   display: grid;
   grid-template-columns: 1fr 340px;
   gap: 20px;
+  flex: 1;
+  min-height: 0;          /* fill the body height; inner lists scroll, page doesn't */
 }
 
 .ad-dash-main {
   display: flex;
   flex-direction: column;
   gap: 0;
+  min-height: 0;
+}
+
+/* The Recent Projects card flexes to fill the column; its list scrolls inside. */
+.ad-dash-main > .ad-card:first-child {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .ad-card-mt {
   margin-top: 20px;
+  flex-shrink: 0;
 }
 
 .ad-dash-side {
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
+
+/* Stats and filter pills keep their size; only the lists scroll. */
+.ad-stats { flex-shrink: 0; }
+.ad-card-header, .ad-filter-pills { flex-shrink: 0; }
 
 /* ── FILTER PILLS ─────────────────────────────────────── */
 .ad-filter-pills {
@@ -541,6 +568,11 @@
 /* ── PROJECT LIST (dashboard) ─────────────────────────── */
 .ad-project-list {
   padding: 4px 0;
+  /* Fill the remaining card height and scroll inside the card, so the list is the
+     only thing that scrolls — the header, pills, and stats stay fixed. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .ad-project-row {
@@ -566,7 +598,7 @@
 .badge-awarded { background: rgba(245,158,11,0.1); color: #f59e0b; border: 1px solid rgba(245,158,11,0.2); }
 
 /* ── EXPIRING DOCS ────────────────────────────────────── */
-.ad-expiring-list { padding: 4px 0; }
+.ad-expiring-list { padding: 4px 0; max-height: 240px; overflow-y: auto; }
 
 .ad-expiring-row {
   display: flex;
@@ -650,6 +682,13 @@
 }
 
 /* ── TABLE ────────────────────────────────────────────── */
+/* Wrap data tables so a long list scrolls within the card, not the whole page.
+   The header row stays pinned at the top of the scroll area. */
+.ad-table-scroll {
+  max-height: calc(100vh - 250px);
+  overflow-y: auto;
+}
+
 .ad-table {
   width: 100%;
   border-collapse: collapse;
@@ -667,6 +706,9 @@
   border-bottom: 1px solid var(--light-border);
   background: var(--light-bg);
 }
+
+/* Pin the header only inside a scroll wrapper. */
+.ad-table-scroll .ad-table th { position: sticky; top: 0; z-index: 1; }
 
 .ad-table td {
   padding: 12px 16px;
@@ -1054,10 +1096,40 @@
   color: var(--text-gray);
 }
 
+/* Bid-evaluation toolbar: search (left) + status/sort selects (right) */
+.ad-bids-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 16px 0 4px;
+  flex-wrap: wrap;
+}
+.ad-bids-toolbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ad-select-wrap { display: flex; align-items: center; gap: 6px; }
+.ad-select-wrap > span {
+  font-size: 12px; font-weight: 600; color: var(--text-gray);
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.ad-select-wrap select {
+  font-size: 13px; color: var(--text-dark);
+  background: var(--light-bg); border: 1px solid var(--light-border);
+  border-radius: 8px; padding: 7px 10px; cursor: pointer;
+}
+.ad-select-wrap select:focus { outline: none; border-color: var(--primary); }
+.ad-bids-count {
+  font-size: 12px; color: var(--text-gray);
+  margin: 4px 2px 12px;
+}
+
 .ad-bid-cards {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 16px;
+  /* Scroll the card grid internally when there are many projects. */
+  max-height: calc(100vh - 320px);
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .ad-bid-card {
@@ -1350,6 +1422,15 @@
   letter-spacing: 0.4px; color: var(--text-gray); margin-bottom: 3px;
 }
 .ad-info-value { font-size: 14px; color: var(--text-dark); word-break: break-word; }
+
+/* Business-type chips (a supplier can register for several categories) */
+.ad-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.ad-chip {
+  display: inline-flex; align-items: center; padding: 3px 10px;
+  font-size: 12px; font-weight: 500; line-height: 1.4;
+  color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe;
+  border-radius: 999px;
+}
 
 /* Documents */
 .ad-docs-head {

@@ -1,3 +1,4 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
@@ -6,6 +7,7 @@ from .views import (
     DocumentViewSet,
     NotificationViewSet,
     ProjectViewSet,
+    PublicProcurementView,
     SupplierViewSet,
 )
 
@@ -17,4 +19,8 @@ router.register(r"awards", AwardViewSet)
 router.register(r"documents", DocumentViewSet)
 router.register(r"notifications", NotificationViewSet, basename="notification")
 
-urlpatterns = router.urls
+# Public, unauthenticated endpoint (declared before the router so it isn't
+# shadowed by an authenticated route).
+urlpatterns = [
+    path("public/procurement/", PublicProcurementView.as_view(), name="public-procurement"),
+] + router.urls

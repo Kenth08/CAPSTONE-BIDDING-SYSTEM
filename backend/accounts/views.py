@@ -11,14 +11,19 @@ from .serializers import (
     SupplierRegisterSerializer,
     UserSerializer,
 )
+from .throttling import LoginRateThrottle
 
 User = get_user_model()
 
 
 class LoginView(TokenObtainPairView):
-    """POST {username, password} -> {access, refresh, user}."""
+    """POST {username, password} -> {access, refresh, user}.
+
+    Rate limited to 5 attempts per 15 minutes per IP to resist brute-force and
+    credential-stuffing attacks (overrides the global default throttle)."""
 
     serializer_class = RoleTokenObtainPairSerializer
+    throttle_classes = [LoginRateThrottle]
 
 
 class RegisterView(generics.CreateAPIView):

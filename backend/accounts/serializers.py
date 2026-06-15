@@ -1,6 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Q
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -130,7 +131,15 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
         # Fill the legacy fields the rest of the app already reads.
         validated_data["contact"] = validated_data.get("representative_name", "")
         validated_data["business_type"] = ", ".join(validated_data.get("business_types", []))
-        return Supplier.objects.create(user=user, **validated_data)
+        supplier = Supplier.objects.create(user=user, **validated_data)
+
+        # Let the admins know a new supplier is waiting for verification.
+        from procurement.notifications import notify_admins
+        notify_admins(
+            f"New supplier registration: {supplier.company} is waiting for approval.",
+            link="/admin/suppliers",
+        )
+        return supplier
 
 
 class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -158,13 +167,14 @@ class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
             )
 
         # Resolve an email to the matching account so login works either way.
-        user_obj = (
-            User.objects.filter(username__iexact=identifier).first()
-            or User.objects.filter(email__iexact=identifier).first()
-        )
+        # One query (username OR email) instead of two sequential round-trips.
+        user_obj = User.objects.filter(
+            Q(username__iexact=identifier) | Q(email__iexact=identifier)
+        ).first()
         if user_obj is None:
             raise serializers.ValidationError(
-                {"detail": "No account found with that username or email."}
+                {"detail": "No account found with that username or email. "
+                           "Please register to create an account."}
             )
         if not user_obj.is_active:
             raise serializers.ValidationError(

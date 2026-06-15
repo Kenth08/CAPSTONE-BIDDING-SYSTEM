@@ -1,6 +1,7 @@
 .sd-layout {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;          /* lock to the viewport so the page itself doesn't scroll */
+  overflow: hidden;
   background: #f1f5f9;
 }
 
@@ -130,7 +131,7 @@
 }
 .sd-sidebar-expand:hover { background: rgba(255,255,255,0.08); color: white; }
 
-.sd-main { flex: 1; margin-left: 260px; display: flex; flex-direction: column; }
+.sd-main { flex: 1; min-width: 0; margin-left: 260px; display: flex; flex-direction: column; height: 100vh; min-height: 0; }
 .sd-header {
   height: 64px;
   background: #0a0f1e;
@@ -271,8 +272,8 @@
 .sd-user-info span:first-child { font-size: 13px; font-weight: 700; color: white; }
 .sd-user-info span:last-child { font-size: 11px; color: var(--text-muted); }
 
-.sd-body { padding: 28px; }
-.sd-content { display: flex; flex-direction: column; gap: 24px; }
+.sd-body { padding: 28px; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.sd-content { display: flex; flex-direction: column; gap: 24px; flex: 1; min-height: 0; }
 
 .sd-stats {
   display: grid;
@@ -322,7 +323,7 @@
 .sd-view-all { font-size: 13px; color: #3b82f6; font-weight: 600; }
 .sd-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 24px; }
 
-.sd-projects-list { padding: 4px 0; }
+.sd-projects-list { padding: 4px 0; max-height: 360px; overflow-y: auto; }
 .sd-project-row {
   display: flex;
   align-items: center;
@@ -359,7 +360,7 @@
   flex-shrink: 0;
 }
 .sd-bid-btn:hover { background: #3b82f6; color: white; }
-.sd-bids-list { padding: 4px 0; }
+.sd-bids-list { padding: 4px 0; max-height: 360px; overflow-y: auto; }
 .sd-bid-row {
   display: flex;
   align-items: center;
@@ -400,6 +401,9 @@
   flex-shrink: 0;
 }
 
+/* Scroll long tables inside their card; the header row stays pinned. */
+.sd-table-scroll { overflow: auto; max-height: calc(100vh - 260px); }
+
 .sd-table {
   width: 100%;
   border-collapse: collapse;
@@ -414,6 +418,7 @@
   background: var(--light-bg);
   border-bottom: 1px solid var(--light-border);
 }
+.sd-table-scroll .sd-table th { position: sticky; top: 0; z-index: 1; }
 .sd-table td {
   padding: 14px 24px;
   font-size: 14px;
@@ -586,6 +591,16 @@
 .sd-profile-field { display: flex; flex-direction: column; gap: 4px; }
 .sd-profile-label { font-size: 11px; color: var(--text-gray); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
 .sd-profile-value { font-size: 14px; color: var(--text-dark); font-weight: 500; }
+.sd-profile-field-full { grid-column: 1 / -1; }
+
+/* Business-type chips (a supplier can register for several categories) */
+.sd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.sd-chip {
+  display: inline-flex; align-items: center; padding: 3px 10px;
+  font-size: 12px; font-weight: 500; line-height: 1.4;
+  color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe;
+  border-radius: 999px;
+}
 .sd-profile-form {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -718,3 +733,33 @@
 }
 .sd-toast-error { background: #fef2f2; border-color: #fca5a5; color: #b91c1c; }
 @keyframes sd-toast-in { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* ── RESPONSIVE ───────────────────────────────────────── */
+.sd-menu-btn { display: none; background: transparent; color: #fff; padding: 4px; }
+.sd-sidebar { transition: transform 0.25s ease; }
+.sd-nav-backdrop { position: fixed; inset: 0; z-index: 45; background: rgba(2, 6, 23, 0.55); }
+
+@media (max-width: 1100px) {
+  .sd-grid { grid-template-columns: 1fr; }
+  .sd-stats { grid-template-columns: repeat(2, 1fr); }
+  /* Wide tables scroll inside their card instead of stretching the page. */
+  .sd-card { overflow-x: auto; }
+  .sd-table { min-width: 620px; }
+}
+@media (max-width: 768px) {
+  .sd-sidebar { transform: translateX(-100%); }
+  .sd-sidebar.open { transform: translateX(0); }
+  .sd-main { margin-left: 0; }
+  .sd-menu-btn { display: inline-flex; align-items: center; }
+  .sd-header-left { flex-direction: row; align-items: center; gap: 12px; }
+  .sd-search { display: none; }
+  .sd-header { padding: 0 16px; }
+  .sd-body, .sd-content { padding: 16px; }
+  .sd-stats { grid-template-columns: 1fr 1fr; }
+  .sd-card-header { flex-wrap: wrap; gap: 10px; }
+  .sd-modal-meta { grid-template-columns: 1fr; }
+  .sd-user-info { display: none; }   /* keep just the avatar on phones */
+}
+@media (max-width: 480px) {
+  .sd-stats { grid-template-columns: 1fr; }
+}

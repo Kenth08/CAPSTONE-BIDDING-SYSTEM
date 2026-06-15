@@ -67,7 +67,15 @@ export default function LoginPage() {
                 </button>
               </div>
             </div>
-            {error && <div className="login-error">{error}</div>}
+            {error && (
+              <div className="login-error">
+                <span>{error}</span>
+                {/* No matching account → guide them straight to registration. */}
+                {/no account found/i.test(error) && (
+                  <Link to="/register" className="login-error-cta">Create a supplier account →</Link>
+                )}
+              </div>
+            )}
             <a href="#" className="login-forgot">Forgot password?</a>
             <button type="submit" className="login-submit" disabled={loading}>
               {loading ? 'Please wait…' : 'Sign In'}
