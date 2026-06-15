@@ -247,6 +247,14 @@ FRONTEND_URL = os.environ.get('FRONTEND_URL')
 if FRONTEND_URL:
     CORS_ALLOWED_ORIGINS.append(FRONTEND_URL)
 
+# Vercel generates a fresh preview URL for every deployment
+# (e.g. capstone-bidding-system-<hash>-<team>.vercel.app), so matching by exact
+# origin breaks on each redeploy. Allow any of this project's Vercel URLs —
+# both the production domain and the preview deployments — via a regex.
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r'^https://capstone-bidding-system[\w-]*\.vercel\.app$',
+]
+
 # Trust the deployed origins for CSRF (Django admin login, etc.).
 CSRF_TRUSTED_ORIGINS = []
 if RENDER_HOST:
