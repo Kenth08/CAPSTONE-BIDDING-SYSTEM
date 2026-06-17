@@ -4,7 +4,7 @@ import {
   LayoutDashboard, FolderOpen, FileText, Clock, CheckCircle2,
   Building2, Bell, Search, ChevronDown, ChevronRight, LogOut, Settings,
   Eye, ArrowRight, Shield, User, X, Send, Trophy, Trash2,
-  AlertTriangle, Upload, Lock, Menu
+  AlertTriangle, Upload, Lock, Menu, Camera, Check, Plus, Loader2, XCircle
 } from 'lucide-react'
 import {
   clearSession, apiGetMySupplier, apiResubmitDocuments,
@@ -20,16 +20,65 @@ const fmtPeso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
 const parseAmount = (s) => Number(String(s).replace(/[^\d.]/g, '')) || 0
 const mapProject = (p) => ({
   id: p.code, pk: p.id, name: p.name, budget: fmtPeso(p.budget),
+  budgetRaw: Number(p.budget || 0),  // numeric ABC for the live budget comparison
   deadline: fmtDate(p.deadline), category: p.category, description: p.description,
+  referenceImage: p.reference_image_url || '',  // optional required-product reference
 })
+
+// Declaration fields in display order: [serializer key, badge label].
+const BID_DECLARATIONS = [
+  ['terms_accepted', 'Terms and Conditions Accepted'],
+  ['interest_declared', 'Declaration of Interest Confirmed'],
+  ['scm_declared', 'Past SCM Practices Declared'],
+  ['accuracy_confirmed', 'Accuracy of Information Confirmed'],
+  ['specification_confirmed', 'Specification Match Confirmed'],
+]
+
+// Collect every uploaded file on a bid (raw serializer object) into a flat list
+// of { label, name, url } rows for the read-only checklist views.
+function collectBidFiles(b) {
+  const base = (url) => (url ? decodeURIComponent(url.split('/').pop()) : '')
+  const out = []
+  if (b.quotation_document_url) out.push({ label: 'Quotation Document', name: base(b.quotation_document_url), url: b.quotation_document_url })
+  if (b.technical_document_url) out.push({ label: 'Technical Proposal', name: base(b.technical_document_url), url: b.technical_document_url })
+  if (b.supplier_product_image_url) out.push({ label: 'Product Image', name: base(b.supplier_product_image_url), url: b.supplier_product_image_url })
+  if (b.supplier_datasheet_url) out.push({ label: 'Product Datasheet', name: base(b.supplier_datasheet_url), url: b.supplier_datasheet_url })
+  if (b.supplier_compliance_doc_url) out.push({ label: 'Compliance Document', name: base(b.supplier_compliance_doc_url), url: b.supplier_compliance_doc_url })
+  ;(b.attachments || []).forEach(a => out.push({ label: 'Other Attachment', name: a.file_name, url: a.url }))
+  return out
+}
+
 const mapBid = (b) => ({
   id: b.id, project: b.project_name, projectId: b.project_code,
   amount: fmtPeso(b.amount), submitted: fmtDate(b.submitted_at), status: b.status, notes: b.notes,
+  deliveryTimeline: b.delivery_timeline || '',
+  brandName: b.brand_name || '', modelNumber: b.model_number || '',
+  additionalComments: b.additional_comments || '',
+  files: collectBidFiles(b),
+  declarations: BID_DECLARATIONS.map(([key, label]) => ({ label, ok: !!b[key] })),
 })
 
-// File rules mirror the registration form.
-const ALLOWED_EXT = ['pdf', 'jpg', 'jpeg', 'png']
+// ── Bid document upload rules (per-field types; shared 5 MB cap) ──────────────
 const MAX_MB = 5
+// accept: the <input accept> attribute; exts: allowed extensions; text: shown in the box.
+const UPLOAD_RULES = {
+  productImage:  { accept: '.jpg,.jpeg,.png', exts: ['jpg', 'jpeg', 'png'], text: 'JPG or PNG' },
+  datasheet:     { accept: '.pdf,.docx,.xlsx', exts: ['pdf', 'docx', 'xlsx'], text: 'PDF, DOCX or XLSX' },
+  compliance:    { accept: '.pdf', exts: ['pdf'], text: 'PDF only' },
+  quotation:     { accept: '.pdf,.doc,.docx', exts: ['pdf', 'doc', 'docx'], text: 'PDF, DOC or DOCX' },
+  technical:     { accept: '.pdf,.doc,.docx,.png,.jpg,.jpeg', exts: ['pdf', 'doc', 'docx', 'png', 'jpg', 'jpeg'], text: 'PDF, DOC, DOCX, PNG or JPG' },
+  other:         { accept: '.pdf,.jpg,.jpeg,.png,.docx,.xlsx', exts: ['pdf', 'jpg', 'jpeg', 'png', 'docx', 'xlsx'], text: 'PDF, JPG, PNG, DOCX or XLSX' },
+}
+// Returns an error string or null. Messages match the spec exactly.
+function validateBidFile(file, rule) {
+  const ext = file.name.split('.').pop().toLowerCase()
+  if (!rule.exts.includes(ext)) return 'Only the accepted file types are allowed.'
+  if (file.size > MAX_MB * 1024 * 1024) return 'File must be under 5MB.'
+  return null
+}
+
+// Legacy validator kept for the document re-submission panel (PDF/JPG/PNG).
+const ALLOWED_EXT = ['pdf', 'jpg', 'jpeg', 'png']
 function validateFile(file) {
   const ext = file.name.split('.').pop().toLowerCase()
   if (!ALLOWED_EXT.includes(ext)) return `Unsupported type ".${ext}". Use PDF, JPG, or PNG.`
@@ -64,75 +113,421 @@ const BID_STATUS = {
   lost:         'badge-red',
 }
 
-// ─── Bid submit modal ────────────────────────────────────────────────────────
+// ─── Bid submit modal — building blocks ──────────────────────────────────────
 
-function BidModal({ project, onClose, onSubmit }) {
-  const [form, setForm] = useState({ amount: '', notes: '' })
-  const [error, setError] = useState('')
+// Checklist row shown after a file is selected: filled emerald check + name + X.
+function BidFileRow({ name, onRemove }) {
+  return (
+    <div className="sd-file-row">
+      <span className="sd-file-check"><Check size={12} /></span>
+      <span className="sd-file-rowname" title={name}>{name}</span>
+      <button type="button" className="sd-file-remove" onClick={onRemove} aria-label="Remove file">
+        <X size={14} />
+      </button>
+    </div>
+  )
+}
 
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    const raw = form.amount.replace(/[^0-9.]/g, '')
-    if (!raw || isNaN(Number(raw))) { setError('Enter a valid bid amount (e.g. ₱850,000)'); return }
-    onSubmit(project, form)
-    onClose()
+// One upload field: dashed box before upload, checklist row after.
+function BidUpload({ label, required, rule, hint, file, error, onPick, onRemove }) {
+  const ref = useRef(null)
+  const pick = (f) => { if (f) onPick(f) }
+  return (
+    <div className="sd-upload-field">
+      <label className="sd-upload-label">
+        {label}{required ? <span className="sd-req"> *</span> : <span className="sd-optional"> (optional)</span>}
+      </label>
+      {file ? (
+        <BidFileRow name={file.name} onRemove={onRemove} />
+      ) : (
+        <button type="button" className="sd-upload-box" onClick={() => ref.current?.click()}>
+          <Upload size={16} />
+          <span className="sd-upload-types">{rule.text}</span>
+          <span className="sd-upload-size">up to {MAX_MB}MB</span>
+        </button>
+      )}
+      <input ref={ref} type="file" accept={rule.accept} hidden
+        onChange={e => { pick(e.target.files[0]); e.target.value = '' }} />
+      {hint && <span className="sd-upload-hint">{hint}</span>}
+      {error && <span className="sd-field-error">{error}</span>}
+    </div>
+  )
+}
+
+// A required-declaration checkbox with an inline error when left unchecked.
+function BidDeclaration({ checked, onChange, error, children }) {
+  return (
+    <div className="sd-decl">
+      <label className="sd-decl-label">
+        <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} />
+        <span>{children}</span>
+      </label>
+      {error && <span className="sd-field-error sd-decl-error">This declaration is required.</span>}
+    </div>
+  )
+}
+
+// ─── Bid submit modal — step-by-step wizard ──────────────────────────────────
+
+const BID_STEPS = ['Bid Details', 'Documents', 'Declarations']
+
+function BidModal({ project, profile, onClose, onSubmit }) {
+  const hasRef = !!project.referenceImage
+  const [step, setStep] = useState(0)
+  const [amount, setAmount] = useState('')
+  const [deliveryTimeline, setDeliveryTimeline] = useState('')
+  const [notes, setNotes] = useState('')
+  const [additionalComments, setAdditionalComments] = useState('')
+  // Files
+  const [productImage, setProductImage] = useState(null)
+  const [datasheet, setDatasheet] = useState(null)
+  const [compliance, setCompliance] = useState(null)
+  const [quotation, setQuotation] = useState(null)
+  const [technical, setTechnical] = useState(null)
+  const [others, setOthers] = useState([])  // File[]
+  // Checkboxes
+  const [specMatch, setSpecMatch] = useState(false)
+  const [terms, setTerms] = useState(false)
+  const [interest, setInterest] = useState(false)
+  const [scm, setScm] = useState(false)
+  const [accuracy, setAccuracy] = useState(false)
+  // UI state
+  const [errors, setErrors] = useState({})
+  const [fileErrors, setFileErrors] = useState({})
+  const [submitting, setSubmitting] = useState(false)
+  const otherRef = useRef(null)
+  const scrollRef = useRef(null)
+
+  // Reset the scroll to the top whenever the step changes.
+  useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }) }, [step])
+
+  // Live budget comparison.
+  const bidValue = parseAmount(amount)
+  const overBudget = bidValue > 0 && project.budgetRaw > 0 && bidValue > project.budgetRaw
+
+  const pickFile = (rule, setter, key) => (file) => {
+    const msg = validateBidFile(file, rule)
+    if (msg) { setFileErrors(f => ({ ...f, [key]: msg })); return }
+    setFileErrors(f => ({ ...f, [key]: '' }))
+    setter(file)
   }
 
+  const addOthers = (file) => {
+    const msg = validateBidFile(file, UPLOAD_RULES.other)
+    if (msg) { setFileErrors(f => ({ ...f, other: msg })); return }
+    setFileErrors(f => ({ ...f, other: '' }))
+    setOthers(list => [...list, file])
+  }
+
+  // Per-step validation — returns the errors for just that step (empty = valid).
+  const errorsForStep = (s) => {
+    const errs = {}
+    if (s === 0) {
+      if (!(bidValue > 0)) errs.amount = 'Please enter a valid bid amount greater than zero.'
+      if (!deliveryTimeline.trim()) errs.deliveryTimeline = 'Please specify your delivery timeline.'
+      if (notes.trim().length < 20) errs.notes = 'Please provide a more detailed proposal of at least 20 characters.'
+    }
+    if (s === 1) {
+      if (!quotation) errs.quotation = 'Please upload your quotation document.'
+      if (hasRef && !specMatch) errs.specMatch = 'Please confirm your product matches the required specification.'
+    }
+    if (s === 2) {
+      if (!terms) errs.terms = true
+      if (!interest) errs.interest = true
+      if (!scm) errs.scm = true
+      if (!accuracy) errs.accuracy = true
+    }
+    return errs
+  }
+
+  const next = () => {
+    const errs = errorsForStep(step)
+    setErrors(errs)
+    if (Object.keys(errs).length === 0) setStep(s => Math.min(s + 1, BID_STEPS.length - 1))
+  }
+  const back = () => setStep(s => Math.max(s - 1, 0))
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    // Validate every step; jump to the first one with a problem if any.
+    const all = { ...errorsForStep(0), ...errorsForStep(1), ...errorsForStep(2) }
+    setErrors(all)
+    if (Object.keys(all).length) {
+      const firstBad = [0, 1, 2].find(s => Object.keys(errorsForStep(s)).length)
+      if (firstBad !== undefined) setStep(firstBad)
+      return
+    }
+
+    const fd = new FormData()
+    fd.append('amount', bidValue)
+    fd.append('delivery_timeline', deliveryTimeline.trim())
+    fd.append('notes', notes.trim())
+    fd.append('additional_comments', additionalComments.trim())
+    fd.append('terms_accepted', terms)
+    fd.append('interest_declared', interest)
+    fd.append('scm_declared', scm)
+    fd.append('accuracy_confirmed', accuracy)
+    fd.append('specification_confirmed', specMatch)
+    if (quotation) fd.append('quotation_document', quotation)
+    if (technical) fd.append('technical_document', technical)
+    if (productImage) fd.append('supplier_product_image', productImage)
+    if (datasheet) fd.append('supplier_datasheet', datasheet)
+    if (compliance) fd.append('supplier_compliance_doc', compliance)
+    others.forEach(f => fd.append('other_attachments', f))
+
+    setSubmitting(true)
+    const ok = await onSubmit(project, fd)
+    setSubmitting(false)
+    if (ok) onClose()
+  }
+
+  const companyName = profile?.company || '—'
+  const businessType = profile?.business_type || profileBusinessTypes(profile).join(', ') || '—'
+  const isLast = step === BID_STEPS.length - 1
+
   return (
-    <div className="sd-modal-overlay" onClick={onClose}>
-      <div className="sd-modal" onClick={e => e.stopPropagation()}>
+    <div className="sd-modal-overlay" onClick={() => !submitting && onClose()}>
+      <form className="sd-modal sd-modal-lg" onClick={e => e.stopPropagation()} onSubmit={handleSubmit}>
         <div className="sd-modal-header">
           <div>
             <h3>Submit Bid</h3>
             <p className="sd-muted sd-small">{project.id} · {project.name}</p>
           </div>
-          <button className="sd-modal-close" onClick={onClose}><X size={18} /></button>
+          <button type="button" className="sd-modal-close" onClick={onClose}><X size={18} /></button>
         </div>
-        <div className="sd-modal-meta">
-          <div><span>Budget</span><strong>{project.budget}</strong></div>
-          <div><span>Deadline</span><strong>{project.deadline}</strong></div>
-          <div><span>Category</span><strong>{project.category}</strong></div>
+
+        {/* Stepper — same pattern as the supplier registration form */}
+        <div className="sd-bid-stepper">
+          {BID_STEPS.map((label, i) => (
+            <div key={label} className="sd-bid-step-wrap">
+              <div className={`sd-bid-step${i < step ? ' done' : ''}${i === step ? ' active' : ''}`}>
+                {i < step ? <Check size={15} /> : i + 1}
+              </div>
+              <span className={i === step ? 'active' : ''}>{label}</span>
+              {i < BID_STEPS.length - 1 && <div className={`sd-bid-line${i < step ? ' done' : ''}`} />}
+            </div>
+          ))}
         </div>
-        <form onSubmit={handleSubmit} className="sd-modal-form">
-          <div className="sd-form-group">
-            <label>Your Bid Amount</label>
-            <input
-              type="text"
-              placeholder="e.g. ₱850,000"
-              value={form.amount}
-              onChange={e => { setForm({ ...form, amount: e.target.value }); setError('') }}
-              required
-            />
-            {error && <span className="sd-field-error">{error}</span>}
+
+        <div className="sd-bid-scroll" ref={scrollRef}>
+          {/* Reference image + metadata give context while pricing and matching */}
+          {hasRef && step < 2 && (
+            <div className="sd-refimg-section">
+              <div className="sd-refimg-label"><Camera size={14} /> Required Product Reference</div>
+              <img src={project.referenceImage} alt="Required product reference" className="sd-refimg-cover" />
+              <p className="sd-refimg-note">
+                This image shows the exact product specification required by the procuring entity.
+                Your bid must match this specification.
+              </p>
+            </div>
+          )}
+          <div className="sd-modal-meta">
+            <div><span>Budget</span><strong>{project.budget}</strong></div>
+            <div><span>Deadline</span><strong>{project.deadline}</strong></div>
+            <div><span>Category</span><strong>{project.category}</strong></div>
           </div>
-          <div className="sd-form-group">
-            <label>Notes / Proposal Summary</label>
-            <textarea
-              placeholder="Briefly describe your approach, timeline, and qualifications…"
-              value={form.notes}
-              onChange={e => setForm({ ...form, notes: e.target.value })}
-              rows={4}
-              required
-            />
+
+          <div className="sd-bid-body">
+            {/* ── STEP 1 — Bid details ───────────────────────────────────── */}
+            {step === 0 && (
+              <div className="sd-bid-section">
+                <h4 className="sd-bid-section-label">Required Information</h4>
+                <div className="sd-form-group">
+                  <label>Your Bid Amount <span className="sd-req">*</span></label>
+                  <div className="sd-peso-input">
+                    <span className="sd-peso-prefix">₱</span>
+                    <input type="number" min="0" placeholder="e.g. 850000" value={amount}
+                      onChange={e => { setAmount(e.target.value); setErrors(x => ({ ...x, amount: '' })) }} />
+                  </div>
+                  {bidValue > 0 && (
+                    <span className={overBudget ? 'sd-budget-warn' : 'sd-budget-ok'}>
+                      {overBudget ? 'Warning: this bid exceeds the project budget.' : 'Within project budget.'}
+                    </span>
+                  )}
+                  {errors.amount && <span className="sd-field-error">{errors.amount}</span>}
+                </div>
+
+                <div className="sd-form-group">
+                  <label>Delivery Timeline <span className="sd-req">*</span></label>
+                  <input type="text" placeholder="e.g. 30 days or 6 weeks" value={deliveryTimeline}
+                    onChange={e => { setDeliveryTimeline(e.target.value); setErrors(x => ({ ...x, deliveryTimeline: '' })) }} />
+                  <span className="sd-upload-hint">Specify how many days or weeks from contract signing until full delivery is completed.</span>
+                  {errors.deliveryTimeline && <span className="sd-field-error">{errors.deliveryTimeline}</span>}
+                </div>
+
+                <div className="sd-form-group">
+                  <label>Notes and Proposal Summary <span className="sd-req">*</span></label>
+                  <textarea rows={5}
+                    placeholder="Briefly describe your approach, timeline, qualifications and how you will fulfill the project requirements."
+                    value={notes}
+                    onChange={e => { setNotes(e.target.value); setErrors(x => ({ ...x, notes: '' })) }} />
+                  <span className={`sd-charcount${notes.trim().length < 20 ? ' sd-charcount-low' : ''}`}>
+                    {notes.trim().length} / 20 characters minimum
+                  </span>
+                  {errors.notes && <span className="sd-field-error">{errors.notes}</span>}
+                </div>
+              </div>
+            )}
+
+            {/* ── STEP 2 — Documents (product response + supporting docs) ─── */}
+            {step === 1 && (
+              <>
+                {hasRef && (
+                  <div className="sd-bid-section">
+                    <h4 className="sd-bid-section-label">Your Product Response</h4>
+                    <p className="sd-bid-section-hint">Upload files showing your matching product and confirm your product meets the specification.</p>
+                    <BidUpload label="Your Product Image" rule={UPLOAD_RULES.productImage}
+                      hint="Upload a photo of the exact product you are offering."
+                      file={productImage} error={fileErrors.productImage}
+                      onPick={pickFile(UPLOAD_RULES.productImage, setProductImage, 'productImage')}
+                      onRemove={() => setProductImage(null)} />
+                    <BidUpload label="Product Datasheet or Specification Sheet" rule={UPLOAD_RULES.datasheet}
+                      hint="Upload your product technical datasheet or specification document."
+                      file={datasheet} error={fileErrors.datasheet}
+                      onPick={pickFile(UPLOAD_RULES.datasheet, setDatasheet, 'datasheet')}
+                      onRemove={() => setDatasheet(null)} />
+                    <BidUpload label="Compliance or Certificate Document" rule={UPLOAD_RULES.compliance}
+                      hint="Upload any relevant compliance certificate or product authorization document."
+                      file={compliance} error={fileErrors.compliance}
+                      onPick={pickFile(UPLOAD_RULES.compliance, setCompliance, 'compliance')}
+                      onRemove={() => setCompliance(null)} />
+                    <div className="sd-decl">
+                      <label className="sd-decl-label">
+                        <input type="checkbox" checked={specMatch}
+                          onChange={e => { setSpecMatch(e.target.checked); setErrors(x => ({ ...x, specMatch: '' })) }} />
+                        <span>My offered product matches the required specification shown in the reference image above.</span>
+                      </label>
+                      {errors.specMatch && <span className="sd-field-error sd-decl-error">{errors.specMatch}</span>}
+                    </div>
+                  </div>
+                )}
+
+                <div className="sd-bid-section">
+                  <h4 className="sd-bid-section-label">Supporting Documents</h4>
+                  <BidUpload label="Quotation Document" required rule={UPLOAD_RULES.quotation}
+                    hint="Upload your formal price quotation with itemized costs and company letterhead. This is SBD 3 of the Philippine Government Procurement process."
+                    file={quotation} error={fileErrors.quotation}
+                    onPick={pickFile(UPLOAD_RULES.quotation, setQuotation, 'quotation')}
+                    onRemove={() => setQuotation(null)} />
+                  {errors.quotation && <span className="sd-field-error">{errors.quotation}</span>}
+                  <BidUpload label="Technical Proposal Document" rule={UPLOAD_RULES.technical}
+                    hint="Optional supporting document with detailed technical specifications or product brochures."
+                    file={technical} error={fileErrors.technical}
+                    onPick={pickFile(UPLOAD_RULES.technical, setTechnical, 'technical')}
+                    onRemove={() => setTechnical(null)} />
+
+                  <div className="sd-upload-field">
+                    <label className="sd-upload-label">Other Attachments <span className="sd-optional"> (optional)</span></label>
+                    {others.map((f, i) => (
+                      <BidFileRow key={i} name={f.name}
+                        onRemove={() => setOthers(list => list.filter((_, idx) => idx !== i))} />
+                    ))}
+                    {others.length === 0 ? (
+                      <button type="button" className="sd-upload-box" onClick={() => otherRef.current?.click()}>
+                        <Upload size={16} />
+                        <span className="sd-upload-types">{UPLOAD_RULES.other.text}</span>
+                        <span className="sd-upload-size">up to {MAX_MB}MB</span>
+                      </button>
+                    ) : (
+                      <button type="button" className="sd-add-file" onClick={() => otherRef.current?.click()}>
+                        <Plus size={13} /> Add another file
+                      </button>
+                    )}
+                    <input ref={otherRef} type="file" accept={UPLOAD_RULES.other.accept} hidden
+                      onChange={e => { if (e.target.files[0]) addOthers(e.target.files[0]); e.target.value = '' }} />
+                    <span className="sd-upload-hint">Any other relevant documents such as certifications, licenses or additional proposals.</span>
+                    {fileErrors.other && <span className="sd-field-error">{fileErrors.other}</span>}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* ── STEP 3 — Declarations, comments, company summary ────────── */}
+            {step === 2 && (
+              <>
+                <div className="sd-bid-section">
+                  <h4 className="sd-bid-section-label">Declarations and Compliance</h4>
+                  <p className="sd-bid-section-hint">All declarations are required by Philippine Government Procurement Law RA 9184 and must be confirmed before submitting your bid.</p>
+                  <BidDeclaration checked={terms} error={errors.terms}
+                    onChange={v => { setTerms(v); setErrors(x => ({ ...x, terms: false })) }}>
+                    I agree to be bound by the terms and conditions of this procurement bid as stated in the Invitation to Bid. This represents SBD 1 acceptance.
+                  </BidDeclaration>
+                  <BidDeclaration checked={interest} error={errors.interest}
+                    onChange={v => { setInterest(v); setErrors(x => ({ ...x, interest: false })) }}>
+                    I declare that I have no existing relationship or acquaintance with any member of the Bids and Awards Committee or school administration that could influence this bid. This represents SBD 4 Declaration of Interest.
+                  </BidDeclaration>
+                  <BidDeclaration checked={scm} error={errors.scm}
+                    onChange={v => { setScm(v); setErrors(x => ({ ...x, scm: false })) }}>
+                    I declare that I have never been blacklisted, suspended or penalized in any government procurement process in the Philippines. This represents SBD 8 Past Supply Chain Management Practices Declaration.
+                  </BidDeclaration>
+                  <BidDeclaration checked={accuracy} error={errors.accuracy}
+                    onChange={v => { setAccuracy(v); setErrors(x => ({ ...x, accuracy: false })) }}>
+                    I confirm that all information and documents submitted in this bid are true, accurate and complete to the best of my knowledge.
+                  </BidDeclaration>
+                </div>
+
+                <div className="sd-bid-section">
+                  <div className="sd-form-group">
+                    <label>Additional Comments for the Procuring Entity</label>
+                    <textarea rows={3} placeholder="Any additional information you want to share with the evaluator."
+                      value={additionalComments} onChange={e => setAdditionalComments(e.target.value)} />
+                  </div>
+                </div>
+
+                <div className="sd-bid-section">
+                  <div className="sd-company-box">
+                    <div className="sd-company-fields">
+                      <div className="sd-company-field">
+                        <span className="sd-profile-label">Company Name</span>
+                        <span className="sd-profile-value">{companyName}</span>
+                      </div>
+                      <div className="sd-company-field">
+                        <span className="sd-profile-label">Business Type</span>
+                        <span className="sd-profile-value">{businessType}</span>
+                      </div>
+                    </div>
+                    <p className="sd-company-note">
+                      Your registered business documents on file will be used for eligibility verification.
+                      The documents submitted during registration including your Business Permit, BIR Certificate
+                      and PhilGEPS Certificate are already on record.
+                    </p>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
-          <div className="sd-modal-footer">
-            <button type="button" className="sd-btn-cancel" onClick={onClose}>Cancel</button>
-            <button type="submit" className="sd-btn-primary">
-              <Send size={14} /> Submit Bid
-            </button>
+        </div>
+
+        {/* Action buttons — always visible, outside the scroll area */}
+        <div className="sd-modal-footer sd-bid-footer">
+          <button type="button" className="sd-btn-cancel" onClick={onClose} disabled={submitting}>Cancel</button>
+          <div className="sd-bid-footer-right">
+            {step > 0 && (
+              <button type="button" className="sd-btn-back" onClick={back} disabled={submitting}>Back</button>
+            )}
+            {isLast ? (
+              <button type="submit" className="sd-btn-primary" disabled={submitting}>
+                {submitting
+                  ? <><Loader2 size={14} className="sd-spin" /> Submitting…</>
+                  : <><Send size={14} /> Submit Bid</>}
+              </button>
+            ) : (
+              <button type="button" className="sd-btn-primary" onClick={next}>Continue</button>
+            )}
           </div>
-        </form>
-      </div>
+        </div>
+      </form>
     </div>
   )
 }
 
-// ─── Bid detail modal ────────────────────────────────────────────────────────
+// ─── Bid detail modal — read-only view of the supplier's own submission ──────
 
 function BidDetailModal({ bid, onClose, onWithdraw }) {
+  const canWithdraw = bid.status === 'submitted' || bid.status === 'under_review'
   return (
     <div className="sd-modal-overlay" onClick={onClose}>
-      <div className="sd-modal" onClick={e => e.stopPropagation()}>
+      <div className="sd-modal sd-modal-lg" onClick={e => e.stopPropagation()}>
         <div className="sd-modal-header">
           <div>
             <h3>Bid Details</h3>
@@ -140,22 +535,63 @@ function BidDetailModal({ bid, onClose, onWithdraw }) {
           </div>
           <button className="sd-modal-close" onClick={onClose}><X size={18} /></button>
         </div>
-        <div className="sd-modal-meta">
-          <div><span>Amount</span><strong>{bid.amount}</strong></div>
-          <div><span>Submitted</span><strong>{bid.submitted}</strong></div>
-          <div><span>Status</span><strong><span className={`badge ${BID_STATUS[bid.status] || 'badge-yellow'}`}>{bid.status.replace('_', ' ')}</span></strong></div>
-        </div>
-        <div className="sd-detail-notes">
-          <span className="sd-detail-label">Proposal Notes</span>
-          <p>{bid.notes || 'No notes provided.'}</p>
+        <div className="sd-bid-scroll">
+          <div className="sd-modal-meta">
+            <div><span>Amount</span><strong>{bid.amount}</strong></div>
+            <div><span>Submitted</span><strong>{bid.submitted}</strong></div>
+            <div><span>Status</span><strong><span className={`badge ${BID_STATUS[bid.status] || 'badge-yellow'}`}>{bid.status.replace('_', ' ')}</span></strong></div>
+          </div>
+          <div className="sd-bid-body">
+            <div className="sd-bid-section">
+              <h4 className="sd-bid-section-label">Bid Information</h4>
+              <div className="sd-detail-line"><span>Delivery Timeline</span><strong>{bid.deliveryTimeline || '—'}</strong></div>
+              {bid.brandName && <div className="sd-detail-line"><span>Brand Name</span><strong>{bid.brandName}</strong></div>}
+              {bid.modelNumber && <div className="sd-detail-line"><span>Model Number</span><strong>{bid.modelNumber}</strong></div>}
+              <div className="sd-detail-notes" style={{ padding: '12px 0 0' }}>
+                <span className="sd-detail-label">Proposal Notes</span>
+                <p>{bid.notes || 'No notes provided.'}</p>
+              </div>
+              {bid.additionalComments && (
+                <div className="sd-detail-notes" style={{ padding: '12px 0 0' }}>
+                  <span className="sd-detail-label">Additional Comments</span>
+                  <p>{bid.additionalComments}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="sd-bid-section">
+              <h4 className="sd-bid-section-label">Submitted Documents</h4>
+              {bid.files.length === 0 ? (
+                <p className="sd-muted sd-small">No documents uploaded.</p>
+              ) : (
+                <div className="sd-doc-list">
+                  {bid.files.map((f, i) => (
+                    <a key={i} className="sd-doc-row" href={f.url} target="_blank" rel="noreferrer">
+                      <span className="sd-file-check"><Check size={12} /></span>
+                      <span className="sd-file-rowname" title={f.name}>{f.name}</span>
+                      <span className="sd-doc-view"><Eye size={13} /> View</span>
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="sd-bid-section">
+              <h4 className="sd-bid-section-label">Declarations</h4>
+              <div className="sd-decl-badges">
+                {bid.declarations.map((d, i) => (
+                  <div className={`sd-decl-badge${d.ok ? '' : ' sd-decl-badge-no'}`} key={i}>
+                    {d.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                    <span>{d.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
         <div className="sd-modal-footer">
-          {(bid.status === 'submitted' || bid.status === 'under_review') && (
-            <button
-              type="button"
-              className="sd-btn-withdraw"
-              onClick={() => { onWithdraw(); onClose() }}
-            >
+          {canWithdraw && (
+            <button type="button" className="sd-btn-withdraw" onClick={() => { onWithdraw(); onClose() }}>
               <Trash2 size={14} /> Withdraw Bid
             </button>
           )}
@@ -457,7 +893,7 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
 
   return (
     <div className="sd-content">
-      {modal && <BidModal project={modal} onClose={() => setModal(null)} onSubmit={(proj, form) => { onBid(proj, form); setModal(null) }} />}
+      {modal && <BidModal project={modal} profile={profile} onClose={() => setModal(null)} onSubmit={onBid} />}
 
       <VerificationBanner profile={profile} />
       <RevisionPanel profile={profile} onResubmitted={onResubmitted} setToast={setToast} />
@@ -569,13 +1005,13 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
   )
 }
 
-function SupplierProjects({ projects, bids, onBid, eligible, loading }) {
+function SupplierProjects({ projects, bids, onBid, eligible, loading, profile }) {
   const [modal, setModal] = useState(null)
   const alreadyBid = new Set(bids.map(b => b.projectId))
 
   return (
     <div className="sd-content">
-      {modal && <BidModal project={modal} onClose={() => setModal(null)} onSubmit={(proj, form) => { onBid(proj, form); setModal(null) }} />}
+      {modal && <BidModal project={modal} profile={profile} onClose={() => setModal(null)} onSubmit={onBid} />}
       <div className="sd-card">
         <div className="sd-card-header">
           <div><h2>Bid Opportunities</h2><p>Procurements open for bidding that match your registered business categories</p></div>
@@ -898,13 +1334,17 @@ export default function SupplierDashboard() {
   // Verification is the real bidding gate (the admin approve action sets this).
   const eligible = profile?.qualification_status === 'verified'
 
-  const submitBid = async (project, form) => {
+  // Returns true on success so the modal can close itself (and stay open with the
+  // error toast on failure). `formData` is the multipart payload built in BidModal.
+  const submitBid = async (project, formData) => {
     try {
-      await apiSubmitBid(project.pk, parseAmount(form.amount), form.notes || '')
+      await apiSubmitBid(project.pk, formData)
       loadBids()
       setToast({ type: 'success', message: 'Bid submitted successfully.' })
+      return true
     } catch (err) {
       setToast({ type: 'error', message: err.message || 'Could not submit your bid.' })
+      return false
     }
   }
 
@@ -937,7 +1377,7 @@ export default function SupplierDashboard() {
         <div className="sd-body">
           <Routes>
             <Route index element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
-            <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} loading={loadingProjects} />} />
+            <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} loading={loadingProjects} profile={profile} />} />
             <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} loading={loadingBids} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} />} />

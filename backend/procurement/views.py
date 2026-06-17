@@ -14,6 +14,7 @@ from .models import (
     SUPPLIER_DOCUMENT_KEYS,
     Award,
     Bid,
+    BidAttachment,
     Document,
     Notification,
     Project,
@@ -118,7 +119,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def bid(self, request, pk=None):
         """A verified, category-matching supplier submits (or updates) a bid on a
-        published procurement. Eligibility is enforced here and by get_queryset."""
+        published procurement, with full documents + declarations (multipart).
+        Eligibility is enforced here and by get_queryset."""
         project = self.get_object()  # 404 already filters to eligible published projects
         supplier = Supplier.objects.filter(user=request.user).first()
         if supplier is None:
@@ -132,28 +134,97 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return Response({"detail": "This procurement is not open for bidding."},
                             status=http_status.HTTP_400_BAD_REQUEST)
 
+        data = request.data
+
+        # ── Required information ──────────────────────────────────────────────
         try:
-            amount = float(request.data.get("amount"))
+            amount = float(data.get("amount"))
             assert amount > 0
         except (TypeError, ValueError, AssertionError):
-            return Response({"detail": "Enter a valid bid amount."},
+            return Response({"detail": "Please enter a valid bid amount greater than zero."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+
+        delivery_timeline = (data.get("delivery_timeline") or "").strip()
+        if not delivery_timeline:
+            return Response({"detail": "Please specify your delivery timeline."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+
+        notes = (data.get("notes") or "").strip()
+        if len(notes) < 20:
+            return Response({"detail": "Please provide a more detailed proposal of at least 20 characters."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+
+        # ── Declarations (all four are mandatory under RA 9184) ───────────────
+        def _truthy(value):
+            return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+        terms_accepted = _truthy(data.get("terms_accepted"))
+        interest_declared = _truthy(data.get("interest_declared"))
+        scm_declared = _truthy(data.get("scm_declared"))
+        accuracy_confirmed = _truthy(data.get("accuracy_confirmed"))
+        if not all([terms_accepted, interest_declared, scm_declared, accuracy_confirmed]):
+            return Response(
+                {"detail": "All declarations are required before submitting your bid."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Specification confirmation only applies when the project has a reference image.
+        specification_confirmed = _truthy(data.get("specification_confirmed"))
+        if project.reference_image and not specification_confirmed:
+            return Response(
+                {"detail": "Please confirm your product matches the required specification."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Quotation document is required ────────────────────────────────────
+        quotation = request.FILES.get("quotation_document")
+        existing = Bid.objects.filter(project=project, supplier=supplier).first()
+        if quotation is None and (existing is None or not existing.quotation_document):
+            return Response({"detail": "Please upload your quotation document."},
                             status=http_status.HTTP_400_BAD_REQUEST)
 
         bid, created = Bid.objects.get_or_create(
-            project=project, supplier=supplier,
-            defaults={"amount": amount, "notes": request.data.get("notes", "") or ""},
+            project=project, supplier=supplier, defaults={"amount": amount},
         )
-        if not created:
-            bid.amount = amount
-            bid.notes = request.data.get("notes", "") or ""
-            bid.status = Bid.Status.UNDER_REVIEW
-            bid.save()
+
+        bid.amount = amount
+        bid.notes = notes
+        bid.delivery_timeline = delivery_timeline
+        bid.additional_comments = (data.get("additional_comments") or "").strip()
+        bid.brand_name = (data.get("brand_name") or "").strip() or None
+        bid.model_number = (data.get("model_number") or "").strip() or None
+        bid.warranty_period = (data.get("warranty_period") or "").strip() or None
+        bid.terms_accepted = terms_accepted
+        bid.interest_declared = interest_declared
+        bid.scm_declared = scm_declared
+        bid.accuracy_confirmed = accuracy_confirmed
+        bid.specification_confirmed = specification_confirmed
+        bid.status = Bid.Status.UNDER_REVIEW
+
+        # Replace any uploaded file only when a new one is provided (so re-submitting
+        # without re-attaching keeps the previously uploaded document).
+        for field in (
+            "quotation_document", "technical_document", "supplier_product_image",
+            "supplier_datasheet", "supplier_compliance_doc",
+        ):
+            uploaded = request.FILES.get(field)
+            if uploaded is not None:
+                setattr(bid, field, uploaded)
+        bid.save()
+
+        # Multiple "Other Attachments" — each becomes its own row.
+        for uploaded in request.FILES.getlist("other_attachments"):
+            BidAttachment.objects.create(bid=bid, file=uploaded, file_name=uploaded.name)
+
         verb = "submitted a bid on" if created else "updated their bid on"
         notify_admins(
             f"{supplier.company} {verb} \"{project.name}\" ({project.code}).",
             link="/admin/bids",
         )
-        return Response(BidSerializer(bid).data, status=http_status.HTTP_201_CREATED)
+        return Response(
+            BidSerializer(bid, context={"request": request}).data,
+            status=http_status.HTTP_201_CREATED,
+        )
 
     def perform_create(self, serializer):
         # Auto-generate a code like P-2026-001
@@ -398,7 +469,8 @@ class BidViewSet(viewsets.ModelViewSet):
         return [IsAdminRole()]
 
     def get_queryset(self):
-        qs = Bid.objects.select_related("project", "supplier", "supplier__user")
+        qs = Bid.objects.select_related(
+            "project", "supplier", "supplier__user").prefetch_related("attachments")
         role = getattr(self.request.user, "role", None)
         if role == "supplier":
             qs = qs.filter(supplier__user=self.request.user)

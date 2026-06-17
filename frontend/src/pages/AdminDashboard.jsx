@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
   Search, ChevronRight, LogOut, Shield,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
-  CheckCircle2, AlertTriangle, XCircle, Check, Menu
+  CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon
 } from 'lucide-react'
 import {
   clearSession, apiListSuppliers, apiGetSupplier,
@@ -402,6 +402,7 @@ const PROCUREMENT_TYPES = ['Goods', 'Services', 'Infrastructure', 'Consulting Se
 const EMPTY_PROJECT = {
   name: '', category: '', type: 'Goods', budget: '',
   delivery_location: '', deadline: '', expected_delivery_date: '', description: '',
+  reference_image: null,   // optional product reference photo (File)
 }
 const REQUIRED_PROCUREMENT_DOCS = [
   { key: 'purchase_request', label: 'Purchase Request (PR)' },
@@ -416,6 +417,86 @@ const checkDoc = (f) => {
   if (!DOC_EXT.includes(ext)) return `Unsupported type ".${ext}". Use PDF, JPG, or PNG.`
   if (f.size > 5 * 1024 * 1024) return 'File is too large (max 5 MB).'
   return ''
+}
+
+// Reference image rules: image types only (JPG/PNG/WEBP), max 5 MB. Returns an
+// error message or '' when the file is acceptable.
+const IMG_EXT = ['jpg', 'jpeg', 'png', 'webp']
+const checkImage = (f) => {
+  const ext = f.name.split('.').pop().toLowerCase()
+  if (!IMG_EXT.includes(ext)) return 'Only image files are accepted.'
+  if (f.size > 5 * 1024 * 1024) return 'Image must be under 5MB.'
+  return ''
+}
+const fmtBytes = (n) => {
+  if (!n && n !== 0) return ''
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// Optional reference-image upload control: dashed drop zone that swaps to an
+// image preview (with a remove button) once a file is chosen. `file` is a File;
+// `existingUrl` is a previously-saved image shown when editing.
+function ReferenceImageUploader({ file, existingUrl, onFile, onRemove }) {
+  const [preview, setPreview] = useState('')
+  const [dragOver, setDragOver] = useState(false)
+
+  useEffect(() => {
+    if (file) {
+      const url = URL.createObjectURL(file)
+      setPreview(url)
+      return () => URL.revokeObjectURL(url)
+    }
+    setPreview('')
+  }, [file])
+
+  const shown = preview || existingUrl
+  const handleDrop = (e) => {
+    e.preventDefault(); setDragOver(false)
+    const dropped = e.dataTransfer.files?.[0]
+    if (dropped) onFile(dropped)
+  }
+
+  return (
+    <div className="ad-form-full">
+      <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-dark)' }}>
+        Reference Image <span className="ad-opt-tag" style={{ marginLeft: 6 }}>Optional</span>
+      </label>
+      <div className="ad-muted ad-small" style={{ marginBottom: 10 }}>
+        Upload a photo or image showing the exact product, model, color, or design you require.
+        This helps suppliers understand exactly what to bid for.
+      </div>
+
+      {shown ? (
+        <div className="ad-refimg-preview">
+          <img src={shown} alt="Reference preview" className="ad-refimg-img" />
+          <button type="button" className="ad-refimg-remove" onClick={onRemove} aria-label="Remove image">
+            <X size={14} />
+          </button>
+          {file && (
+            <div className="ad-refimg-meta">
+              <span className="ad-refimg-name" title={file.name}>{file.name}</span>
+              <span className="ad-muted ad-small">{fmtBytes(file.size)}</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <label
+          className={`ad-refimg-drop${dragOver ? ' ad-refimg-drop-over' : ''}`}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+        >
+          <ImageIcon size={28} className="ad-muted" />
+          <span className="ad-refimg-cta">Click to upload or drag and drop</span>
+          <span className="ad-muted ad-small">JPG, PNG, WEBP · max 5MB</span>
+          <input type="file" accept=".jpg,.jpeg,.png,.webp" hidden
+            onChange={(e) => { if (e.target.files[0]) onFile(e.target.files[0]); e.target.value = '' }} />
+        </label>
+      )}
+    </div>
+  )
 }
 
 // Single document upload control used in the procurement creation form.
@@ -463,6 +544,13 @@ function ProjectDetailModal({ project, onClose }) {
 
           {project.status === 'rejected' && project.rejectReason && (
             <div className="ad-modal-error"><AlertTriangle size={15} /> Reason: {project.rejectReason}</div>
+          )}
+
+          {project.referenceImage && (
+            <div className="ad-refimg-section">
+              <div className="ad-refimg-section-label"><ImageIcon size={14} /> Reference Image</div>
+              <img src={project.referenceImage} alt="Reference" className="ad-refimg-view" />
+            </div>
           )}
 
           <div className="ad-info-grid">
@@ -519,6 +607,16 @@ function PlanningPage() {
     if (msg) { setSubmitErr(`${key.replace(/_/g, ' ')}: ${msg}`); return }
     setSubmitErr('')
     setFiles(f => ({ ...f, [key]: file }))
+  }
+
+  // Optional reference image — validate type/size before keeping it; a bad image
+  // never blocks the rest of the form (the field just stays empty).
+  const onImage = (file) => {
+    if (!file) return
+    const msg = checkImage(file)
+    if (msg) { setSubmitErr(msg); return }
+    setSubmitErr('')
+    set('reference_image', file)
   }
 
   const resetForm = () => { setForm(EMPTY_PROJECT); setFiles({}); setShowForm(false) }
@@ -622,6 +720,12 @@ function PlanningPage() {
                   ))}
                 </div>
               </div>
+
+              <ReferenceImageUploader
+                file={form.reference_image}
+                onFile={onImage}
+                onRemove={() => set('reference_image', null)}
+              />
 
               {submitErr && (
                 <div className="ad-form-full" style={{ color: '#ef4444', fontSize: 13, fontWeight: 500 }}>
@@ -1347,6 +1451,77 @@ const QUAL_BID_CLS = {
   disqualified: 'badge-red', winner: 'badge-awarded',
 }
 
+// Declaration fields in display order: [serializer key, badge label].
+const BID_DECLARATIONS = [
+  ['terms_accepted', 'Terms and Conditions Accepted'],
+  ['interest_declared', 'Declaration of Interest Confirmed'],
+  ['scm_declared', 'Past SCM Practices Declared'],
+  ['accuracy_confirmed', 'Accuracy of Information Confirmed'],
+  ['specification_confirmed', 'Specification Match Confirmed'],
+]
+
+// Flatten every uploaded file on a bid into { label, name, url } rows.
+function collectBidFiles(b) {
+  const base = (url) => (url ? decodeURIComponent(url.split('/').pop()) : '')
+  const out = []
+  if (b.quotation_document_url) out.push({ label: 'Quotation', name: base(b.quotation_document_url), url: b.quotation_document_url })
+  if (b.technical_document_url) out.push({ label: 'Technical Proposal', name: base(b.technical_document_url), url: b.technical_document_url })
+  if (b.supplier_product_image_url) out.push({ label: 'Product Image', name: base(b.supplier_product_image_url), url: b.supplier_product_image_url })
+  if (b.supplier_datasheet_url) out.push({ label: 'Datasheet', name: base(b.supplier_datasheet_url), url: b.supplier_datasheet_url })
+  if (b.supplier_compliance_doc_url) out.push({ label: 'Compliance', name: base(b.supplier_compliance_doc_url), url: b.supplier_compliance_doc_url })
+  ;(b.attachments || []).forEach(a => out.push({ label: 'Other', name: a.file_name, url: a.url }))
+  return out
+}
+
+// The expanded documents + declarations panel for one bid (admin evaluation).
+function BidDetailsPanel({ bid }) {
+  const files = collectBidFiles(bid)
+  return (
+    <div className="ad-bid-details">
+      <div className="ad-bid-details-grid">
+        <div><span className="ad-bid-details-k">Delivery Timeline</span><span className="ad-bid-details-v">{bid.delivery_timeline || '—'}</span></div>
+        {bid.brand_name && <div><span className="ad-bid-details-k">Brand Name</span><span className="ad-bid-details-v">{bid.brand_name}</span></div>}
+        {bid.model_number && <div><span className="ad-bid-details-k">Model Number</span><span className="ad-bid-details-v">{bid.model_number}</span></div>}
+      </div>
+      {bid.additional_comments && (
+        <div className="ad-bid-details-comments">
+          <span className="ad-bid-details-k">Additional Comments</span>
+          <p>{bid.additional_comments}</p>
+        </div>
+      )}
+
+      <div className="ad-bid-details-sec">
+        <div className="ad-bid-details-title">Submitted Documents</div>
+        {files.length === 0 ? (
+          <p className="ad-muted ad-small">No documents submitted.</p>
+        ) : (
+          <div className="ad-doc-list">
+            {files.map((f, i) => (
+              <a key={i} className="ad-doc-row" href={f.url} target="_blank" rel="noreferrer">
+                <span className="ad-doc-check"><Check size={12} /></span>
+                <span className="ad-doc-name" title={f.name}>{f.name}</span>
+                <span className="ad-doc-view"><ExternalLink size={12} /> View</span>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="ad-bid-details-sec">
+        <div className="ad-bid-details-title">Declarations</div>
+        <div className="ad-decl-badges">
+          {BID_DECLARATIONS.map(([key, label]) => (
+            <div className={`ad-decl-badge${bid[key] ? '' : ' ad-decl-badge-no'}`} key={key}>
+              {bid[key] ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+              <span>{label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Bid evaluation progress bar ───────────────────────────────────────────────
 const EVAL_STEPS = [
   'Bid Created', 'Submitted for Approval', 'Approved by Head',
@@ -1392,6 +1567,7 @@ function BidEvaluationPage() {
   const [busyId, setBusyId] = useState(null)
   const [confirm, setConfirm] = useState(null)   // { bid }
   const [toast, setToast] = useState(null)
+  const [expanded, setExpanded] = useState(null) // id of the bid whose docs are open
 
   const load = () => {
     setLoading(true)
@@ -1458,6 +1634,14 @@ function BidEvaluationPage() {
             <p className="ad-muted ad-small" style={{ marginTop: 4 }}>
               {project.code} · {project.category || '—'} · ABC {peso(project.budget)}
             </p>
+            {project.reference_image_url && (
+              <div className="ad-eval-refimg">
+                <div className="ad-refimg-section-label"><ImageIcon size={14} /> Project Reference Image</div>
+                <a href={project.reference_image_url} target="_blank" rel="noreferrer" title="Open full size">
+                  <img src={project.reference_image_url} alt="Project reference" className="ad-refimg-thumb" />
+                </a>
+              </div>
+            )}
             <EvalProgressBar status={project.status} bids={bids} />
           </div>
 
@@ -1471,15 +1655,22 @@ function BidEvaluationPage() {
             </div>
             <table className="ad-table">
               <thead>
-                <tr><th>SUPPLIER</th><th>BID AMOUNT</th><th>SUBMITTED</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
+                <tr><th></th><th>SUPPLIER</th><th>BID AMOUNT</th><th>SUBMITTED</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
               </thead>
               <tbody>
                 {loading
-                  ? <TableSkeleton rows={3} cols={5} />
+                  ? <TableSkeleton rows={3} cols={6} />
                   : bids.length === 0
-                  ? <tr><td colSpan={5} className="ad-empty-row">No bids submitted yet.</td></tr>
+                  ? <tr><td colSpan={6} className="ad-empty-row">No bids submitted yet.</td></tr>
                   : bids.map(b => (
-                    <tr key={b.id}>
+                    <Fragment key={b.id}>
+                    <tr>
+                      <td>
+                        <button className="ad-expand-btn" aria-label="Toggle bid documents"
+                          onClick={() => setExpanded(expanded === b.id ? null : b.id)}>
+                          <ChevronRight size={15} style={{ transform: expanded === b.id ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />
+                        </button>
+                      </td>
                       <td className="ad-bold">{b.supplier_name}</td>
                       <td>{peso(b.amount)}</td>
                       <td className="ad-muted">{fmtDate(b.submitted_at)}</td>
@@ -1517,6 +1708,12 @@ function BidEvaluationPage() {
                         )}
                       </td>
                     </tr>
+                    {expanded === b.id && (
+                      <tr className="ad-bid-details-row">
+                        <td colSpan={6}><BidDetailsPanel bid={b} /></td>
+                      </tr>
+                    )}
+                    </Fragment>
                   ))
                 }
               </tbody>

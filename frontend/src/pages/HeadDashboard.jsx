@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
   Search, ChevronDown, ChevronRight, LogOut,
   ClipboardCheck, AlertCircle, FolderOpen, Eye,
-  ThumbsUp, ThumbsDown, FileText, Menu
+  ThumbsUp, ThumbsDown, FileText, Menu, X
 } from 'lucide-react'
 import { clearSession } from '../api'
 import {
@@ -107,6 +107,22 @@ function Header({ title, onMenu }) {
         </div>
       </div>
     </header>
+  )
+}
+
+// Brief confirmation banner shown after the Head approves/rejects a project
+// (auto-dismisses). Mirrors the toast used on the Admin dashboard.
+function Toast({ type, message, onClose }) {
+  useEffect(() => {
+    const t = setTimeout(onClose, 4000)
+    return () => clearTimeout(t)
+  }, [onClose])
+  return (
+    <div className={`hd-toast hd-toast-${type}`} role="status">
+      {type === 'success' ? <CheckCircle2 size={17} /> : <AlertCircle size={17} />}
+      <span>{message}</span>
+      <button onClick={onClose} aria-label="Dismiss"><X size={15} /></button>
+    </div>
   )
 }
 
@@ -214,12 +230,24 @@ function PendingCard({ project, onApprove, onReject }) {
 
 function HeadHome() {
   const { projects, loading } = useProjects()
+  const [toast, setToast] = useState(null)
   const pending = projects.filter(p => p.status === 'pending_head')
   const approved = projects.filter(isReviewed)
-  const onApprove = storeApprove
-  const onReject = storeReject
+  // Capture the project name BEFORE awaiting — once approved/rejected it leaves
+  // the pending list. Errors still bubble up so PendingCard shows them inline.
+  const onApprove = async (id) => {
+    const proj = projects.find(p => p.id === id)
+    await storeApprove(id)
+    setToast({ type: 'success', message: `"${proj?.name}" approved — sent back to Admin to be published for bidding.` })
+  }
+  const onReject = async (id, reason) => {
+    const proj = projects.find(p => p.id === id)
+    await storeReject(id, reason)
+    setToast({ type: 'success', message: `"${proj?.name}" was rejected.` })
+  }
   return (
     <div className="hd-content">
+      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
       <div className="hd-stats">
         {[
           { label: 'Pending Your Review', value: String(pending.length), icon: Clock, color: 'yellow' },
@@ -309,11 +337,23 @@ function HeadHome() {
 
 function PendingPage() {
   const { projects, loading } = useProjects()
+  const [toast, setToast] = useState(null)
   const pending = projects.filter(p => p.status === 'pending_head')
-  const onApprove = storeApprove
-  const onReject = storeReject
+  // Capture the project name BEFORE awaiting — once approved/rejected it leaves
+  // the pending list. Errors still bubble up so PendingCard shows them inline.
+  const onApprove = async (id) => {
+    const proj = projects.find(p => p.id === id)
+    await storeApprove(id)
+    setToast({ type: 'success', message: `"${proj?.name}" approved — sent back to Admin to be published for bidding.` })
+  }
+  const onReject = async (id, reason) => {
+    const proj = projects.find(p => p.id === id)
+    await storeReject(id, reason)
+    setToast({ type: 'success', message: `"${proj?.name}" was rejected.` })
+  }
   return (
     <div className="hd-content">
+      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
       <div className="hd-card">
         <div className="hd-card-header">
           <div>

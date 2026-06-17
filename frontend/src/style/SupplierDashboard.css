@@ -477,6 +477,31 @@
   transition: all 0.15s;
 }
 .sd-modal-close:hover { background: #fee2e2; border-color: #fca5a5; color: #ef4444; }
+/* ── Required product reference image (supplier view) ───── */
+.sd-refimg-section {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--light-border);
+}
+.sd-refimg-label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 700; color: var(--text-dark);
+  margin-bottom: 10px;
+}
+.sd-refimg-img {
+  display: block;
+  width: 100%;
+  max-height: 300px;
+  object-fit: contain;
+  border: 1px solid var(--light-border);
+  border-radius: 10px;
+  background: var(--light-bg);
+}
+.sd-refimg-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-gray);
+}
 .sd-modal-meta {
   display: flex;
   gap: 24px;
@@ -762,4 +787,153 @@
 }
 @media (max-width: 480px) {
   .sd-stats { grid-template-columns: 1fr; }
+}
+
+/* ─── Full bid submission modal ──────────────────────────────────────────── */
+/* Wider, scrollable variant of the shared modal. Header + footer stay fixed;
+   the middle scrolls. Reuses the system's modal container, fonts and buttons. */
+.sd-modal-lg {
+  width: 640px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sd-bid-scroll { flex: 1; overflow-y: auto; }
+.sd-modal-lg .sd-modal-footer {
+  margin-top: 0;
+  padding: 16px 24px;
+  background: white;
+}
+/* Reference image at full modal width, fixed height, object-fit cover. */
+.sd-refimg-cover {
+  display: block;
+  width: 100%;
+  height: 200px;
+  object-fit: cover;
+  border: 1px solid var(--light-border);
+  border-radius: 10px;
+  background: var(--light-bg);
+}
+.sd-bid-body { padding: 4px 24px 20px; }
+.sd-bid-section { padding: 18px 0; border-bottom: 1px solid var(--light-border); }
+.sd-bid-section:last-child { border-bottom: none; }
+.sd-bid-section-label {
+  font-size: 13px; font-weight: 800; color: var(--text-dark);
+  text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 4px;
+}
+.sd-bid-section-hint { font-size: 12px; color: var(--text-gray); margin: 0 0 14px; line-height: 1.5; }
+.sd-req { color: #ef4444; font-weight: 700; }
+.sd-optional { color: var(--text-gray); font-weight: 500; font-size: 12px; }
+
+/* Peso-prefixed amount input */
+.sd-peso-input { position: relative; display: flex; align-items: center; }
+.sd-peso-prefix {
+  position: absolute; left: 12px; font-size: 14px; font-weight: 700;
+  color: var(--text-gray); pointer-events: none;
+}
+.sd-peso-input input {
+  width: 100%; padding: 10px 14px 10px 28px; border-radius: 8px;
+  border: 1.5px solid var(--light-border); font-size: 14px; color: var(--text-dark);
+  background: var(--light-bg); font-family: inherit; transition: border-color 0.15s;
+}
+.sd-peso-input input:focus { outline: none; border-color: #3b82f6; background: white; }
+.sd-budget-ok { font-size: 12px; font-weight: 600; color: #059669; margin-top: 2px; }
+.sd-budget-warn { font-size: 12px; font-weight: 600; color: #ef4444; margin-top: 2px; }
+.sd-charcount { font-size: 11.5px; color: var(--text-gray); margin-top: 2px; }
+.sd-charcount-low { color: #d97706; }
+
+/* Upload field: dashed box before, checklist row after */
+.sd-upload-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.sd-upload-field:last-child { margin-bottom: 0; }
+.sd-upload-label { font-size: 13px; font-weight: 600; color: var(--text-dark); }
+.sd-upload-box {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; border-radius: 8px;
+  border: 1.5px dashed var(--light-border); background: var(--light-bg);
+  color: var(--text-gray); font-size: 12.5px; font-weight: 500;
+  cursor: pointer; transition: all 0.15s; text-align: left;
+}
+.sd-upload-box:hover { border-color: #3b82f6; color: #3b82f6; background: #eff6ff; }
+.sd-upload-types { font-weight: 600; }
+.sd-upload-size { margin-left: auto; font-size: 11.5px; }
+.sd-upload-hint { font-size: 11.5px; color: var(--text-gray); line-height: 1.5; }
+
+/* Checklist row after a file is selected */
+.sd-file-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 8px;
+  border: 1px solid #d1fae5; background: #f0fdf4;
+}
+.sd-file-check {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #10b981; color: white; flex-shrink: 0;
+}
+.sd-file-rowname {
+  flex: 1; font-size: 13px; font-weight: 600; color: #0f172a;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sd-file-remove {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 6px;
+  background: transparent; border: none; color: #94a3b8;
+  flex-shrink: 0; transition: all 0.15s;
+}
+.sd-file-remove:hover { background: #fee2e2; color: #ef4444; }
+.sd-add-file {
+  display: inline-flex; align-items: center; gap: 5px; align-self: flex-start;
+  padding: 7px 12px; border-radius: 7px; font-size: 12.5px; font-weight: 600;
+  background: var(--light-bg); border: 1.5px dashed var(--light-border);
+  color: #3b82f6; transition: all 0.15s;
+}
+.sd-add-file:hover { border-color: #3b82f6; background: #eff6ff; }
+
+/* Declaration checkboxes */
+.sd-decl { margin-bottom: 14px; }
+.sd-decl:last-child { margin-bottom: 0; }
+.sd-decl-label { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.sd-decl-label input[type="checkbox"] {
+  margin-top: 2px; width: 16px; height: 16px; flex-shrink: 0;
+  accent-color: #10b981; cursor: pointer;
+}
+.sd-decl-label span { font-size: 13px; color: var(--text-dark); line-height: 1.5; }
+.sd-decl-error { margin-top: 4px; margin-left: 26px; }
+
+/* Company information summary box */
+.sd-company-box { border: 1px solid var(--light-border); border-radius: 10px; padding: 16px; background: var(--light-bg); }
+.sd-company-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.sd-company-field { display: flex; flex-direction: column; gap: 4px; }
+.sd-company-note { font-size: 11.5px; color: var(--text-gray); line-height: 1.5; margin: 12px 0 0; }
+
+/* Read-only bid detail (My Bids) */
+.sd-detail-line { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; font-size: 13px; }
+.sd-detail-line span { color: var(--text-gray); font-weight: 600; }
+.sd-detail-line strong { color: var(--text-dark); font-weight: 700; }
+.sd-doc-list { display: flex; flex-direction: column; gap: 8px; }
+.sd-doc-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 8px; text-decoration: none;
+  border: 1px solid var(--light-border); background: white; transition: all 0.15s;
+}
+.sd-doc-row:hover { border-color: #3b82f6; background: #eff6ff; }
+.sd-doc-view {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; font-weight: 700; color: #3b82f6; flex-shrink: 0;
+}
+.sd-decl-badges { display: flex; flex-direction: column; gap: 8px; }
+.sd-decl-badge {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 600; color: #047857;
+}
+.sd-decl-badge svg { color: #10b981; flex-shrink: 0; }
+.sd-decl-badge-no { color: #b91c1c; }
+.sd-decl-badge-no svg { color: #ef4444; }
+
+@keyframes sd-spin { to { transform: rotate(360deg); } }
+.sd-spin { animation: sd-spin 0.7s linear infinite; }
+
+@media (max-width: 640px) {
+  .sd-modal-lg { width: 100%; }
+  .sd-company-fields { grid-template-columns: 1fr; }
 }

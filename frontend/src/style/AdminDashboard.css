@@ -433,6 +433,11 @@
   min-height: 0;          /* let inner scroll regions size to the viewport */
 }
 
+/* A page card keeps its natural height instead of being squeezed (and clipped by
+   its own overflow:hidden) when the content is taller than the viewport — e.g.
+   the Planning "Create New Procurement" form. The body (.ad-body) then scrolls. */
+.ad-content > .ad-card { flex-shrink: 0; }
+
 /* ── STAT CARDS ───────────────────────────────────────── */
 .ad-stats {
   display: grid;
@@ -808,6 +813,92 @@
 .ad-doc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ad-doc-file button { color: #ef4444; display: flex; }
 @media (max-width: 640px) { .ad-doc-grid { grid-template-columns: 1fr; } }
+
+/* ── Reference image (optional) upload + preview ─────────── */
+.ad-refimg-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  border: 2px dashed #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 26px 16px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.ad-refimg-drop:hover,
+.ad-refimg-drop-over { border-color: var(--primary, #10b981); background: #f0fdf4; }
+.ad-refimg-cta { font-size: 13px; font-weight: 600; color: var(--text-dark, #0f172a); }
+.ad-refimg-preview {
+  position: relative;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f8fafc;
+}
+.ad-refimg-img {
+  display: block;
+  width: 100%;
+  height: 220px;
+  object-fit: contain;
+  background: #0f172a08;
+}
+.ad-refimg-remove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15,23,42,.7);
+  color: #fff;
+  cursor: pointer;
+}
+.ad-refimg-remove:hover { background: #ef4444; }
+.ad-refimg-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+.ad-refimg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dark, #0f172a); }
+
+/* Reference image shown in the read-only detail modal */
+.ad-refimg-section { margin-bottom: 18px; }
+.ad-refimg-section-label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600; color: var(--text-dark, #0f172a); margin-bottom: 8px;
+}
+.ad-refimg-view {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+/* Small clickable thumbnail on the bid-evaluation screen */
+.ad-eval-refimg { margin-top: 12px; }
+.ad-refimg-thumb {
+  display: block;
+  width: 120px;
+  height: 90px;
+  object-fit: cover;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform .12s;
+}
+.ad-refimg-thumb:hover { transform: scale(1.03); }
 
 /* ── BID EVALUATION: back link + step progress ────────── */
 .ad-back-link {
@@ -1569,3 +1660,43 @@
   .ad-modal-footer-actions { justify-content: stretch; }
   .ad-modal-footer-actions button { flex: 1; justify-content: center; }
 }
+
+/* ─── Bid evaluation — expandable documents + declarations ────────────────── */
+.ad-expand-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 6px;
+  background: #f8fafc; border: 1px solid var(--light-border);
+  color: var(--text-gray); transition: all 0.15s;
+}
+.ad-expand-btn:hover { border-color: #3b82f6; color: #3b82f6; }
+.ad-bid-details-row > td { background: #f8fafc; padding: 0; }
+.ad-bid-details { padding: 18px 24px; }
+.ad-bid-details-grid { display: flex; flex-wrap: wrap; gap: 28px; margin-bottom: 4px; }
+.ad-bid-details-grid > div { display: flex; flex-direction: column; gap: 3px; }
+.ad-bid-details-k { font-size: 11px; font-weight: 700; color: var(--text-gray); text-transform: uppercase; letter-spacing: 0.4px; }
+.ad-bid-details-v { font-size: 13px; font-weight: 700; color: var(--text-dark); }
+.ad-bid-details-comments { margin-top: 14px; }
+.ad-bid-details-comments p { margin: 4px 0 0; font-size: 13px; color: var(--text-dark); line-height: 1.6; }
+.ad-bid-details-sec { margin-top: 16px; }
+.ad-bid-details-title { font-size: 12px; font-weight: 800; color: var(--text-dark); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+
+.ad-doc-list { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
+.ad-doc-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 8px; text-decoration: none;
+  border: 1px solid var(--light-border); background: white; transition: all 0.15s;
+}
+.ad-doc-row:hover { border-color: #3b82f6; background: #eff6ff; }
+.ad-doc-check {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #10b981; color: white; flex-shrink: 0;
+}
+.ad-doc-name { flex: 1; font-size: 13px; font-weight: 600; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-doc-view { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: #3b82f6; flex-shrink: 0; }
+
+.ad-decl-badges { display: flex; flex-direction: column; gap: 8px; }
+.ad-decl-badge { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: #047857; }
+.ad-decl-badge svg { color: #10b981; flex-shrink: 0; }
+.ad-decl-badge-no { color: #b91c1c; }
+.ad-decl-badge-no svg { color: #ef4444; }

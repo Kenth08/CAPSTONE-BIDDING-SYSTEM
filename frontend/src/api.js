@@ -158,10 +158,10 @@ export const apiPublishProject = (id) =>
 
 // ── Bidding (supplier) ─────────────────────────────────────────────────────────
 export const apiListMyBids = () => apiFetch('/bids/')
-export const apiSubmitBid = (projectId, amount, notes) =>
-  apiFetch(`/projects/${projectId}/bid/`, {
-    method: 'POST', body: JSON.stringify({ amount, notes }),
-  })
+// Full bid submission with documents + declarations is multipart/form-data.
+// `formData` is a FormData instance built by the bid modal.
+export const apiSubmitBid = (projectId, formData) =>
+  apiUpload(`/projects/${projectId}/bid/`, formData)
 export const apiWithdrawBid = (bidId) =>
   apiFetch(`/bids/${bidId}/`, { method: 'DELETE' })
 

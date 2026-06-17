@@ -6,6 +6,7 @@ from .models import (
     SUPPLIER_DOCUMENT_FIELDS,
     Award,
     Bid,
+    BidAttachment,
     Document,
     Notification,
     Project,
@@ -75,6 +76,16 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
 class ProjectSerializer(serializers.ModelSerializer):
     bid_count = serializers.SerializerMethodField()
     documents = serializers.SerializerMethodField()
+    reference_image_url = serializers.SerializerMethodField()
+
+    def get_reference_image_url(self, obj):
+        """Absolute URL of the optional reference image, or None when there
+        isn't one — so the frontend never renders a broken/empty image box."""
+        f = getattr(obj, "reference_image", None)
+        if not f:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(f.url) if request else f.url
 
     def get_bid_count(self, obj):
         # Prefer the annotated value (list/detail) — falls back to the model
@@ -123,14 +134,36 @@ class ProjectSerializer(serializers.ModelSerializer):
             # write-only file inputs (read side is exposed via `documents`)
             "purchase_request", "technical_specifications", "terms_of_reference",
             "approved_budget_document", "bid_evaluation_criteria",
+            # optional reference image: write via `reference_image`, read via URL
+            "reference_image", "reference_image_url",
         ]
         # Status transitions only happen through the approve/reject/publish
         # actions, never by directly writing the field.
         read_only_fields = ["code", "created_at", "status", "reviewed_at", "reject_reason"]
         extra_kwargs = {
-            key: {"write_only": True, "required": False}
-            for key, _, _ in PROCUREMENT_DOCUMENT_FIELDS
+            **{
+                key: {"write_only": True, "required": False}
+                for key, _, _ in PROCUREMENT_DOCUMENT_FIELDS
+            },
+            # Image is purely optional and write-only (read side is reference_image_url).
+            "reference_image": {"write_only": True, "required": False},
         }
+
+
+class BidAttachmentSerializer(serializers.ModelSerializer):
+    """One "Other Attachment" file with an absolute, openable URL."""
+
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BidAttachment
+        fields = ["id", "file_name", "url", "uploaded_at"]
+
+    def get_url(self, obj):
+        if not obj.file:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(obj.file.url) if request else obj.file.url
 
 
 class BidSerializer(serializers.ModelSerializer):
@@ -139,12 +172,52 @@ class BidSerializer(serializers.ModelSerializer):
     project_category = serializers.CharField(source="project.category", read_only=True)
     supplier_name = serializers.CharField(source="supplier.company", read_only=True)
 
+    # Absolute URLs for every uploaded file (None when not provided, so the UI
+    # never renders a broken link).
+    quotation_document_url = serializers.SerializerMethodField()
+    technical_document_url = serializers.SerializerMethodField()
+    supplier_product_image_url = serializers.SerializerMethodField()
+    supplier_datasheet_url = serializers.SerializerMethodField()
+    supplier_compliance_doc_url = serializers.SerializerMethodField()
+    attachments = BidAttachmentSerializer(many=True, read_only=True)
+
     class Meta:
         model = Bid
         fields = [
             "id", "project", "project_name", "project_code", "project_category",
             "supplier", "supplier_name", "amount", "notes", "status", "submitted_at",
+            # required + product info
+            "delivery_timeline", "additional_comments",
+            "brand_name", "model_number", "warranty_period",
+            # file URLs (read side)
+            "quotation_document_url", "technical_document_url",
+            "supplier_product_image_url", "supplier_datasheet_url",
+            "supplier_compliance_doc_url", "attachments",
+            # declarations
+            "terms_accepted", "interest_declared", "scm_declared",
+            "accuracy_confirmed", "specification_confirmed",
         ]
+
+    def _abs_url(self, file):
+        if not file:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(file.url) if request else file.url
+
+    def get_quotation_document_url(self, obj):
+        return self._abs_url(obj.quotation_document)
+
+    def get_technical_document_url(self, obj):
+        return self._abs_url(obj.technical_document)
+
+    def get_supplier_product_image_url(self, obj):
+        return self._abs_url(obj.supplier_product_image)
+
+    def get_supplier_datasheet_url(self, obj):
+        return self._abs_url(obj.supplier_datasheet)
+
+    def get_supplier_compliance_doc_url(self, obj):
+        return self._abs_url(obj.supplier_compliance_doc)
 
 
 class AwardSerializer(serializers.ModelSerializer):

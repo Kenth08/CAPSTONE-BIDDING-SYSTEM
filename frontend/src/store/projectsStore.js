@@ -57,6 +57,7 @@ function fromApi(p) {
     status: p.status,
     description: p.description,
     documents: p.documents || [],   // [{ key, label, required, url }]
+    referenceImage: p.reference_image_url || '',  // optional product reference photo
     submittedAt: fmtDate(p.created_at),
     reviewedAt: p.reviewed_at ? fmtDate(p.reviewed_at) : null,
     rejectReason: p.reject_reason || '',
@@ -130,6 +131,8 @@ export async function createProject(form, files = {}) {
   if (form.expected_delivery_date) fd.append('expected_delivery_date', form.expected_delivery_date)
   fd.append('eligible_types', 'Open to All')
   Object.entries(files).forEach(([key, file]) => { if (file) fd.append(key, file) })
+  // Optional reference image — only sent when the admin attached one.
+  if (form.reference_image) fd.append('reference_image', form.reference_image)
   upsert(await apiCreateProject(fd))
 }
 
