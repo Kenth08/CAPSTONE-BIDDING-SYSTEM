@@ -547,12 +547,12 @@
   border-radius: 8px;
   font-size: 13px;
   font-weight: 600;
-  background: var(--light-bg);
-  border: 1.5px solid var(--light-border);
-  color: var(--text-gray);
+  background: #fee2e2;
+  border: 1.5px solid #fca5a5;
+  color: #ef4444;
   transition: all 0.15s;
 }
-.sd-btn-cancel:hover { border-color: #94a3b8; color: var(--text-dark); }
+.sd-btn-cancel:hover { background: #fecaca; border-color: #ef4444; }
 .sd-btn-primary {
   display: inline-flex;
   align-items: center;
@@ -561,11 +561,24 @@
   border-radius: 8px;
   font-size: 13px;
   font-weight: 700;
-  background: #3b82f6;
+  background: var(--primary);
   color: white;
   transition: background 0.15s;
 }
-.sd-btn-primary:hover { background: #2563eb; }
+.sd-btn-primary:hover { background: var(--primary-dark); }
+.sd-bid-footer { justify-content: space-between; }
+.sd-bid-footer-right { display: flex; align-items: center; gap: 10px; }
+.sd-btn-back {
+  padding: 9px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--light-bg);
+  border: 1.5px solid var(--light-border);
+  color: var(--text-gray);
+  transition: all 0.15s;
+}
+.sd-btn-back:hover { border-color: #94a3b8; color: var(--text-dark); }
 
 /* FIELD ERROR */
 .sd-field-error { font-size: 12px; color: #ef4444; font-weight: 500; margin-top: 2px; }
@@ -805,6 +818,59 @@
   padding: 16px 24px;
   background: white;
 }
+
+/* Bid wizard step indicator */
+.sd-bid-stepper {
+  display: flex;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--light-border);
+}
+.sd-bid-step-wrap {
+  display: flex;
+  align-items: center;
+  flex: 1;
+}
+.sd-bid-step-wrap:last-child { flex: 0; }
+.sd-bid-step {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-gray);
+  background: var(--light-bg);
+  border: 1px solid var(--light-border);
+  flex-shrink: 0;
+}
+.sd-bid-step.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.sd-bid-step.done {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.sd-bid-step-wrap span {
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-gray);
+  white-space: nowrap;
+}
+.sd-bid-step-wrap span.active { color: var(--text-dark); }
+.sd-bid-line {
+  flex: 1;
+  height: 1px;
+  background: var(--light-border);
+  margin: 0 12px;
+}
+.sd-bid-line.done { background: var(--primary); }
 /* Reference image at full modal width, fixed height, object-fit cover. */
 .sd-refimg-cover {
   display: block;

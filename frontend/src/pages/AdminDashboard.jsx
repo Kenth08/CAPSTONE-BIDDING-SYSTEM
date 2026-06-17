@@ -1,4 +1,4 @@
-import { useState, useEffect, Fragment } from 'react'
+import { useState, useEffect } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
@@ -1473,50 +1473,124 @@ function collectBidFiles(b) {
   return out
 }
 
-// The expanded documents + declarations panel for one bid (admin evaluation).
-function BidDetailsPanel({ bid }) {
+const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
+const isImageFile = (name) => IMAGE_FILE_RE.test(name || '')
+
+const peso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
+const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+
+// Full bid detail modal (admin evaluation) — opened by clicking a supplier's row.
+// Shows every field, with images previewed inline so the admin doesn't have to
+// download each one to check it.
+function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqualify, onMarkWinner, confirm, onConfirmWinner, onCancelConfirm, onClose }) {
   const files = collectBidFiles(bid)
+  const images = files.filter(f => isImageFile(f.name))
+  const docs = files.filter(f => !isImageFile(f.name))
+
   return (
-    <div className="ad-bid-details">
-      <div className="ad-bid-details-grid">
-        <div><span className="ad-bid-details-k">Delivery Timeline</span><span className="ad-bid-details-v">{bid.delivery_timeline || '—'}</span></div>
-        {bid.brand_name && <div><span className="ad-bid-details-k">Brand Name</span><span className="ad-bid-details-v">{bid.brand_name}</span></div>}
-        {bid.model_number && <div><span className="ad-bid-details-k">Model Number</span><span className="ad-bid-details-v">{bid.model_number}</span></div>}
-      </div>
-      {bid.additional_comments && (
-        <div className="ad-bid-details-comments">
-          <span className="ad-bid-details-k">Additional Comments</span>
-          <p>{bid.additional_comments}</p>
-        </div>
-      )}
-
-      <div className="ad-bid-details-sec">
-        <div className="ad-bid-details-title">Submitted Documents</div>
-        {files.length === 0 ? (
-          <p className="ad-muted ad-small">No documents submitted.</p>
-        ) : (
-          <div className="ad-doc-list">
-            {files.map((f, i) => (
-              <a key={i} className="ad-doc-row" href={f.url} target="_blank" rel="noreferrer">
-                <span className="ad-doc-check"><Check size={12} /></span>
-                <span className="ad-doc-name" title={f.name}>{f.name}</span>
-                <span className="ad-doc-view"><ExternalLink size={12} /> View</span>
-              </a>
-            ))}
+    <div className="ad-modal-overlay" onClick={onClose}>
+      <div className="ad-modal" onClick={e => e.stopPropagation()}>
+        <div className="ad-modal-header">
+          <div>
+            <h3>{bid.supplier_name}</h3>
+            <p className="ad-muted ad-small">{peso(bid.amount)} · Submitted {fmtDate(bid.submitted_at)}</p>
           </div>
-        )}
-      </div>
-
-      <div className="ad-bid-details-sec">
-        <div className="ad-bid-details-title">Declarations</div>
-        <div className="ad-decl-badges">
-          {BID_DECLARATIONS.map(([key, label]) => (
-            <div className={`ad-decl-badge${bid[key] ? '' : ' ad-decl-badge-no'}`} key={key}>
-              {bid[key] ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-              <span>{label}</span>
-            </div>
-          ))}
+          <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
         </div>
+
+        <div className="ad-modal-body">
+          <div className="ad-modal-badges">
+            <span className={`badge ${QUAL_BID_CLS[bid.status] || 'badge-gray'}`}>
+              {bid.status === 'winner' ? '• Winning Bidder' : (QUAL_BID_LABEL[bid.status] || bid.status)}
+            </span>
+          </div>
+
+          <div className="ad-info-grid">
+            <Info2 label="Delivery Timeline" value={bid.delivery_timeline} />
+            {bid.brand_name && <Info2 label="Brand Name" value={bid.brand_name} />}
+            {bid.model_number && <Info2 label="Model Number" value={bid.model_number} />}
+            {bid.additional_comments && <Info2 label="Additional Comments" value={bid.additional_comments} full />}
+          </div>
+
+          {images.length > 0 && (
+            <div className="ad-bid-details-sec">
+              <div className="ad-bid-details-title"><ImageIcon size={13} /> Submitted Images</div>
+              <div className="ad-img-grid">
+                {images.map((f, i) => (
+                  <a key={i} className="ad-img-card" href={f.url} target="_blank" rel="noreferrer" title={f.name}>
+                    <img src={f.url} alt={f.name} loading="lazy" />
+                    <span className="ad-img-cap">{f.label}</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="ad-bid-details-sec">
+            <div className="ad-bid-details-title">Submitted Documents</div>
+            {docs.length === 0 ? (
+              <p className="ad-muted ad-small">No additional documents submitted.</p>
+            ) : (
+              <div className="ad-doc-list">
+                {docs.map((f, i) => (
+                  <a key={i} className="ad-doc-row" href={f.url} target="_blank" rel="noreferrer">
+                    <span className="ad-doc-check"><Check size={12} /></span>
+                    <span className="ad-doc-name" title={f.name}>{f.name}</span>
+                    <span className="ad-doc-tag-mini">{f.label}</span>
+                    <span className="ad-doc-view"><ExternalLink size={12} /> View</span>
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="ad-bid-details-sec">
+            <div className="ad-bid-details-title">Declarations</div>
+            <div className="ad-decl-badges">
+              {BID_DECLARATIONS.map(([key, label]) => (
+                <div className={`ad-decl-badge${bid[key] ? '' : ' ad-decl-badge-no'}`} key={key}>
+                  {bid[key] ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                  <span>{label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="ad-modal-footer">
+          <button className="ad-btn-cancel" onClick={onClose}>Close</button>
+          {bid.status !== 'winner' && !awarded && (
+            <div className="ad-modal-footer-actions">
+              {bid.status !== 'qualified' && (
+                <button className="ad-btn-approve" disabled={busyId === bid.id} onClick={() => onQualify(bid)}>
+                  <Check size={14} /> Qualify
+                </button>
+              )}
+              {bid.status !== 'disqualified' && (
+                <button className="ad-btn-reject" disabled={busyId === bid.id} onClick={() => onDisqualify(bid)}>
+                  <XCircle size={14} /> Disqualify
+                </button>
+              )}
+              {bid.status === 'qualified' && (
+                <button className="ad-btn-publish" disabled={busyId === bid.id} onClick={() => onMarkWinner(bid)}>
+                  <Award size={14} /> Mark as Winner
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {confirm && confirm.bid.id === bid.id && (
+          <ConfirmDialog
+            title="Select winning bidder?"
+            message={`Award "${projectName}" to ${bid.supplier_name} for ${peso(bid.amount)}? This marks the procurement as Awarded and notifies the bidders.`}
+            tone="green"
+            confirmLabel="Confirm Winner"
+            busy={busyId === bid.id}
+            onConfirm={onConfirmWinner}
+            onCancel={onCancelConfirm}
+          />
+        )}
       </div>
     </div>
   )
@@ -1567,7 +1641,7 @@ function BidEvaluationPage() {
   const [busyId, setBusyId] = useState(null)
   const [confirm, setConfirm] = useState(null)   // { bid }
   const [toast, setToast] = useState(null)
-  const [expanded, setExpanded] = useState(null) // id of the bid whose docs are open
+  const [viewBid, setViewBid] = useState(null)   // bid shown in the detail modal
 
   const load = () => {
     setLoading(true)
@@ -1578,9 +1652,14 @@ function BidEvaluationPage() {
   }
   useEffect(load, [id])
 
+  // Keep the open detail modal in sync with the bid's latest status after an action.
+  useEffect(() => {
+    if (!viewBid) return
+    const updated = bids.find(b => b.id === viewBid.id)
+    if (updated && updated !== viewBid) setViewBid(updated)
+  }, [bids])
+
   const awarded = project?.status === 'awarded'
-  const peso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
-  const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
   const act = async (bid, fn, errMsg) => {
     setBusyId(bid.id)
@@ -1655,23 +1734,16 @@ function BidEvaluationPage() {
             </div>
             <table className="ad-table">
               <thead>
-                <tr><th></th><th>SUPPLIER</th><th>BID AMOUNT</th><th>SUBMITTED</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
+                <tr><th>SUPPLIER</th><th>BID AMOUNT</th><th>SUBMITTED</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
               </thead>
               <tbody>
                 {loading
-                  ? <TableSkeleton rows={3} cols={6} />
+                  ? <TableSkeleton rows={3} cols={5} />
                   : bids.length === 0
-                  ? <tr><td colSpan={6} className="ad-empty-row">No bids submitted yet.</td></tr>
+                  ? <tr><td colSpan={5} className="ad-empty-row">No bids submitted yet.</td></tr>
                   : bids.map(b => (
-                    <Fragment key={b.id}>
-                    <tr>
-                      <td>
-                        <button className="ad-expand-btn" aria-label="Toggle bid documents"
-                          onClick={() => setExpanded(expanded === b.id ? null : b.id)}>
-                          <ChevronRight size={15} style={{ transform: expanded === b.id ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />
-                        </button>
-                      </td>
-                      <td className="ad-bold">{b.supplier_name}</td>
+                    <tr key={b.id} className="ad-bid-row" onClick={() => setViewBid(b)}>
+                      <td className="ad-bold ad-bid-supplier-cell">{b.supplier_name}</td>
                       <td>{peso(b.amount)}</td>
                       <td className="ad-muted">{fmtDate(b.submitted_at)}</td>
                       <td>
@@ -1679,41 +1751,18 @@ function BidEvaluationPage() {
                           {QUAL_BID_LABEL[b.status] || b.status}
                         </span>
                       </td>
-                      <td>
+                      <td onClick={e => e.stopPropagation()}>
                         {b.status === 'winner' ? (
                           <span className="badge badge-awarded">• Winning Bidder</span>
                         ) : awarded ? (
                           <span className="ad-muted ad-small">—</span>
                         ) : (
-                          <div className="ad-actions">
-                            {b.status !== 'qualified' && (
-                              <button className="ad-btn-approve" disabled={busyId === b.id}
-                                onClick={() => act(b, apiQualifyBid, 'Could not qualify.')}>
-                                <Check size={12} /> Qualify
-                              </button>
-                            )}
-                            {b.status !== 'disqualified' && (
-                              <button className="ad-btn-reject" disabled={busyId === b.id}
-                                onClick={() => act(b, apiDisqualifyBid, 'Could not disqualify.')}>
-                                <XCircle size={12} /> Disqualify
-                              </button>
-                            )}
-                            {b.status === 'qualified' && (
-                              <button className="ad-btn-publish" disabled={busyId === b.id}
-                                onClick={() => setConfirm({ bid: b })}>
-                                <Award size={12} /> Mark as Winner
-                              </button>
-                            )}
-                          </div>
+                          <button className="ad-btn-review" onClick={() => setViewBid(b)}>
+                            <Eye size={12} /> Review
+                          </button>
                         )}
                       </td>
                     </tr>
-                    {expanded === b.id && (
-                      <tr className="ad-bid-details-row">
-                        <td colSpan={6}><BidDetailsPanel bid={b} /></td>
-                      </tr>
-                    )}
-                    </Fragment>
                   ))
                 }
               </tbody>
@@ -1722,15 +1771,19 @@ function BidEvaluationPage() {
         </>
       )}
 
-      {confirm && (
-        <ConfirmDialog
-          title="Select winning bidder?"
-          message={`Award "${project.name}" to ${confirm.bid.supplier_name} for ${peso(confirm.bid.amount)}? This marks the procurement as Awarded and notifies the bidders.`}
-          tone="green"
-          confirmLabel="Confirm Winner"
-          busy={busyId === confirm.bid?.id}
-          onConfirm={confirmWinner}
-          onCancel={() => setConfirm(null)}
+      {viewBid && (
+        <BidDetailModal
+          bid={viewBid}
+          awarded={awarded}
+          busyId={busyId}
+          projectName={project.name}
+          onQualify={(b) => act(b, apiQualifyBid, 'Could not qualify.')}
+          onDisqualify={(b) => act(b, apiDisqualifyBid, 'Could not disqualify.')}
+          onMarkWinner={(b) => setConfirm({ bid: b })}
+          confirm={confirm}
+          onConfirmWinner={confirmWinner}
+          onCancelConfirm={() => setConfirm(null)}
+          onClose={() => { setViewBid(null); setConfirm(null) }}
         />
       )}
     </div>

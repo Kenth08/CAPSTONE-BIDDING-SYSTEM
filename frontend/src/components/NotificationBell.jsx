@@ -4,6 +4,27 @@ import { Bell } from 'lucide-react'
 import { apiListNotifications, apiMarkNotificationsRead } from '../api'
 import './NotificationBell.css'
 
+// Action verbs that follow an actor name (e.g. "pacia company submitted a bid on ...")
+// so the actor can be bolded along with quoted project names and (CODE) references.
+const ACTOR_VERBS = ['submitted a bid on', 'updated their bid on', 're-submitted']
+const ENTITY_RE = new RegExp(
+  `^[^.]+?(?=\\s+(?:${ACTOR_VERBS.join('|')}))|"[^"]+"|\\([A-Z][A-Z0-9-]*\\)`,
+  'g'
+)
+
+function highlightMessage(message) {
+  const parts = []
+  let lastIndex = 0
+  let match
+  while ((match = ENTITY_RE.exec(message)) !== null) {
+    if (match.index > lastIndex) parts.push(message.slice(lastIndex, match.index))
+    parts.push(<strong key={match.index}>{match[0]}</strong>)
+    lastIndex = match.index + match[0].length
+  }
+  if (lastIndex < message.length) parts.push(message.slice(lastIndex))
+  return parts
+}
+
 // Shared bell used by every dashboard. Fetches the signed-in user's own
 // notifications (the API scopes them server-side), polls so new ones appear
 // without a manual refresh, and marks them read when the dropdown is opened.
@@ -58,7 +79,7 @@ export default function NotificationBell() {
                   className={`nbell-item${n.is_read ? '' : ' unread'}${n.link ? ' clickable' : ''}`}
                   onClick={() => go(n.link)}
                 >
-                  <div className="nbell-msg">{n.message}</div>
+                  <div className="nbell-msg">{highlightMessage(n.message)}</div>
                   <div className="nbell-time">{new Date(n.created_at).toLocaleString()}</div>
                 </button>
               ))

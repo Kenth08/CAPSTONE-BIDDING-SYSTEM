@@ -1040,9 +1040,9 @@
   display: inline-flex;
   align-items: center;
   padding: 8px 16px;
-  background: var(--light-bg);
-  color: var(--text-gray);
-  border: 1px solid var(--light-border);
+  background: #fee2e2;
+  color: #ef4444;
+  border: 1px solid #fca5a5;
   border-radius: 8px;
   font-size: 13px;
   font-weight: 500;
@@ -1050,7 +1050,7 @@
   transition: all 0.15s;
 }
 
-.ad-btn-cancel:hover { background: #e2e8f0; color: var(--text-dark); }
+.ad-btn-cancel:hover { background: #fecaca; border-color: #ef4444; }
 
 .ad-btn-view-sm {
   display: inline-flex;
@@ -1661,26 +1661,47 @@
   .ad-modal-footer-actions button { flex: 1; justify-content: center; }
 }
 
-/* ─── Bid evaluation — expandable documents + declarations ────────────────── */
-.ad-expand-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; border-radius: 6px;
-  background: #f8fafc; border: 1px solid var(--light-border);
-  color: var(--text-gray); transition: all 0.15s;
-}
-.ad-expand-btn:hover { border-color: #3b82f6; color: #3b82f6; }
-.ad-bid-details-row > td { background: #f8fafc; padding: 0; }
-.ad-bid-details { padding: 18px 24px; }
-.ad-bid-details-grid { display: flex; flex-wrap: wrap; gap: 28px; margin-bottom: 4px; }
-.ad-bid-details-grid > div { display: flex; flex-direction: column; gap: 3px; }
-.ad-bid-details-k { font-size: 11px; font-weight: 700; color: var(--text-gray); text-transform: uppercase; letter-spacing: 0.4px; }
-.ad-bid-details-v { font-size: 13px; font-weight: 700; color: var(--text-dark); }
-.ad-bid-details-comments { margin-top: 14px; }
-.ad-bid-details-comments p { margin: 4px 0 0; font-size: 13px; color: var(--text-dark); line-height: 1.6; }
-.ad-bid-details-sec { margin-top: 16px; }
-.ad-bid-details-title { font-size: 12px; font-weight: 800; color: var(--text-dark); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+/* ─── Bid evaluation — clickable rows + detail modal ──────────────────────── */
+.ad-bid-row { cursor: pointer; }
+.ad-bid-row:hover { background: #f8fafc; }
+.ad-bid-supplier-cell { color: #1d4ed8; }
+.ad-bid-row:hover .ad-bid-supplier-cell { text-decoration: underline; }
 
-.ad-doc-list { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
+/* Opens the detail modal — qualify/disqualify/award now live there instead of the row. */
+.ad-btn-review {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 14px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  background: #fff; color: #3b82f6; border: 1.5px solid rgba(59,130,246,0.3);
+  cursor: pointer; transition: all 0.15s;
+}
+.ad-btn-review:hover { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+
+.ad-bid-details-sec { margin-top: 18px; }
+.ad-bid-details-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 800; color: var(--text-dark);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+}
+
+/* Image previews — shown as a thumbnail grid instead of a bare "View" link
+   so the admin can check a submitted product photo without leaving the page. */
+.ad-img-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+.ad-img-card {
+  display: flex; flex-direction: column; border: 1px solid var(--light-border);
+  border-radius: 10px; overflow: hidden; text-decoration: none; background: #fff;
+  transition: border-color .15s, box-shadow .15s;
+}
+.ad-img-card:hover { border-color: #3b82f6; box-shadow: 0 4px 14px rgba(59,130,246,0.15); }
+.ad-img-card img { width: 100%; height: 110px; object-fit: cover; background: #f1f5f9; }
+.ad-img-cap {
+  padding: 6px 8px; font-size: 11.5px; font-weight: 600; color: var(--text-dark);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.ad-doc-list { display: flex; flex-direction: column; gap: 8px; }
 .ad-doc-row {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 12px; border-radius: 8px; text-decoration: none;
@@ -1693,6 +1714,10 @@
   background: #10b981; color: white; flex-shrink: 0;
 }
 .ad-doc-name { flex: 1; font-size: 13px; font-weight: 600; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-doc-tag-mini {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  color: #64748b; background: #f1f5f9; border-radius: 5px; padding: 2px 6px; flex-shrink: 0;
+}
 .ad-doc-view { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: #3b82f6; flex-shrink: 0; }
 
 .ad-decl-badges { display: flex; flex-direction: column; gap: 8px; }
