@@ -6,7 +6,7 @@ import {
   ClipboardCheck, AlertCircle, FolderOpen, Eye,
   ThumbsUp, ThumbsDown, FileText, Menu, X
 } from 'lucide-react'
-import { clearSession } from '../api'
+import { apiLogout } from '../api'
 import {
   useProjects, approveProject as storeApprove, rejectProject as storeReject,
   isReviewed, decisionOf,
@@ -52,7 +52,7 @@ function Sidebar({ active, open, onClose }) {
           </div>
           <button
             className="hd-sidebar-expand"
-            onClick={() => { clearSession(); navigate('/login') }}
+            onClick={() => { apiLogout(); navigate('/login') }}
           >
             <ChevronRight size={14} />
           </button>
@@ -98,7 +98,7 @@ function Header({ title, onMenu }) {
                   </div>
                 </div>
                 <div className="hd-dropdown-divider" />
-                <button className="hd-dropdown-item hd-dropdown-logout" onClick={() => { clearSession(); navigate('/login') }}>
+                <button className="hd-dropdown-item hd-dropdown-logout" onClick={() => { apiLogout(); navigate('/login') }}>
                   <LogOut size={15} /> Log out
                 </button>
               </div>

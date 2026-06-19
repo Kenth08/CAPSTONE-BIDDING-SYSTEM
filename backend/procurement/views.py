@@ -1,5 +1,7 @@
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import status as http_status
@@ -33,6 +35,24 @@ from .serializers import (
     SupplierDetailSerializer,
     SupplierListSerializer,
 )
+from .validators import validate_bid_upload, validate_upload
+
+# Bid amount is a DecimalField(max_digits=14, decimal_places=2) — keep the
+# manual check in the `bid` action in sync with that column limit so an
+# oversized amount is rejected cleanly instead of failing at the DB.
+MAX_BID_AMOUNT = Decimal("999999999999.99")
+
+# Application-level caps for free-text bid fields that are written straight
+# from request.data (bypassing the serializer, so the model's max_length
+# is never enforced by Django itself — see the `bid` action below).
+BID_TEXT_FIELD_LIMITS = {
+    "delivery_timeline": 100,
+    "notes": 4000,
+    "additional_comments": 4000,
+    "brand_name": 255,
+    "model_number": 255,
+    "warranty_period": 100,
+}
 
 
 class PublicProcurementView(APIView):
@@ -78,7 +98,6 @@ class PublicProcurementView(APIView):
                 "name": a.project.name,
                 "category": a.project.category,
                 "winner": a.supplier.company,
-                "amount": str(a.amount),
                 "awarded_at": a.awarded_at,
             }
             for a in awards
@@ -138,11 +157,13 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
         # ── Required information ──────────────────────────────────────────────
         try:
-            amount = float(data.get("amount"))
-            assert amount > 0
-        except (TypeError, ValueError, AssertionError):
-            return Response({"detail": "Please enter a valid bid amount greater than zero."},
-                            status=http_status.HTTP_400_BAD_REQUEST)
+            amount = Decimal(str(data.get("amount")))
+            if amount <= 0 or amount > MAX_BID_AMOUNT:
+                raise ValueError
+        except (TypeError, ValueError, InvalidOperation, ArithmeticError):
+            return Response(
+                {"detail": f"Please enter a valid bid amount greater than zero and no more than {MAX_BID_AMOUNT}."},
+                status=http_status.HTTP_400_BAD_REQUEST)
 
         delivery_timeline = (data.get("delivery_timeline") or "").strip()
         if not delivery_timeline:
@@ -153,6 +174,24 @@ class ProjectViewSet(viewsets.ModelViewSet):
         if len(notes) < 20:
             return Response({"detail": "Please provide a more detailed proposal of at least 20 characters."},
                             status=http_status.HTTP_400_BAD_REQUEST)
+
+        additional_comments = (data.get("additional_comments") or "").strip()
+        brand_name = (data.get("brand_name") or "").strip()
+        model_number = (data.get("model_number") or "").strip()
+        warranty_period = (data.get("warranty_period") or "").strip()
+
+        # Reject anything malformed/oversized up front — these fields are written
+        # straight to the model below, bypassing the serializer (and therefore
+        # the model's own max_length enforcement), so check it explicitly here.
+        for field_name, value in (
+            ("delivery_timeline", delivery_timeline), ("notes", notes),
+            ("additional_comments", additional_comments), ("brand_name", brand_name),
+            ("model_number", model_number), ("warranty_period", warranty_period),
+        ):
+            limit = BID_TEXT_FIELD_LIMITS[field_name]
+            if len(value) > limit:
+                return Response({field_name: f"Must be {limit} characters or fewer."},
+                                status=http_status.HTTP_400_BAD_REQUEST)
 
         # ── Declarations (all four are mandatory under RA 9184) ───────────────
         def _truthy(value):
@@ -183,6 +222,30 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Please upload your quotation document."},
                             status=http_status.HTTP_400_BAD_REQUEST)
 
+        # Validate every uploaded file (type + size) BEFORE touching the DB.
+        # This view writes files straight onto the model via setattr()/save(),
+        # which never calls full_clean() — so the model field's `validators=`
+        # (validate_bid_upload) would otherwise silently never run, letting an
+        # oversized or wrong-type file reach disk unchecked.
+        bid_file_fields = (
+            "quotation_document", "technical_document", "supplier_product_image",
+            "supplier_datasheet", "supplier_compliance_doc",
+        )
+        for field in bid_file_fields:
+            uploaded = request.FILES.get(field)
+            if uploaded is not None:
+                try:
+                    validate_bid_upload(uploaded)
+                except DjangoValidationError as exc:
+                    return Response({field: exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        other_attachments = request.FILES.getlist("other_attachments")
+        for uploaded in other_attachments:
+            try:
+                validate_bid_upload(uploaded)
+            except DjangoValidationError as exc:
+                return Response({"other_attachments": exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
+
         bid, created = Bid.objects.get_or_create(
             project=project, supplier=supplier, defaults={"amount": amount},
         )
@@ -190,10 +253,10 @@ class ProjectViewSet(viewsets.ModelViewSet):
         bid.amount = amount
         bid.notes = notes
         bid.delivery_timeline = delivery_timeline
-        bid.additional_comments = (data.get("additional_comments") or "").strip()
-        bid.brand_name = (data.get("brand_name") or "").strip() or None
-        bid.model_number = (data.get("model_number") or "").strip() or None
-        bid.warranty_period = (data.get("warranty_period") or "").strip() or None
+        bid.additional_comments = additional_comments
+        bid.brand_name = brand_name or None
+        bid.model_number = model_number or None
+        bid.warranty_period = warranty_period or None
         bid.terms_accepted = terms_accepted
         bid.interest_declared = interest_declared
         bid.scm_declared = scm_declared
@@ -202,18 +265,16 @@ class ProjectViewSet(viewsets.ModelViewSet):
         bid.status = Bid.Status.UNDER_REVIEW
 
         # Replace any uploaded file only when a new one is provided (so re-submitting
-        # without re-attaching keeps the previously uploaded document).
-        for field in (
-            "quotation_document", "technical_document", "supplier_product_image",
-            "supplier_datasheet", "supplier_compliance_doc",
-        ):
+        # without re-attaching keeps the previously uploaded document). Already
+        # validated above, so this is just the assignment.
+        for field in bid_file_fields:
             uploaded = request.FILES.get(field)
             if uploaded is not None:
                 setattr(bid, field, uploaded)
         bid.save()
 
         # Multiple "Other Attachments" — each becomes its own row.
-        for uploaded in request.FILES.getlist("other_attachments"):
+        for uploaded in other_attachments:
             BidAttachment.objects.create(bid=bid, file=uploaded, file_name=uploaded.name)
 
         verb = "submitted a bid on" if created else "updated their bid on"
@@ -275,6 +336,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def publish(self, request, pk=None):
         project = self.get_object()
         project.status = Project.Status.PUBLISHED
+        project.published_at = timezone.now()
         project.save()
         # Notify verified suppliers whose categories match — the ones who can bid.
         # Filtered in Python (mirrors get_queryset) to avoid JSONField lookup quirks.
@@ -348,6 +410,18 @@ class SupplierViewSet(viewsets.ModelViewSet):
         supplier = self._own_supplier(request)
         if supplier is None:
             return Response({"detail": "No supplier profile found."}, status=http_status.HTTP_404_NOT_FOUND)
+
+        # Validate every re-uploaded file (type + size) BEFORE touching the DB —
+        # same reasoning as ProjectViewSet.bid(): setattr()/save() never calls
+        # full_clean(), so the model field's validate_upload would otherwise
+        # never run on this path.
+        for key in SUPPLIER_DOCUMENT_KEYS:
+            uploaded = request.FILES.get(key)
+            if uploaded:
+                try:
+                    validate_upload(uploaded)
+                except DjangoValidationError as exc:
+                    return Response({key: exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
 
         reviews = dict(supplier.document_reviews or {})
         updated = []
@@ -484,7 +558,8 @@ class BidViewSet(viewsets.ModelViewSet):
 
     def _set_status(self, bid, status):
         bid.status = status
-        bid.save(update_fields=["status"])
+        bid.reviewed_at = timezone.now()
+        bid.save(update_fields=["status", "reviewed_at"])
         return Response(self.get_serializer(bid).data)
 
     @action(detail=True, methods=["post"])
@@ -524,7 +599,8 @@ class BidViewSet(viewsets.ModelViewSet):
             defaults={"bid": bid, "amount": bid.amount},
         )
         project.status = Project.Status.AWARDED
-        project.save(update_fields=["status"])
+        project.awarded_at = timezone.now()
+        project.save(update_fields=["status", "awarded_at"])
 
         # Notify the winner and the other bidders (skip suppliers with no account).
         for other in project.bids.select_related("supplier__user"):
@@ -541,13 +617,22 @@ class BidViewSet(viewsets.ModelViewSet):
 
 
 class AwardViewSet(viewsets.ModelViewSet):
+    """Admin-only: contract amounts and award records. Awards are normally
+    created by BidViewSet.select_winner — this CRUD API exists for the Admin
+    Awards/Reports pages, never for suppliers (a supplier could otherwise
+    award themselves a project or read every other supplier's contract value)."""
+
     queryset = Award.objects.select_related("project", "supplier").all()
     serializer_class = AwardSerializer
+    permission_classes = [IsAdminRole]
 
 
 class DocumentViewSet(viewsets.ModelViewSet):
+    """Admin-only: supplier compliance documents (expiry tracking)."""
+
     queryset = Document.objects.select_related("supplier").all()
     serializer_class = DocumentSerializer
+    permission_classes = [IsAdminRole]
 
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):

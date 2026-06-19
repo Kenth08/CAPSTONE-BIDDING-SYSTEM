@@ -4,17 +4,19 @@ import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
   Search, ChevronRight, LogOut, Shield,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
-  CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon
+  CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock
 } from 'lucide-react'
 import {
-  clearSession, apiListSuppliers, apiGetSupplier,
+  apiLogout, apiListSuppliers, apiGetSupplier,
   apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision,
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
+  apiListAwards,
 } from '../api'
 import { useProjects, createProject, publishProject, refreshProjects } from '../store/projectsStore'
 import { CATEGORIES } from '../constants/categories'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import NotificationBell from '../components/NotificationBell'
+import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import '../style/AdminDashboard.css'
 
 const NAV = [
@@ -25,11 +27,6 @@ const NAV = [
   { icon: Pencil,          label: 'Bids',      to: '/admin/bids' },
   { icon: Award,           label: 'Awards',    to: '/admin/awards' },
   { icon: BarChart2,       label: 'Reports',   to: '/admin/reports' },
-]
-
-const INITIAL_AWARDS = [
-  { supplier: 'Kenthcharles Repollo', project: 'computer',     amount: '₱1,000',   date: 'June 1, 2026', status: 'won' },
-  { supplier: 'Kenthcharles Repollo', project: 'chair/table',  amount: '₱100,000', date: 'June 1, 2026', status: 'won' },
 ]
 
 const EXPIRING_DOCS = [
@@ -82,7 +79,7 @@ function Sidebar({ active, open, onClose }) {
           </div>
           <button
             className="ad-sidebar-expand"
-            onClick={() => { clearSession(); navigate('/login') }}
+            onClick={() => { apiLogout(); navigate('/login') }}
           >
             <ChevronRight size={14} />
           </button>
@@ -132,7 +129,7 @@ function Header({ title, onMenu }) {
                 </div>
                 <div className="ad-dropdown-divider" />
                 <button className="ad-dropdown-item ad-dropdown-logout"
-                  onClick={() => { clearSession(); navigate('/login') }}>
+                  onClick={() => { apiLogout(); navigate('/login') }}>
                   <LogOut size={15} /> Log out
                 </button>
               </div>
@@ -148,7 +145,6 @@ function Header({ title, onMenu }) {
 
 function DashboardHome() {
   const { projects, loading } = useProjects()
-  const awards = INITIAL_AWARDS
   const [tab, setTab] = useState('All')
   const TABS = ['All', 'Draft', 'Active', 'Closed', 'Awarded']
 
@@ -304,6 +300,15 @@ function ProjectsPage() {
     return matchSearch && matchTab
   })
 
+  // Soonest deadline first so whatever needs attention next surfaces at the top;
+  // projects without a deadline sink to the bottom instead of sorting first.
+  const sorted = [...filtered].sort((a, b) => {
+    if (!a.deadlineRaw && !b.deadlineRaw) return 0
+    if (!a.deadlineRaw) return 1
+    if (!b.deadlineRaw) return -1
+    return new Date(a.deadlineRaw) - new Date(b.deadlineRaw)
+  })
+
   return (
     <div className="ad-content">
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
@@ -331,11 +336,11 @@ function ProjectsPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && filtered.length === 0
+            {loading && sorted.length === 0
               ? <TableSkeleton rows={4} cols={7} />
-              : filtered.length === 0
+              : sorted.length === 0
               ? <tr><td colSpan={7} className="ad-empty-row">No approved projects yet.</td></tr>
-              : filtered.map(p => (
+              : sorted.map(p => (
                 <tr key={p.id}>
                   <td className="ad-bold">{p.name}</td>
                   <td>{p.budget}</td>
@@ -1478,6 +1483,129 @@ const isImageFile = (name) => IMAGE_FILE_RE.test(name || '')
 
 const peso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
 const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+const fmtDateTime = (v) => v ? new Date(v).toLocaleString('en-US', {
+  month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+}) : null
+
+// Decision label shown per bidder in the merged Bids & Evaluation table.
+const BID_DECISION_LABEL = {
+  under_review: 'Pending Review', qualified: 'Qualified',
+  disqualified: 'Disqualified', winner: 'Qualified',
+}
+
+// Builds the full procurement timeline (one entry per lifecycle milestone) from
+// whatever timestamps the project/bids currently have — works for any project,
+// at any stage, not just one hard-coded case. "Bids Received" and "Evaluation"
+// are merged into a single per-supplier table (one row each) instead of two
+// separate lists, so the same supplier name doesn't repeat and the modal stays
+// readable no matter how many suppliers bid.
+function buildProjectTimeline(project, bids) {
+  const bySubmit = [...bids].sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at))
+  const rejected = project.status === 'rejected'
+  const winner = bids.find(b => b.status === 'winner')
+
+  return [
+    { key: 'created', label: 'Bid Created', at: project.created_at, status: 'done' },
+    { key: 'submitted', label: 'Submitted for Approval', at: project.created_at, status: 'done' },
+    rejected
+      ? { key: 'reviewed', label: 'Rejected by Head', at: project.reviewed_at, status: 'rejected', note: project.reject_reason }
+      : { key: 'reviewed', label: 'Approved by Head', at: project.reviewed_at, status: project.reviewed_at ? 'done' : 'pending' },
+    { key: 'published', label: 'Bid Published', at: project.published_at, status: project.published_at ? 'done' : 'pending' },
+    {
+      key: 'bids', label: 'Bids & Evaluation', at: bySubmit[0]?.submitted_at || null,
+      status: bySubmit.length ? 'done' : 'pending',
+      table: bySubmit.map(b => ({
+        supplier: b.supplier_name,
+        submittedAt: b.submitted_at,
+        decision: BID_DECISION_LABEL[b.status] || b.status,
+        decisionAt: b.reviewed_at,
+        decisionTone: b.status === 'disqualified' ? 'red' : (b.status === 'qualified' || b.status === 'winner') ? 'green' : 'gray',
+      })),
+    },
+    {
+      key: 'awarded',
+      label: project.status === 'awarded' ? `Awarded to ${winner?.supplier_name || '—'}` : 'Awarded',
+      at: project.awarded_at, status: project.status === 'awarded' ? 'done' : 'pending',
+    },
+  ]
+}
+
+// How many bidder rows to show before collapsing behind "Show all" — keeps the
+// modal short whether one supplier bid or fifty did.
+const BID_TABLE_PREVIEW_COUNT = 3
+
+// One row of the merged Bids & Evaluation table: supplier, amount, submitted
+// time, and the qualify/disqualify decision + its time (if decided yet).
+function BidTimelineRow({ row }) {
+  return (
+    <div className="ad-timeline-bidrow">
+      <div className="ad-timeline-bidrow-main">
+        <span className="ad-bold">{row.supplier}</span>
+      </div>
+      <div className="ad-timeline-bidrow-meta">
+        <span className="ad-muted ad-small">Submitted {fmtDateTime(row.submittedAt)}</span>
+        <span className={`badge badge-${row.decisionTone === 'gray' ? 'gray' : row.decisionTone === 'red' ? 'red' : 'green'}`}>
+          {row.decision}{row.decisionAt ? ` · ${fmtDateTime(row.decisionAt)}` : ''}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+// Modal showing the full timestamped lifecycle of a procurement — when it was
+// created, approved, published, every bid received + its evaluation decision,
+// and the award. Built from live project/bid data, so it's the same component
+// for every procurement, not specific to any one of them.
+function TimelineModal({ project, bids, onClose }) {
+  const groups = buildProjectTimeline(project, bids)
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <div className="ad-modal-overlay" onClick={onClose}>
+      <div className="ad-modal ad-timeline-modal" onClick={e => e.stopPropagation()}>
+        <div className="ad-modal-header">
+          <div>
+            <h3>Procurement Timeline</h3>
+            <p className="ad-muted ad-small">{project.name} · {project.code}</p>
+          </div>
+          <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="ad-modal-body">
+          <div className="ad-timeline">
+            {groups.map(g => {
+              const rows = g.table && !expanded ? g.table.slice(0, BID_TABLE_PREVIEW_COUNT) : g.table
+              return (
+                <div className={`ad-timeline-row ad-timeline-${g.status}`} key={g.key}>
+                  <div className="ad-timeline-dot" />
+                  <div className="ad-timeline-content">
+                    <div className="ad-timeline-label">
+                      {g.label}{g.table && g.table.length > 0 && <span className="ad-timeline-count"> ({g.table.length})</span>}
+                    </div>
+                    <div className="ad-timeline-time">{fmtDateTime(g.at) || 'Not reached yet'}</div>
+                    {g.note && <div className="ad-timeline-note">Reason: {g.note}</div>}
+                    {rows && rows.length > 0 && (
+                      <div className="ad-timeline-bidtable">
+                        {rows.map((row, i) => <BidTimelineRow row={row} key={i} />)}
+                        {g.table.length > BID_TABLE_PREVIEW_COUNT && (
+                          <button className="ad-timeline-showmore" onClick={() => setExpanded(e => !e)}>
+                            {expanded ? 'Show less' : `Show all ${g.table.length} bids`}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+        <div className="ad-modal-footer">
+          <button className="ad-btn-cancel" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // Full bid detail modal (admin evaluation) — opened by clicking a supplier's row.
 // Shows every field, with images previewed inline so the admin doesn't have to
@@ -1642,6 +1770,7 @@ function BidEvaluationPage() {
   const [confirm, setConfirm] = useState(null)   // { bid }
   const [toast, setToast] = useState(null)
   const [viewBid, setViewBid] = useState(null)   // bid shown in the detail modal
+  const [showTimeline, setShowTimeline] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -1709,10 +1838,17 @@ function BidEvaluationPage() {
       ) : (
         <>
           <div className="ad-card" style={{ padding: '20px 24px' }}>
-            <h2 style={{ margin: 0 }}>{project.name}</h2>
-            <p className="ad-muted ad-small" style={{ marginTop: 4 }}>
-              {project.code} · {project.category || '—'} · ABC {peso(project.budget)}
-            </p>
+            <div className="ad-eval-head-row">
+              <div>
+                <h2 style={{ margin: 0 }}>{project.name}</h2>
+                <p className="ad-muted ad-small" style={{ marginTop: 4 }}>
+                  {project.code} · {project.category || '—'} · ABC {peso(project.budget)}
+                </p>
+              </div>
+              <button className="ad-btn-timeline" onClick={() => setShowTimeline(true)}>
+                <Clock size={14} /> View Timeline
+              </button>
+            </div>
             {project.reference_image_url && (
               <div className="ad-eval-refimg">
                 <div className="ad-refimg-section-label"><ImageIcon size={14} /> Project Reference Image</div>
@@ -1786,6 +1922,10 @@ function BidEvaluationPage() {
           onClose={() => { setViewBid(null); setConfirm(null) }}
         />
       )}
+
+      {showTimeline && project && (
+        <TimelineModal project={project} bids={bids} onClose={() => setShowTimeline(false)} />
+      )}
     </div>
   )
 }
@@ -1793,16 +1933,23 @@ function BidEvaluationPage() {
 // ── Awards Page ───────────────────────────────────────────────────────────────
 
 function AwardsPage() {
-  const awards = INITIAL_AWARDS
+  const [awards, setAwards] = useState([])
+  const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+
+  useEffect(() => {
+    apiListAwards()
+      .then(setAwards)
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
   const filtered = awards.filter(a => {
     const q = search.toLowerCase()
-    return !q || a.supplier.toLowerCase().includes(q) || a.project.toLowerCase().includes(q)
+    return !q || a.supplier_name.toLowerCase().includes(q) || a.project_name.toLowerCase().includes(q)
   })
 
-  const totalAmount = awards.reduce((sum, a) => {
-    return sum + (parseInt(a.amount.replace(/[^0-9]/g, ''), 10) || 0)
-  }, 0)
+  const totalAmount = awards.reduce((sum, a) => sum + Number(a.amount || 0), 0)
 
   return (
     <div className="ad-content">
@@ -1813,7 +1960,7 @@ function AwardsPage() {
         </div>
         <div className="ad-stat-card">
           <div className="ad-stat-label">TOTAL AWARDED AMOUNT</div>
-          <div className="ad-stat-value ad-val-blue">₱{totalAmount.toLocaleString()}</div>
+          <div className="ad-stat-value ad-val-blue">{peso(totalAmount)}</div>
         </div>
         <div className="ad-stat-card">
           <div className="ad-stat-label">DOCUMENTS AVAILABLE</div>
@@ -1821,7 +1968,7 @@ function AwardsPage() {
         </div>
         <div className="ad-stat-card">
           <div className="ad-stat-label">LATEST AWARD DATE</div>
-          <div className="ad-stat-value ad-val-yellow" style={{ fontSize: 18 }}>{awards[0]?.date || '—'}</div>
+          <div className="ad-stat-value ad-val-yellow" style={{ fontSize: 18 }}>{fmtDate(awards[0]?.awarded_at)}</div>
         </div>
       </div>
 
@@ -1844,13 +1991,17 @@ function AwardsPage() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((a, i) => (
-              <tr key={i}>
-                <td className="ad-bold">{a.supplier}</td>
-                <td>{a.project}</td>
-                <td className="ad-bold">{a.amount}</td>
-                <td className="ad-muted">{a.date}</td>
-                <td><span className="badge badge-green">• WON</span></td>
+            {loading ? (
+              <TableSkeleton rows={3} cols={6} />
+            ) : filtered.length === 0 ? (
+              <tr><td colSpan={6} className="ad-empty-msg">No awards yet.</td></tr>
+            ) : filtered.map(a => (
+              <tr key={a.id}>
+                <td className="ad-bold">{a.supplier_name}</td>
+                <td>{a.project_name}</td>
+                <td className="ad-bold">{peso(a.amount)}</td>
+                <td className="ad-muted">{fmtDate(a.awarded_at)}</td>
+                <td><span className={`badge ${a.status === 'won' ? 'badge-green' : 'badge-gray'}`}>• {a.status === 'won' ? 'WON' : 'CANCELLED'}</span></td>
                 <td>
                   <div className="ad-doc-btns">
                     <button className="ad-doc-btn"><FileText size={12} /> NOA</button>
@@ -1884,19 +2035,103 @@ function AwardsPage() {
 
 function ReportsPage() {
   const { projects } = useProjects()
-  const awards = INITIAL_AWARDS
+  const [awards, setAwards] = useState([])
+  const [suppliers, setSuppliers] = useState([])
   const [reportTab, setReportTab] = useState('procurement')
 
+  useEffect(() => {
+    apiListAwards().then(setAwards).catch(() => {})
+    apiListSuppliers().then(setSuppliers).catch(() => {})
+  }, [])
+
+  // ── Procurement report data ────────────────────────────────────────────
   const totalProjects  = projects.length
   const activePrj      = projects.filter(p => p.status === 'published' || p.status === 'active').length
   const awardedPrj     = projects.filter(p => p.status === 'awarded').length
-  const totalBids      = projects.reduce((s, p) => s + p.bids, 0)
-  const awardedAmount  = awards.reduce((sum, a) => sum + (parseInt(a.amount.replace(/[^0-9]/g, ''), 10) || 0), 0)
+  const totalBids       = projects.reduce((s, p) => s + p.bids, 0)
+  const awardedAmount  = awards.reduce((sum, a) => sum + Number(a.amount || 0), 0)
 
   const typeCount = projects.reduce((acc, p) => {
     acc[p.type] = (acc[p.type] || 0) + 1
     return acc
   }, {})
+
+  const procurementStats = [
+    { label: 'TOTAL PROJECTS', value: totalProjects, cls: ''              },
+    { label: 'ACTIVE',          value: activePrj,    cls: 'ad-val-blue'   },
+    { label: 'AWARDED',         value: awardedPrj,   cls: 'ad-val-purple' },
+    { label: 'TOTAL BIDS',      value: totalBids,    cls: 'ad-val-yellow' },
+    { label: 'AWARDED AMOUNT',  value: peso(awardedAmount), cls: 'ad-val-green' },
+  ]
+
+  const procurementReportShape = {
+    title: 'Procurement Report',
+    stats: procurementStats.map(({ label, value }) => ({ label, value })),
+    sections: [
+      {
+        heading: 'By Procurement Type',
+        columns: ['Type', 'Count'],
+        rows: Object.entries(typeCount).map(([type, count]) => [type, count]),
+      },
+      {
+        heading: 'Recent Awards',
+        columns: ['Project', 'Winner', 'Amount', 'Date'],
+        rows: awards.map(a => [a.project_name, a.supplier_name, peso(a.amount), fmtDate(a.awarded_at)]),
+      },
+    ],
+  }
+
+  // ── Supplier report data ───────────────────────────────────────────────
+  const totalSuppliers = suppliers.length
+  const verifiedSup    = suppliers.filter(s => s.qualification_status === 'verified').length
+  const pendingSup      = suppliers.filter(s =>
+    s.qualification_status === 'waiting_admin_approval' || s.qualification_status === 'needs_revision').length
+  const rejectedSup    = suppliers.filter(s => s.qualification_status === 'rejected').length
+
+  const supplierAwardStats = suppliers.reduce((acc, s) => {
+    const won = awards.filter(a => a.supplier === s.id)
+    acc[s.id] = { count: won.length, amount: won.reduce((sum, a) => sum + Number(a.amount || 0), 0) }
+    return acc
+  }, {})
+  const awardedSupCount = Object.values(supplierAwardStats).filter(v => v.count > 0).length
+
+  const categoryCount = suppliers.reduce((acc, s) => {
+    for (const cat of (s.business_types || [])) acc[cat] = (acc[cat] || 0) + 1
+    return acc
+  }, {})
+
+  const supplierStats = [
+    { label: 'TOTAL SUPPLIERS', value: totalSuppliers, cls: ''              },
+    { label: 'VERIFIED',         value: verifiedSup,    cls: 'ad-val-green'  },
+    { label: 'PENDING REVIEW',  value: pendingSup,     cls: 'ad-val-yellow' },
+    { label: 'REJECTED',         value: rejectedSup,    cls: 'ad-val-red'    },
+    { label: 'WITH AWARDS',     value: awardedSupCount, cls: 'ad-val-purple' },
+  ]
+
+  const supplierReportShape = {
+    title: 'Supplier Report',
+    stats: supplierStats.map(({ label, value }) => ({ label, value })),
+    sections: [
+      {
+        heading: 'By Business Category',
+        columns: ['Category', 'Suppliers'],
+        rows: Object.entries(categoryCount).map(([cat, count]) => [cat, count]),
+      },
+      {
+        heading: 'Supplier Directory',
+        columns: ['Company', 'Qualification Status', 'Registered', 'Contracts Won', 'Awarded Amount'],
+        rows: suppliers.map(s => [
+          s.company,
+          QUAL_LABEL[s.qualification_status] || s.qualification_status,
+          fmtDate(s.registered),
+          supplierAwardStats[s.id]?.count || 0,
+          peso(supplierAwardStats[s.id]?.amount || 0),
+        ]),
+      },
+    ],
+  }
+
+  const activeReport = reportTab === 'procurement' ? procurementReportShape : supplierReportShape
 
   return (
     <div className="ad-content">
@@ -1912,21 +2147,21 @@ function ReportsPage() {
           >Supplier Report</button>
         </div>
         <div className="ad-export-btns">
-          <button className="ad-btn-export-csv">Export CSV</button>
-          <button className="ad-btn-primary">Export PDF</button>
+          <button
+            className="ad-btn-export-csv"
+            onClick={() => exportReportCSV(activeReport, `${reportTab}-report-${new Date().toISOString().slice(0, 10)}.csv`)}
+          >Export CSV</button>
+          <button
+            className="ad-btn-primary"
+            onClick={() => exportReportPDF(activeReport, `${reportTab}-report-${new Date().toISOString().slice(0, 10)}.pdf`)}
+          >Export PDF</button>
         </div>
       </div>
 
       {reportTab === 'procurement' && (
         <>
           <div className="ad-report-stats">
-            {[
-              { label: 'TOTAL PROJECTS', value: totalProjects, cls: ''              },
-              { label: 'ACTIVE',          value: activePrj,    cls: 'ad-val-blue'   },
-              { label: 'AWARDED',         value: awardedPrj,   cls: 'ad-val-purple' },
-              { label: 'TOTAL BIDS',      value: totalBids,    cls: 'ad-val-yellow' },
-              { label: 'AWARDED AMOUNT',  value: `₱${awardedAmount.toLocaleString()}`, cls: 'ad-val-green' },
-            ].map(({ label, value, cls }) => (
+            {procurementStats.map(({ label, value, cls }) => (
               <div className="ad-stat-card" key={label}>
                 <div className="ad-stat-label">{label}</div>
                 <div className={`ad-stat-value ${cls}`} style={{ fontSize: 22 }}>{value}</div>
@@ -1939,7 +2174,9 @@ function ReportsPage() {
             <table className="ad-table">
               <thead><tr><th>TYPE</th><th>COUNT</th></tr></thead>
               <tbody>
-                {Object.entries(typeCount).map(([type, count]) => (
+                {Object.keys(typeCount).length === 0 ? (
+                  <tr><td colSpan={2} className="ad-empty-msg">No data yet.</td></tr>
+                ) : Object.entries(typeCount).map(([type, count]) => (
                   <tr key={type}><td>{type}</td><td>{count}</td></tr>
                 ))}
               </tbody>
@@ -1951,12 +2188,14 @@ function ReportsPage() {
             <table className="ad-table">
               <thead><tr><th>PROJECT</th><th>WINNER</th><th>AMOUNT</th><th>DATE</th></tr></thead>
               <tbody>
-                {awards.map((a, i) => (
-                  <tr key={i}>
-                    <td>{a.project}</td>
-                    <td>PA co.</td>
-                    <td className="ad-bold">{a.amount}</td>
-                    <td className="ad-muted">{a.date}</td>
+                {awards.length === 0 ? (
+                  <tr><td colSpan={4} className="ad-empty-msg">No awards yet.</td></tr>
+                ) : awards.map(a => (
+                  <tr key={a.id}>
+                    <td>{a.project_name}</td>
+                    <td>{a.supplier_name}</td>
+                    <td className="ad-bold">{peso(a.amount)}</td>
+                    <td className="ad-muted">{fmtDate(a.awarded_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1966,11 +2205,59 @@ function ReportsPage() {
       )}
 
       {reportTab === 'supplier' && (
-        <div className="ad-card">
-          <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
-            Supplier report coming soon.
+        <>
+          <div className="ad-report-stats">
+            {supplierStats.map(({ label, value, cls }) => (
+              <div className="ad-stat-card" key={label}>
+                <div className="ad-stat-label">{label}</div>
+                <div className={`ad-stat-value ${cls}`} style={{ fontSize: 22 }}>{value}</div>
+              </div>
+            ))}
           </div>
-        </div>
+
+          <div className="ad-card">
+            <div className="ad-card-header"><h2>By Business Category</h2></div>
+            <table className="ad-table">
+              <thead><tr><th>CATEGORY</th><th>SUPPLIERS</th></tr></thead>
+              <tbody>
+                {Object.keys(categoryCount).length === 0 ? (
+                  <tr><td colSpan={2} className="ad-empty-msg">No data yet.</td></tr>
+                ) : Object.entries(categoryCount).map(([cat, count]) => (
+                  <tr key={cat}><td>{cat}</td><td>{count}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="ad-card">
+            <div className="ad-card-header"><h2>Supplier Directory</h2></div>
+            <table className="ad-table">
+              <thead>
+                <tr>
+                  <th>COMPANY</th><th>QUALIFICATION STATUS</th><th>REGISTERED</th>
+                  <th>CONTRACTS WON</th><th>AWARDED AMOUNT</th>
+                </tr>
+              </thead>
+              <tbody>
+                {suppliers.length === 0 ? (
+                  <tr><td colSpan={5} className="ad-empty-msg">No suppliers yet.</td></tr>
+                ) : suppliers.map(s => (
+                  <tr key={s.id}>
+                    <td className="ad-bold">{s.company}</td>
+                    <td>
+                      <span className={`badge ${QUAL_CLS[s.qualification_status] || 'badge-gray'}`}>
+                        {QUAL_LABEL[s.qualification_status] || (s.qualification_status || '').replace(/_/g, ' ')}
+                      </span>
+                    </td>
+                    <td className="ad-muted">{fmtDate(s.registered)}</td>
+                    <td>{supplierAwardStats[s.id]?.count || 0}</td>
+                    <td className="ad-bold">{peso(supplierAwardStats[s.id]?.amount || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   )

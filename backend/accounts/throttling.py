@@ -3,16 +3,14 @@ import re
 from rest_framework.throttling import SimpleRateThrottle
 
 
-class LoginRateThrottle(SimpleRateThrottle):
-    """Strict throttle for the login route: max 5 attempts per 15 minutes per IP.
+class IPRateThrottle(SimpleRateThrottle):
+    """Base for IP-keyed throttles on unauthenticated routes (login, register).
 
     DRF's built-in rate parser only understands single-unit windows ('5/min',
-    '5/hour'), so we override parse_rate to accept a multi-unit window like
-    '5/15m'. Login is unauthenticated, so attempts are keyed by client IP — this
-    is what blunts brute-force/credential-stuffing against the auth endpoint.
+    '5/hour'), so this overrides parse_rate to accept a multi-unit window like
+    '5/15m'. Subclasses just set `scope` to a matching key in
+    DEFAULT_THROTTLE_RATES — keyed by IP since there's no account yet to key by.
     """
-
-    scope = "login"
 
     def parse_rate(self, rate):
         if rate is None:
@@ -27,5 +25,22 @@ class LoginRateThrottle(SimpleRateThrottle):
         return (int(num), count * unit_seconds)
 
     def get_cache_key(self, request, view):
-        # Always key by IP (the user isn't authenticated yet during login).
         return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
+
+
+class LoginRateThrottle(IPRateThrottle):
+    """Strict throttle for the login route: max 5 attempts per 15 minutes per IP.
+    This is what blunts brute-force/credential-stuffing against the auth endpoint."""
+
+    scope = "login"
+
+
+class RegisterRateThrottle(IPRateThrottle):
+    """Throttle for account-creation routes: max 10 registrations per hour per IP.
+
+    Generous enough that a genuine applicant retrying after a validation error
+    (typo, weak password, mismatched confirm-password) is never blocked, while
+    still stopping scripted mass account creation.
+    """
+
+    scope = "register"

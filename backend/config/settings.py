@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -25,17 +26,21 @@ load_dotenv(BASE_DIR / '.env')
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-# In production set SECRET_KEY in the environment; the insecure fallback is only
-# used for local development.
-SECRET_KEY = os.environ.get(
-    'SECRET_KEY',
-    'django-insecure-!ek=y9w+pr*8_t3ixd3w)01k1!im=h@1+d6tm1ha94vw)=d6c6',
-)
-
 # SECURITY WARNING: don't run with debug turned on in production!
 # Defaults to True for local dev; set DEBUG=False in the Render environment.
 DEBUG = os.environ.get('DEBUG', 'True').lower() == 'true'
+
+# SECURITY WARNING: keep the secret key used in production secret!
+# In production set SECRET_KEY in the environment; the insecure fallback below
+# is only for local development and is refused outright once DEBUG=False, so a
+# misconfigured deploy fails fast instead of silently running on a key that's
+# sitting in plain sight in this file.
+_INSECURE_DEV_SECRET_KEY = 'django-insecure-!ek=y9w+pr*8_t3ixd3w)01k1!im=h@1+d6tm1ha94vw)=d6c6'
+SECRET_KEY = os.environ.get('SECRET_KEY', _INSECURE_DEV_SECRET_KEY)
+if not DEBUG and SECRET_KEY == _INSECURE_DEV_SECRET_KEY:
+    raise ImproperlyConfigured(
+        'SECRET_KEY environment variable must be set when DEBUG=False.'
+    )
 
 # Hosts allowed to serve this app. Render injects RENDER_EXTERNAL_HOSTNAME for
 # the service's own URL; extra hosts can be added via ALLOWED_HOSTS (comma list).
@@ -57,6 +62,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     # Third-party
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     # Local apps
     'accounts',
@@ -217,7 +223,10 @@ REST_FRAMEWORK = {
     # Rate limiting (throttling) applied to EVERY endpoint:
     #  - anonymous callers are limited by IP, authenticated users by account.
     # The login route additionally enforces a much stricter 5-per-15-minutes
-    # limit via accounts.throttling.LoginRateThrottle (see LoginView).
+    # limit via accounts.throttling.LoginRateThrottle (see LoginView), and the
+    # two registration routes enforce a 10-per-hour limit via
+    # accounts.throttling.RegisterRateThrottle (see RegisterView /
+    # SupplierRegisterView) to stop scripted mass account creation.
     'DEFAULT_THROTTLE_CLASSES': (
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
@@ -226,6 +235,7 @@ REST_FRAMEWORK = {
         'anon': '60/min',
         'user': '240/min',
         'login': '5/15m',
+        'register': '10/h',
     },
 }
 
@@ -264,3 +274,16 @@ if FRONTEND_URL:
 
 # Respect Render's proxy so request.is_secure() / HTTPS redirects work correctly.
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Transport-security hardening — gated on DEBUG=False so local HTTP development
+# (sqlite, http://127.0.0.1:8000) is completely unaffected. Safe in production
+# because SECURE_PROXY_SSL_HEADER above already makes request.is_secure() true
+# for real HTTPS traffic through Render's proxy, so this won't redirect-loop.
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True  # admin login session cookie, HTTPS only
+    CSRF_COOKIE_SECURE = True     # admin login CSRF cookie, HTTPS only
+    # Start conservative (1 day) rather than the usual 1-year recommendation —
+    # HSTS is cached by the browser, so a mistake here is hard to undo quickly.
+    # Raise this once the HTTPS setup has been running smoothly for a while.
+    SECURE_HSTS_SECONDS = 60 * 60 * 24

@@ -151,7 +151,6 @@ export default function PublicResultsPage() {
                     <th>Project</th>
                     <th>Category</th>
                     <th>Winning Supplier</th>
-                    <th className="pub-num">Awarded Amount</th>
                     <th>Date Awarded</th>
                   </tr>
                 </thead>
@@ -164,7 +163,6 @@ export default function PublicResultsPage() {
                       <td>
                         <span className="pub-winner"><Trophy size={13} /> {w.winner}</span>
                       </td>
-                      <td className="pub-num pub-strong">{peso(w.amount)}</td>
                       <td>{fmtDate(w.awarded_at)}</td>
                     </tr>
                   ))}

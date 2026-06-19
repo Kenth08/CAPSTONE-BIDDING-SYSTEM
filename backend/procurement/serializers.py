@@ -24,7 +24,7 @@ class SupplierListSerializer(serializers.ModelSerializer):
         model = Supplier
         fields = [
             "id", "company", "contact", "full_name", "email", "business_type",
-            "status", "qualification_status", "email_verified", "registered",
+            "business_types", "status", "qualification_status", "email_verified", "registered",
         ]
 
 
@@ -130,7 +130,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "id", "code", "name", "description", "budget", "deadline",
             "type", "category", "delivery_location", "expected_delivery_date",
             "eligible_types", "status", "bid_count", "created_at",
-            "reviewed_at", "reject_reason", "documents",
+            "reviewed_at", "reject_reason", "published_at", "awarded_at", "documents",
             # write-only file inputs (read side is exposed via `documents`)
             "purchase_request", "technical_specifications", "terms_of_reference",
             "approved_budget_document", "bid_evaluation_criteria",
@@ -139,7 +139,10 @@ class ProjectSerializer(serializers.ModelSerializer):
         ]
         # Status transitions only happen through the approve/reject/publish
         # actions, never by directly writing the field.
-        read_only_fields = ["code", "created_at", "status", "reviewed_at", "reject_reason"]
+        read_only_fields = [
+            "code", "created_at", "status", "reviewed_at", "reject_reason",
+            "published_at", "awarded_at",
+        ]
         extra_kwargs = {
             **{
                 key: {"write_only": True, "required": False}
@@ -185,7 +188,7 @@ class BidSerializer(serializers.ModelSerializer):
         model = Bid
         fields = [
             "id", "project", "project_name", "project_code", "project_category",
-            "supplier", "supplier_name", "amount", "notes", "status", "submitted_at",
+            "supplier", "supplier_name", "amount", "notes", "status", "submitted_at", "reviewed_at",
             # required + product info
             "delivery_timeline", "additional_comments",
             "brand_name", "model_number", "warranty_period",

@@ -6,7 +6,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from procurement.models import Supplier
+from procurement.models import PROCUREMENT_CATEGORIES, Supplier
 
 User = get_user_model()
 
@@ -25,11 +25,18 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6)
+    """Plain self-registration (currently unused by the frontend, which uses
+    SupplierRegisterSerializer instead, but the route is public so it must be
+    safe to call directly). `role` is read-only — every account created here
+    gets the model default ('supplier'); without this, any caller could pass
+    role=admin and grant themselves full admin access with no verification."""
+
+    password = serializers.CharField(write_only=True, min_length=6, max_length=128)
 
     class Meta:
         model = User
         fields = ["id", "username", "email", "password", "role", "full_name"]
+        read_only_fields = ["role"]
 
     def create(self, validated_data):
         password = validated_data.pop("password")
@@ -49,11 +56,15 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
 
     # Account fields (live on User, not the Supplier profile)
     full_name = serializers.CharField(max_length=150)
-    email = serializers.EmailField()
-    password = serializers.CharField(write_only=True)
-    confirm_password = serializers.CharField(write_only=True)
+    # `create()` below also uses this value as the username, so it's capped at
+    # 150 (AbstractUser.username's max_length) rather than email's usual 254 —
+    # otherwise a long-but-valid email could pass this check yet still blow up
+    # the DB insert (username/email are never full_clean()'d before save()).
+    email = serializers.EmailField(max_length=150)
+    password = serializers.CharField(write_only=True, max_length=128)
+    confirm_password = serializers.CharField(write_only=True, max_length=128)
     # The model field is `company`; the form sends `company_name`.
-    company_name = serializers.CharField(source="company")
+    company_name = serializers.CharField(source="company", max_length=200)
     # Sent from the browser as a JSON string in a multipart form.
     business_types = serializers.JSONField()
 
@@ -92,6 +103,17 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
     def validate_phone_number(self, value):
         if not value.isdigit():
             raise serializers.ValidationError("Phone number must contain digits only.")
+        return value
+
+    def validate_business_types(self, value):
+        if not isinstance(value, list) or not value:
+            raise serializers.ValidationError("Select at least one business category.")
+        if len(value) > len(PROCUREMENT_CATEGORIES):
+            raise serializers.ValidationError("Too many categories selected.")
+        if not all(isinstance(item, str) for item in value):
+            raise serializers.ValidationError("Invalid category list.")
+        if not set(value).issubset(PROCUREMENT_CATEGORIES):
+            raise serializers.ValidationError("Select only valid procurement categories.")
         return value
 
     def validate_tin(self, value):

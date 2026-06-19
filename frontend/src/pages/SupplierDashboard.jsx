@@ -7,7 +7,7 @@ import {
   AlertTriangle, Upload, Lock, Menu, Camera, Check, Plus, Loader2, XCircle
 } from 'lucide-react'
 import {
-  clearSession, apiGetMySupplier, apiResubmitDocuments,
+  apiLogout, apiGetMySupplier, apiResubmitDocuments,
   apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid,
   apiListNotifications, apiMarkNotificationsRead,
 } from '../api'
@@ -765,7 +765,7 @@ function SupplierSidebar({ active, open, onClose, profile }) {
           </div>
           <button
             className="sd-sidebar-expand"
-            onClick={() => { clearSession(); navigate('/login') }}
+            onClick={() => { apiLogout(); navigate('/login') }}
           >
             <ChevronRight size={14} />
           </button>
@@ -871,7 +871,7 @@ function SupplierHeader({ title, onMenu, profile }) {
                   <Settings size={15} /> Settings
                 </button>
                 <div className="sd-dropdown-divider" />
-                <button className="sd-dropdown-item sd-dropdown-logout" onClick={() => { clearSession(); navigate('/login') }}>
+                <button className="sd-dropdown-item sd-dropdown-logout" onClick={() => { apiLogout(); navigate('/login') }}>
                   <LogOut size={15} /> Log out
                 </button>
               </div>

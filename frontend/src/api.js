@@ -18,6 +18,22 @@ export function clearSession() {
   localStorage.removeItem('user')
 }
 
+// Logs out instantly from the user's point of view (local session is cleared
+// synchronously, so the UI never waits on the network) while also telling the
+// backend to blacklist the refresh token, so a copied/stolen token can't be
+// reused after logout. Best-effort: if the request fails the token simply
+// expires naturally later — logout itself never fails.
+export function apiLogout() {
+  const refresh = localStorage.getItem('refresh')
+  clearSession()
+  if (!refresh) return
+  fetch(`${API_URL}/auth/logout/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh }),
+  }).catch(() => {})
+}
+
 export const getToken = () => localStorage.getItem('access')
 export const getRole = () => localStorage.getItem('role')
 
@@ -173,6 +189,9 @@ export const apiDisqualifyBid = (bidId) =>
   apiFetch(`/bids/${bidId}/disqualify/`, { method: 'POST', body: '{}' })
 export const apiSelectWinner = (bidId) =>
   apiFetch(`/bids/${bidId}/select-winner/`, { method: 'POST', body: '{}' })
+
+// ── Awards (admin) ───────────────────────────────────────────────────────────────
+export const apiListAwards = () => apiFetch('/awards/')
 
 // ── Notifications ──────────────────────────────────────────────────────────────
 export const apiListNotifications = () => apiFetch('/notifications/')

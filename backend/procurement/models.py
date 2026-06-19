@@ -219,6 +219,11 @@ class Project(models.Model):
     # Set when the Head approves/rejects; reject_reason explains a rejection.
     reviewed_at = models.DateTimeField(null=True, blank=True)
     reject_reason = models.TextField(blank=True)
+    # Set when the Admin publishes the project for bidding / when a winner is
+    # selected — together with created_at/reviewed_at these make up the full
+    # procurement timeline shown to the Admin.
+    published_at = models.DateTimeField(null=True, blank=True)
+    awarded_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -254,6 +259,9 @@ class Bid(models.Model):
     notes = models.TextField(blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.UNDER_REVIEW)
     submitted_at = models.DateTimeField(auto_now_add=True)
+    # Set when the Admin qualifies/disqualifies this bid — part of the
+    # procurement timeline (evaluation step).
+    reviewed_at = models.DateTimeField(null=True, blank=True)
 
     # ── Required bid information (enforced in the view, nullable so older bids
     #    submitted before these fields existed are never broken) ──────────────

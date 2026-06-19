@@ -499,6 +499,7 @@
 .ad-val-blue   { color: #3b82f6 !important; }
 .ad-val-purple { color: #8b5cf6 !important; }
 .ad-val-yellow { color: #f59e0b !important; }
+.ad-val-red    { color: #ef4444 !important; }
 
 /* ── DASHBOARD GRID ───────────────────────────────────── */
 .ad-dash-grid {
@@ -971,6 +972,74 @@
 }
 .ad-step.done .ad-step-label,
 .ad-step.active .ad-step-label { color: var(--text-dark, #0f172a); font-weight: 600; }
+
+/* ── BID EVALUATION: header row + Timeline button ─────── */
+.ad-eval-head-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ad-btn-timeline {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 7px 14px; border-radius: 6px; font-size: 12.5px; font-weight: 600;
+  background: #fff; color: var(--primary, #10b981); border: 1.5px solid rgba(16,185,129,0.3);
+  cursor: pointer; transition: all 0.15s;
+}
+.ad-btn-timeline:hover { background: var(--primary, #10b981); color: #fff; border-color: var(--primary, #10b981); }
+
+/* ── Procurement timeline modal ────────────────────────── */
+.ad-timeline-modal .ad-modal-body { padding: 18px 24px; }
+.ad-timeline { display: flex; flex-direction: column; }
+.ad-timeline-row {
+  display: flex; gap: 14px; position: relative; padding-bottom: 22px;
+}
+.ad-timeline-row:last-child { padding-bottom: 0; }
+.ad-timeline-row::before {
+  content: '';
+  position: absolute;
+  top: 16px; left: 5px;
+  width: 2px; bottom: 0;
+  background: #e2e8f0;
+}
+.ad-timeline-row:last-child::before { display: none; }
+.ad-timeline-dot {
+  position: relative; z-index: 1; flex-shrink: 0;
+  width: 12px; height: 12px; border-radius: 50%;
+  margin-top: 4px;
+  background: #cbd5e1;
+}
+.ad-timeline-done .ad-timeline-dot { background: var(--primary, #10b981); }
+.ad-timeline-rejected .ad-timeline-dot { background: #ef4444; }
+.ad-timeline-content { flex: 1; min-width: 0; }
+.ad-timeline-label { font-size: 13.5px; font-weight: 700; color: var(--text-dark, #0f172a); }
+.ad-timeline-rejected .ad-timeline-label { color: #ef4444; }
+.ad-timeline-pending .ad-timeline-label { color: #94a3b8; }
+.ad-timeline-time { font-size: 12px; color: #64748b; margin-top: 2px; }
+.ad-timeline-note { font-size: 12px; color: #ef4444; margin-top: 3px; }
+.ad-timeline-count { font-weight: 600; color: #94a3b8; }
+
+/* Merged "Bids & Evaluation" table — one row per supplier (amount + decision),
+   collapsed to a short preview with a "Show all" toggle when there are many. */
+.ad-timeline-bidtable {
+  margin-top: 10px; padding: 10px 12px;
+  background: #f8fafc; border: 1px solid #eef2f6; border-radius: 8px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.ad-timeline-bidrow {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 6px 14px;
+  padding-bottom: 10px; border-bottom: 1px solid #e2e8f0;
+}
+.ad-timeline-bidrow:last-of-type { padding-bottom: 0; border-bottom: none; }
+.ad-timeline-bidrow-main { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.ad-timeline-bidrow-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ad-timeline-showmore {
+  align-self: flex-start;
+  background: none; border: none; padding: 0; margin-top: 2px;
+  font-size: 12px; font-weight: 700; color: var(--primary, #10b981); cursor: pointer;
+}
+.ad-timeline-showmore:hover { text-decoration: underline; }
 
 /* ── BADGES ───────────────────────────────────────────── */
 .badge {
@@ -1453,6 +1522,7 @@
   .ad-body, .ad-content { padding: 16px; }
   .ad-stats, .ad-report-stats { grid-template-columns: 1fr 1fr; }
   .ad-card-header { flex-wrap: wrap; gap: 10px; }
+  .ad-eval-head-row { flex-wrap: wrap; }
   .ad-form-grid { grid-template-columns: 1fr; }
   .ad-doc-grid { grid-template-columns: 1fr; }
   .ad-info-grid { grid-template-columns: 1fr; }

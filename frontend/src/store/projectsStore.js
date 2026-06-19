@@ -50,6 +50,7 @@ function fromApi(p) {
     category: p.category || '',
     budget: fmtPeso(p.budget),
     deadline: fmtDate(p.deadline),
+    deadlineRaw: p.deadline || null,  // unformatted ISO date, for chronological sorting
     deliveryLocation: p.delivery_location || '',
     expectedDelivery: fmtDate(p.expected_delivery_date),
     eligibleTypes: p.eligible_types,
