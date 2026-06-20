@@ -985,6 +985,8 @@
   border: 1px solid var(--light-border); background: white; transition: all 0.15s;
 }
 .sd-doc-row:hover { border-color: #3b82f6; background: #eff6ff; }
+.sd-doc-row-missing { background: var(--light-bg); cursor: default; }
+.sd-doc-row-missing:hover { border-color: var(--light-border); background: var(--light-bg); }
 .sd-doc-view {
   margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
   font-size: 12px; font-weight: 700; color: #3b82f6; flex-shrink: 0;

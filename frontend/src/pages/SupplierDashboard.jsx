@@ -1246,6 +1246,16 @@ function profileBusinessTypes(profile) {
     .split(',').map(s => s.trim()).filter(Boolean)
 }
 
+// Maps a document's review state to a badge — "not uploaded" wins over any
+// stale review status, since a missing file can't meaningfully be "approved".
+function docStatusBadge(doc) {
+  if (!doc.url) return { label: 'Not Uploaded', cls: 'badge-gray' }
+  if (doc.review_status === 'approved') return { label: 'Approved', cls: 'badge-green' }
+  if (doc.review_status === 'needs_revision') return { label: 'Needs Revision', cls: 'badge-red' }
+  if (doc.review_status === 'resubmitted') return { label: 'Resubmitted', cls: 'badge-blue' }
+  return { label: 'Pending Review', cls: 'badge-yellow' }
+}
+
 function SupplierProfile({ profile, eligible }) {
   if (!profile) {
     return (
@@ -1297,6 +1307,34 @@ function SupplierProfile({ profile, eligible }) {
               </div>
             )}
           </div>
+        </div>
+      </div>
+
+      <div className="sd-card">
+        <div className="sd-card-header">
+          <div><h2>My Documents</h2><p>Registration documents on file with the procuring entity</p></div>
+        </div>
+        <div className="sd-doc-list" style={{ padding: '8px 24px 20px' }}>
+          {(profile.documents || []).map(d => {
+            const badge = docStatusBadge(d)
+            const labelEl = (
+              <span className="sd-file-rowname">
+                {d.label}{!d.required && <span className="sd-optional"> (optional)</span>}
+              </span>
+            )
+            return d.url ? (
+              <a key={d.key} className="sd-doc-row" href={d.url} target="_blank" rel="noreferrer">
+                {labelEl}
+                <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                <span className="sd-doc-view"><Eye size={13} /> View</span>
+              </a>
+            ) : (
+              <div key={d.key} className="sd-doc-row sd-doc-row-missing">
+                {labelEl}
+                <span className={`badge ${badge.cls}`}>{badge.label}</span>
+              </div>
+            )
+          })}
         </div>
       </div>
 
