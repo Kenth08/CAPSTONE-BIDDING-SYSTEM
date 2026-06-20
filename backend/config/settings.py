@@ -236,6 +236,7 @@ REST_FRAMEWORK = {
         'user': '240/min',
         'login': '5/15m',
         'register': '10/h',
+        'password_reset': '5/h',
     },
 }
 
@@ -256,6 +257,23 @@ CORS_ALLOWED_ORIGINS = [
 FRONTEND_URL = os.environ.get('FRONTEND_URL')
 if FRONTEND_URL:
     CORS_ALLOWED_ORIGINS.append(FRONTEND_URL)
+
+# ── Email (password reset links) ────────────────────────────────────────────
+# Defaults to printing emails to the server console — zero setup for local dev
+# and safe for a deployed demo with no SMTP configured (the request never
+# fails, it just won't actually deliver mail). Set EMAIL_HOST (+ optionally
+# EMAIL_HOST_USER / EMAIL_HOST_PASSWORD) to send real mail through any SMTP
+# provider (Gmail, SendGrid, etc.) without any code changes.
+EMAIL_HOST = os.environ.get('EMAIL_HOST')
+if EMAIL_HOST:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+    EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() == 'true'
+    EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+    EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'no-reply@eprocurement.local')
 
 # Vercel generates a fresh preview URL for every deployment
 # (e.g. capstone-bidding-system-<hash>-<team>.vercel.app), so matching by exact

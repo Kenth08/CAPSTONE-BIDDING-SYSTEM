@@ -148,23 +148,6 @@
 .hd-workspace-label { font-size: 10px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.08em; }
 .hd-page-title { font-size: 18px; font-weight: 800; color: white; line-height: 1.2; }
 .hd-header-right { display: flex; align-items: center; gap: 14px; }
-.hd-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: rgba(255,255,255,0.07);
-  border: 1px solid #1e2d40;
-  border-radius: 8px;
-  padding: 7px 12px;
-  color: var(--text-muted);
-}
-.hd-search input {
-  background: transparent;
-  border: none;
-  font-size: 13px;
-  color: white;
-  width: 160px;
-}
 .hd-notif {
   position: relative;
   width: 36px; height: 36px;

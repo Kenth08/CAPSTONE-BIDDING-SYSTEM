@@ -34,6 +34,7 @@ from .serializers import (
     ProjectSerializer,
     SupplierDetailSerializer,
     SupplierListSerializer,
+    SupplierMeUpdateSerializer,
 )
 from .validators import validate_bid_upload, validate_upload
 
@@ -392,11 +393,21 @@ class SupplierViewSet(viewsets.ModelViewSet):
     def _own_supplier(self, request):
         return Supplier.objects.select_related("user").filter(user=request.user).first()
 
-    @action(detail=False, methods=["get"])
+    @action(detail=False, methods=["get", "patch"])
     def me(self, request):
         supplier = self._own_supplier(request)
         if supplier is None:
             return Response({"detail": "No supplier profile found."}, status=http_status.HTTP_404_NOT_FOUND)
+
+        if request.method == "PATCH":
+            full_name = request.data.get("full_name")
+            if full_name is not None and supplier.user_id:
+                supplier.user.full_name = full_name
+                supplier.user.save(update_fields=["full_name"])
+            serializer = SupplierMeUpdateSerializer(supplier, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+
         return self._detail_response(supplier)
 
     @action(detail=False, methods=["post"])

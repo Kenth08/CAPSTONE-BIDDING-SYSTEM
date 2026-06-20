@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
-  Search, ChevronDown, ChevronRight, LogOut,
+  ChevronDown, ChevronRight, LogOut,
   ClipboardCheck, AlertCircle, FolderOpen, Eye,
   ThumbsUp, ThumbsDown, FileText, Menu, X
 } from 'lucide-react'
@@ -75,7 +75,6 @@ function Header({ title, onMenu }) {
         </div>
       </div>
       <div className="hd-header-right">
-        <div className="hd-search"><Search size={15} /><input placeholder="Search…" /></div>
         <NotificationBell />
         <div className="hd-user-wrap">
           <div className="hd-user" onClick={() => setOpen(o => !o)}>

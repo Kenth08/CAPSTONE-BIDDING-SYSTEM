@@ -161,3 +161,15 @@ export const isReviewed = (p) =>
   p.status === 'rejected' ||
   ['approved', 'published', 'active', 'awarded', 'closed'].includes(p.status)
 export const decisionOf = (p) => (p.status === 'rejected' ? 'rejected' : 'approved')
+
+// Local 'YYYY-MM-DD' for today — matches the ISO date string the API sends for
+// deadlineRaw, so this is a plain string compare (no Date/timezone parsing).
+function todayISO() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// A project whose bid deadline has passed — the bidding window is over, so it
+// belongs in the History view instead of the active Projects table. The
+// deadline day itself still counts as open.
+export const isExpired = (p) => !!p.deadlineRaw && p.deadlineRaw < todayISO()

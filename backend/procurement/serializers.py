@@ -73,6 +73,23 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
         return result
 
 
+class SupplierMeUpdateSerializer(serializers.ModelSerializer):
+    """Fields a supplier may edit about their own profile from the Settings page.
+
+    Company name, TIN and business types are excluded — they were verified at
+    registration and changing them silently would undermine that review.
+    """
+
+    class Meta:
+        model = Supplier
+        fields = ["phone_number", "company_address", "representative_name"]
+
+    def validate_phone_number(self, value):
+        if value and not value.isdigit():
+            raise serializers.ValidationError("Phone number must contain digits only.")
+        return value
+
+
 class ProjectSerializer(serializers.ModelSerializer):
     bid_count = serializers.SerializerMethodField()
     documents = serializers.SerializerMethodField()

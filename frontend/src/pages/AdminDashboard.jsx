@@ -4,7 +4,7 @@ import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
   Search, ChevronRight, LogOut, Shield,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
-  CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock
+  CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock, ArrowLeft
 } from 'lucide-react'
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
@@ -12,7 +12,7 @@ import {
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
   apiListAwards,
 } from '../api'
-import { useProjects, createProject, publishProject, refreshProjects } from '../store/projectsStore'
+import { useProjects, createProject, publishProject, refreshProjects, isExpired } from '../store/projectsStore'
 import { CATEGORIES } from '../constants/categories'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import NotificationBell from '../components/NotificationBell'
@@ -60,13 +60,18 @@ function Sidebar({ active, open, onClose }) {
       <div className="ad-menu-section">
         <span className="ad-menu-label">MENU</span>
         <nav className="ad-sidebar-nav">
-          {NAV.map(({ icon: Icon, label, to }) => (
-            <Link key={to} to={to} className={`ad-nav-item${active === to ? ' active' : ''}`} onClick={onClose}>
-              <Icon size={18} />
-              <span>{label}</span>
-              {active === to && <span className="ad-nav-dot" />}
-            </Link>
-          ))}
+          {NAV.map(({ icon: Icon, label, to }) => {
+            // "/admin/projects/history" is a sub-view of Projects, so it keeps
+            // the Projects nav item highlighted too.
+            const isActive = active === to || (to === '/admin/projects' && active.startsWith(`${to}/`))
+            return (
+              <Link key={to} to={to} className={`ad-nav-item${isActive ? ' active' : ''}`} onClick={onClose}>
+                <Icon size={18} />
+                <span>{label}</span>
+                {isActive && <span className="ad-nav-dot" />}
+              </Link>
+            )
+          })}
         </nav>
       </div>
 
@@ -104,11 +109,6 @@ function Header({ title, onMenu }) {
         </div>
       </div>
       <div className="ad-header-right">
-        <div className="ad-search">
-          <Search size={15} />
-          <input placeholder="Search..." />
-          <span className="ad-search-shortcut">Ctrl+4</span>
-        </div>
         <NotificationBell />
         <div className="ad-user-wrap">
           <div className="ad-user" onClick={() => setOpen(o => !o)}>
@@ -289,7 +289,13 @@ function ProjectsPage() {
   // planned, awaiting approval, or rejected stay on the Planning page.
   const approved = projects.filter(p => !['draft', 'pending_head', 'rejected'].includes(p.status))
 
-  const filtered = approved.filter(p => {
+  // Once a project's bid deadline has passed, the bidding window is over — pull
+  // it out of the active table and into History instead of leaving it to sit
+  // here looking "Open for Bidding" forever.
+  const active = approved.filter(p => !isExpired(p))
+  const historyCount = approved.length - active.length
+
+  const filtered = active.filter(p => {
     const q = search.toLowerCase()
     const matchSearch = !q || p.name.toLowerCase().includes(q)
     const matchTab =
@@ -300,14 +306,9 @@ function ProjectsPage() {
     return matchSearch && matchTab
   })
 
-  // Soonest deadline first so whatever needs attention next surfaces at the top;
-  // projects without a deadline sink to the bottom instead of sorting first.
-  const sorted = [...filtered].sort((a, b) => {
-    if (!a.deadlineRaw && !b.deadlineRaw) return 0
-    if (!a.deadlineRaw) return 1
-    if (!b.deadlineRaw) return -1
-    return new Date(a.deadlineRaw) - new Date(b.deadlineRaw)
-  })
+  // No re-sort here: `projects` already arrives newest-first (API orders by
+  // -created_at, and the store unshifts new/updated rows), so a freshly
+  // created or published project shows up at the top right away.
 
   return (
     <div className="ad-content">
@@ -324,6 +325,9 @@ function ProjectsPage() {
               <Search size={14} />
               <input placeholder="Search projects" value={search} onChange={e => setSearch(e.target.value)} />
             </div>
+            <button className="ad-btn-history" onClick={() => navigate('/admin/projects/history')}>
+              <Clock size={12} /> History{historyCount > 0 ? ` (${historyCount})` : ''}
+            </button>
           </div>
         </div>
 
@@ -336,11 +340,11 @@ function ProjectsPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && sorted.length === 0
+            {loading && filtered.length === 0
               ? <TableSkeleton rows={4} cols={7} />
-              : sorted.length === 0
+              : filtered.length === 0
               ? <tr><td colSpan={7} className="ad-empty-row">No approved projects yet.</td></tr>
-              : sorted.map(p => (
+              : filtered.map(p => (
                 <tr key={p.id}>
                   <td className="ad-bold">{p.name}</td>
                   <td>{p.budget}</td>
@@ -367,6 +371,91 @@ function ProjectsPage() {
                         <Eye size={12} /> View Bids
                       </button>
                     </div>
+                  </td>
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Project History Page ─────────────────────────────────────────────────────
+// Projects whose bid deadline has passed get pulled out of the active
+// Projects table (see ProjectsPage filtering above) so closed biddings don't
+// clutter the working view, but they stay one click away with full status
+// and bid access. Purely a client-side split of the same `projects` cache —
+// no extra request, so opening History never hits the API or slows anything.
+function ProjectHistoryPage() {
+  const { projects, loading } = useProjects()
+  const navigate = useNavigate()
+  const [search, setSearch] = useState('')
+
+  const approved = projects.filter(p => !['draft', 'pending_head', 'rejected'].includes(p.status))
+  const history = approved.filter(isExpired)
+
+  const filtered = history.filter(p => {
+    const q = search.toLowerCase()
+    return !q || p.name.toLowerCase().includes(q)
+  })
+
+  // Most recently closed first.
+  const sorted = [...filtered].sort((a, b) => (a.deadlineRaw < b.deadlineRaw ? 1 : -1))
+
+  // A row only lands here because its deadline has passed, so the badge should
+  // say so — "Open for Bidding"/"Approved" would be stale and confusing once
+  // the bidding window is actually over. Awarded is the one outcome worth
+  // keeping distinct.
+  const closedLabel = (p) => (p.status === 'awarded' ? 'Awarded' : 'Closed')
+  const closedCls = (p) => (p.status === 'awarded' ? (STATUS_CLS.awarded || 'badge-awarded') : 'badge-gray')
+
+  return (
+    <div className="ad-content">
+      <div className="ad-card">
+        <div className="ad-card-header">
+          <button className="ad-btn-view-sm" onClick={() => navigate('/admin/projects')}>
+            <ArrowLeft size={12} /> Back to Projects
+          </button>
+          <div className="ad-toolbar">
+            <div className="ad-search-inline">
+              <Search size={14} />
+              <input placeholder="Search closed biddings" value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+          </div>
+        </div>
+
+        <div className="ad-table-scroll">
+        <table className="ad-table">
+          <thead>
+            <tr>
+              <th>TITLE</th><th>BUDGET</th><th>CLOSED ON</th><th>TYPE</th>
+              <th>ELIGIBLE TYPES</th><th>STATUS</th><th>ACTIONS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && sorted.length === 0
+              ? <TableSkeleton rows={4} cols={7} />
+              : sorted.length === 0
+              ? <tr><td colSpan={7} className="ad-empty-row">No closed biddings yet.</td></tr>
+              : sorted.map(p => (
+                <tr key={p.id}>
+                  <td className="ad-bold">{p.name}</td>
+                  <td>{p.budget}</td>
+                  <td className="ad-muted">{p.deadline}</td>
+                  <td>{p.type}</td>
+                  <td><span className="badge badge-gray">{p.eligibleTypes}</span></td>
+                  <td>
+                    <span className={`badge ${closedCls(p)}`}>
+                      • {closedLabel(p)}
+                    </span>
+                  </td>
+                  <td>
+                    <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/bids/${p.id}`)}>
+                      <Eye size={12} /> View Bids
+                    </button>
                   </td>
                 </tr>
               ))
@@ -2274,6 +2363,7 @@ export default function AdminDashboard() {
   const PAGE_TITLES = {
     '/admin':           'Admin Dashboard',
     '/admin/projects':  'Project Management',
+    '/admin/projects/history': 'Bidding History',
     '/admin/planning':  'Procurement Planning',
     '/admin/suppliers': 'Supplier Management',
     '/admin/bids':      'Bid Evaluation',
@@ -2293,6 +2383,7 @@ export default function AdminDashboard() {
           <Routes>
             <Route index element={<DashboardHome />} />
             <Route path="projects"  element={<ProjectsPage />} />
+            <Route path="projects/history" element={<ProjectHistoryPage />} />
             <Route path="planning"  element={<PlanningPage />} />
             <Route path="suppliers" element={<SuppliersPage />} />
             <Route path="bids"      element={<BidsPage />} />

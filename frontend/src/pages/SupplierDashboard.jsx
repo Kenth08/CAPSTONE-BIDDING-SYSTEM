@@ -10,6 +10,7 @@ import {
   apiLogout, apiGetMySupplier, apiResubmitDocuments,
   apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid,
   apiListNotifications, apiMarkNotificationsRead,
+  apiUpdateMySupplier, apiChangePassword,
 } from '../api'
 import { TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import '../style/SupplierDashboard.css'
@@ -98,7 +99,6 @@ const NAV = [
   { icon: FolderOpen,      label: 'Bid Opportunities', to: '/supplier/projects' },
   { icon: FileText,        label: 'My Bids',    to: '/supplier/bids' },
   { icon: Clock,           label: 'Status',     to: '/supplier/status' },
-  { icon: Settings,        label: 'Profile',    to: '/supplier/profile' },
 ]
 
 const BID_STATUS = {
@@ -838,10 +838,6 @@ function SupplierHeader({ title, onMenu, profile }) {
         </div>
       </div>
       <div className="sd-header-right">
-        <div className="sd-search">
-          <Search size={15} />
-          <input placeholder="Search projects…" />
-        </div>
         <NotificationsBell />
         <div className="sd-user-wrap">
           <div className="sd-user" onClick={() => setOpen(o => !o)}>
@@ -867,7 +863,7 @@ function SupplierHeader({ title, onMenu, profile }) {
                 <button className="sd-dropdown-item" onClick={() => { setOpen(false); navigate('/supplier/profile') }}>
                   <User size={15} /> My Profile
                 </button>
-                <button className="sd-dropdown-item" onClick={() => { setOpen(false); navigate('/supplier/profile') }}>
+                <button className="sd-dropdown-item" onClick={() => { setOpen(false); navigate('/supplier/settings') }}>
                   <Settings size={15} /> Settings
                 </button>
                 <div className="sd-dropdown-divider" />
@@ -1007,7 +1003,13 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
 
 function SupplierProjects({ projects, bids, onBid, eligible, loading, profile }) {
   const [modal, setModal] = useState(null)
+  const [search, setSearch] = useState('')
   const alreadyBid = new Set(bids.map(b => b.projectId))
+
+  const filtered = projects.filter(p => {
+    const q = search.trim().toLowerCase()
+    return !q || p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || p.category.toLowerCase().includes(q)
+  })
 
   return (
     <div className="sd-content">
@@ -1015,6 +1017,12 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
       <div className="sd-card">
         <div className="sd-card-header">
           <div><h2>Bid Opportunities</h2><p>Procurements open for bidding that match your registered business categories</p></div>
+          {projects.length > 0 && (
+            <div className="sd-search-inline">
+              <Search size={14} />
+              <input placeholder="Search projects" value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+          )}
         </div>
         {loading && projects.length === 0 ? (
           <table className="sd-table">
@@ -1027,6 +1035,10 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
           <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
             No open procurements match your categories right now. Check back later.
           </div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
+            No projects match "{search}".
+          </div>
         ) : (
           <div className="sd-table-scroll">
           <table className="sd-table">
@@ -1034,7 +1046,7 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
               <tr><th>ID</th><th>Project</th><th>Budget</th><th>Category</th><th>Deadline</th><th></th></tr>
             </thead>
             <tbody>
-              {projects.map(p => (
+              {filtered.map(p => (
                 <tr key={p.id}>
                   <td className="sd-mono">{p.id}</td>
                   <td>
@@ -1064,19 +1076,31 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
 
 function SupplierBids({ bids, onWithdraw, loading }) {
   const [detail, setDetail] = useState(null)
+  const [search, setSearch] = useState('')
+
+  const filtered = bids.filter(b => {
+    const q = search.trim().toLowerCase()
+    return !q || b.project.toLowerCase().includes(q)
+  })
 
   return (
     <div className="sd-content">
-      {detail !== null && (
+      {detail && (
         <BidDetailModal
-          bid={bids[detail]}
+          bid={detail}
           onClose={() => setDetail(null)}
-          onWithdraw={() => { onWithdraw(bids[detail].id); setDetail(null) }}
+          onWithdraw={() => { onWithdraw(detail.id); setDetail(null) }}
         />
       )}
       <div className="sd-card">
         <div className="sd-card-header">
           <div><h2>My Bids</h2><p>Track all your submitted bids and their evaluation status</p></div>
+          {bids.length > 0 && (
+            <div className="sd-search-inline">
+              <Search size={14} />
+              <input placeholder="Search your bids" value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+          )}
         </div>
         {loading && bids.length === 0 ? (
           <table className="sd-table">
@@ -1089,6 +1113,10 @@ function SupplierBids({ bids, onWithdraw, loading }) {
           <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
             No bids submitted yet. Browse projects to submit your first bid.
           </div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
+            No bids match "{search}".
+          </div>
         ) : (
           <div className="sd-table-scroll">
           <table className="sd-table">
@@ -1096,15 +1124,15 @@ function SupplierBids({ bids, onWithdraw, loading }) {
               <tr><th>Project</th><th>Amount</th><th>Notes</th><th>Submitted</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
-              {bids.map((b, i) => (
-                <tr key={i}>
+              {filtered.map(b => (
+                <tr key={b.id}>
                   <td className="sd-bold">{b.project}</td>
                   <td>{b.amount}</td>
                   <td className="sd-muted" style={{ maxWidth: 200, fontSize: 13 }}>{b.notes}</td>
                   <td className="sd-muted">{b.submitted}</td>
                   <td><span className={`badge ${BID_STATUS[b.status] || 'badge-yellow'}`}>{b.status.replace('_', ' ')}</span></td>
                   <td>
-                    <button className="sd-btn-view" onClick={() => setDetail(i)}>
+                    <button className="sd-btn-view" onClick={() => setDetail(b)}>
                       <Eye size={13} /> View
                     </button>
                   </td>
@@ -1297,6 +1325,130 @@ function SupplierProfile({ profile, eligible }) {
   )
 }
 
+function SupplierSettings({ profile, setToast, onUpdated }) {
+  const [fullName, setFullName] = useState('')
+  const [repName, setRepName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [address, setAddress] = useState('')
+  const [savingProfile, setSavingProfile] = useState(false)
+
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordError, setPasswordError] = useState('')
+  const [savingPassword, setSavingPassword] = useState(false)
+
+  useEffect(() => {
+    if (!profile) return
+    setFullName(profile.full_name || profile.contact || '')
+    setRepName(profile.representative_name || '')
+    setPhone(profile.phone_number || '')
+    setAddress(profile.company_address || '')
+  }, [profile])
+
+  if (!profile) {
+    return (
+      <div className="sd-content">
+        <div className="sd-card"><div style={{ padding: '40px 24px' }}><ListSkeleton rows={4} height={48} /></div></div>
+      </div>
+    )
+  }
+
+  const saveProfile = async (e) => {
+    e.preventDefault()
+    setSavingProfile(true)
+    try {
+      await apiUpdateMySupplier({
+        full_name: fullName.trim(),
+        representative_name: repName.trim(),
+        phone_number: phone.trim(),
+        company_address: address.trim(),
+      })
+      await onUpdated()
+      setToast({ type: 'success', message: 'Profile updated successfully.' })
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Could not update your profile.' })
+    } finally {
+      setSavingProfile(false)
+    }
+  }
+
+  const savePassword = async (e) => {
+    e.preventDefault()
+    setPasswordError('')
+    if (newPassword !== confirmPassword) { setPasswordError('New password and confirmation do not match.'); return }
+    setSavingPassword(true)
+    try {
+      await apiChangePassword(currentPassword, newPassword)
+      setCurrentPassword(''); setNewPassword(''); setConfirmPassword('')
+      setToast({ type: 'success', message: 'Password changed successfully.' })
+    } catch (err) {
+      setPasswordError(err.message || 'Could not change your password.')
+    } finally {
+      setSavingPassword(false)
+    }
+  }
+
+  return (
+    <div className="sd-content">
+      <div className="sd-card">
+        <div className="sd-card-header">
+          <div><h2>Edit Profile</h2><p>Update your contact details on file</p></div>
+        </div>
+        <form className="sd-profile-form" onSubmit={saveProfile}>
+          <div className="sd-form-group">
+            <label>Full Name</label>
+            <input type="text" value={fullName} onChange={e => setFullName(e.target.value)} />
+          </div>
+          <div className="sd-form-group">
+            <label>Representative Name</label>
+            <input type="text" value={repName} onChange={e => setRepName(e.target.value)} />
+          </div>
+          <div className="sd-form-group">
+            <label>Phone Number</label>
+            <input type="text" value={phone} onChange={e => setPhone(e.target.value)} />
+          </div>
+          <div className="sd-form-group">
+            <label>Business Address</label>
+            <input type="text" value={address} onChange={e => setAddress(e.target.value)} />
+          </div>
+          <div className="sd-profile-actions">
+            <button type="submit" className="sd-btn-primary" disabled={savingProfile}>
+              {savingProfile ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div className="sd-card">
+        <div className="sd-card-header">
+          <div><h2>Change Password</h2><p>Use a strong password that you don't reuse elsewhere</p></div>
+        </div>
+        <form className="sd-profile-form" onSubmit={savePassword}>
+          <div className="sd-form-group sd-profile-field-full">
+            <label>Current Password</label>
+            <input type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} required />
+          </div>
+          <div className="sd-form-group">
+            <label>New Password</label>
+            <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} required />
+          </div>
+          <div className="sd-form-group">
+            <label>Confirm New Password</label>
+            <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} required />
+          </div>
+          {passwordError && <span className="sd-field-error sd-profile-field-full">{passwordError}</span>}
+          <div className="sd-profile-actions">
+            <button type="submit" className="sd-btn-primary" disabled={savingPassword}>
+              {savingPassword ? 'Updating…' : 'Update Password'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 // ─── Root ─────────────────────────────────────────────────────────────────────
 
 // Module-level cache so the supplier's profile shows instantly on revisit
@@ -1315,7 +1467,7 @@ export default function SupplierDashboard() {
   useEffect(() => { setNavOpen(false) }, [loc.pathname])
 
   const loadProfile = () => {
-    apiGetMySupplier()
+    return apiGetMySupplier()
       .then(p => { myProfileCache = p; setProfile(p) })
       // Keep showing cached profile if a background refresh fails.
       .catch(() => { if (!myProfileCache) setProfile(null) })
@@ -1359,11 +1511,12 @@ export default function SupplierDashboard() {
   }
 
   const TITLES = {
-    '/supplier':         'Dashboard',
-    '/supplier/projects':'Bid Opportunities',
-    '/supplier/bids':    'My Bids',
-    '/supplier/status':  'Status',
-    '/supplier/profile': 'Profile',
+    '/supplier':          'Dashboard',
+    '/supplier/projects': 'Bid Opportunities',
+    '/supplier/bids':     'My Bids',
+    '/supplier/status':   'Status',
+    '/supplier/profile':  'Profile',
+    '/supplier/settings': 'Settings',
   }
   const title = Object.entries(TITLES).find(([path]) => loc.pathname === path)?.[1] || 'Dashboard'
 
@@ -1381,6 +1534,7 @@ export default function SupplierDashboard() {
             <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} loading={loadingBids} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} />} />
+            <Route path="settings" element={<SupplierSettings profile={profile} setToast={setToast} onUpdated={loadProfile} />} />
             <Route path="*"        element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
           </Routes>
         </div>

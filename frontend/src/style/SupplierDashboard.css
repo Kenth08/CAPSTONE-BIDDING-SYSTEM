@@ -148,23 +148,6 @@
 .sd-workspace-label { font-size: 10px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.08em; }
 .sd-page-title { font-size: 18px; font-weight: 800; color: white; line-height: 1.2; }
 .sd-header-right { display: flex; align-items: center; gap: 14px; }
-.sd-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: rgba(255,255,255,0.07);
-  border: 1px solid #1e2d40;
-  border-radius: 8px;
-  padding: 7px 12px;
-  color: var(--text-muted);
-}
-.sd-search input {
-  background: transparent;
-  border: none;
-  font-size: 13px;
-  color: white;
-  width: 160px;
-}
 .sd-notif {
   position: relative;
   width: 36px; height: 36px;
@@ -321,6 +304,25 @@
 .sd-card-header h2 { font-size: 16px; font-weight: 700; color: var(--text-dark); }
 .sd-card-header p { font-size: 13px; color: var(--text-gray); margin-top: 2px; }
 .sd-view-all { font-size: 13px; color: #3b82f6; font-weight: 600; }
+
+.sd-search-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--light-bg);
+  border: 1px solid var(--light-border);
+  border-radius: 8px;
+  padding: 7px 12px;
+  color: var(--text-gray);
+}
+.sd-search-inline input {
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-dark);
+  width: 180px;
+}
+.sd-search-inline input::placeholder { color: var(--text-gray); }
 .sd-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 24px; }
 
 .sd-projects-list { padding: 4px 0; max-height: 360px; overflow-y: auto; }

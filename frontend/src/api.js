@@ -69,6 +69,46 @@ export async function apiLogin(identifier, password) {
   return res.json() // { access, refresh, user }
 }
 
+// Public (no token attached on purpose — see apiLogin above for why these use
+// raw fetch instead of apiFetch: an expired/garbage access token sitting in
+// localStorage would otherwise turn into a spurious 401 on a route that
+// doesn't even require auth).
+export async function apiRequestPasswordReset(email) {
+  let res
+  try {
+    res = await fetch(`${API_URL}/auth/password/reset/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    })
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(readError(body, 'Could not process your request. Please try again.'))
+  }
+  return res.json()
+}
+
+export async function apiConfirmPasswordReset(uid, token, newPassword) {
+  let res
+  try {
+    res = await fetch(`${API_URL}/auth/password/reset/confirm/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid, token, new_password: newPassword }),
+    })
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(readError(body, 'This password reset link is invalid or has expired.'))
+  }
+  return res.json()
+}
+
 // Multi-step supplier registration with document uploads (multipart/form-data).
 // `data` is a FormData instance — do NOT set Content-Type; the browser adds the
 // correct multipart boundary automatically.
@@ -158,7 +198,16 @@ export const apiSupplierRequestRevision = (id, { note, documents }) =>
 
 // Logged-in supplier's own profile + document re-submission.
 export const apiGetMySupplier = () => apiFetch('/suppliers/me/')
+export const apiUpdateMySupplier = (data) =>
+  apiFetch('/suppliers/me/', { method: 'PATCH', body: JSON.stringify(data) })
 export const apiResubmitDocuments = (formData) => apiUpload('/suppliers/resubmit/', formData)
+
+// ── Account settings (any role) ─────────────────────────────────────────────
+export const apiChangePassword = (currentPassword, newPassword) =>
+  apiFetch('/auth/password/change/', {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  })
 
 // ── Projects (admin create + head approval flow) ───────────────────────────────
 export const apiListProjects = () => apiFetch('/projects/')

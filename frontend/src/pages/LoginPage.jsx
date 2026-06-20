@@ -76,7 +76,7 @@ export default function LoginPage() {
                 )}
               </div>
             )}
-            <a href="#" className="login-forgot">Forgot password?</a>
+            <Link to="/forgot-password" className="login-forgot">Forgot password?</Link>
             <button type="submit" className="login-submit" disabled={loading}>
               {loading ? 'Please wait…' : 'Sign In'}
             </button>

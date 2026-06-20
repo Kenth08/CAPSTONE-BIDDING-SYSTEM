@@ -44,3 +44,13 @@ class RegisterRateThrottle(IPRateThrottle):
     """
 
     scope = "register"
+
+
+class PasswordResetRateThrottle(IPRateThrottle):
+    """Throttle for the password reset request/confirm routes: max 5 per hour
+    per IP. Stops the request endpoint from being used to mass-email/enumerate
+    accounts, and stops the confirm endpoint from being used to brute-force a
+    reset token, while still leaving room for a genuine user who mistypes
+    their email or fat-fingers their new password once or twice."""
+
+    scope = "password_reset"

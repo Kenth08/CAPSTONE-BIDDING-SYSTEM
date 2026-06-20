@@ -32,6 +32,20 @@ services:
       # e.g. https://eprocurement-frontend.onrender.com
       - key: FRONTEND_URL
         sync: false
+      # Optional: SMTP creds so password-reset emails actually get delivered.
+      # Leave unset and the backend just logs emails to the server console.
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        sync: false
+      - key: EMAIL_USE_TLS
+        sync: false
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
 
   # ── Frontend: React + Vite static site ────────────────────────────────────
   - type: web
