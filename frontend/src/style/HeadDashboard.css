@@ -119,17 +119,6 @@
   font-size: 11px; color: var(--text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.hd-sidebar-expand {
-  width: 28px; height: 28px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  border: 1px solid #1e2d40;
-  flex-shrink: 0;
-  transition: all 0.15s;
-}
-.hd-sidebar-expand:hover { background: rgba(255,255,255,0.08); color: white; }
 
 .hd-main { flex: 1; min-width: 0; margin-left: 260px; display: flex; flex-direction: column; height: 100vh; min-height: 0; }
 .hd-header {
@@ -218,6 +207,11 @@
 
 .hd-body { padding: 28px; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
 .hd-content { display: flex; flex-direction: column; gap: 24px; flex: 1; min-height: 0; }
+
+/* A page card keeps its natural height instead of being squeezed (and clipped
+   by its own overflow:hidden) when the content is taller than the viewport.
+   The body (.hd-body) then scrolls instead. */
+.hd-content > .hd-card { flex-shrink: 0; }
 
 .hd-stats {
   display: grid;

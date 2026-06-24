@@ -176,25 +176,6 @@
   text-overflow: ellipsis;
 }
 
-.ad-sidebar-expand {
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  border: 1px solid #1e2d40;
-  flex-shrink: 0;
-  transition: all 0.15s;
-}
-
-.ad-sidebar-expand:hover {
-  background: rgba(255,255,255,0.08);
-  color: white;
-}
-
 /* ── MAIN ─────────────────────────────────────────────── */
 .ad-main {
   flex: 1;
@@ -1775,6 +1756,16 @@
   color: #64748b; background: #f1f5f9; border-radius: 5px; padding: 2px 6px; flex-shrink: 0;
 }
 .ad-doc-view { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: #3b82f6; flex-shrink: 0; }
+
+/* Document rows (checkbox + name + required/optional tag + review badge +
+   view link) pack too many fixed-width pieces to fit one line on a phone —
+   wrap instead of letting the document name get squeezed down to nothing.
+   Placed after every unconditional .ad-doc-name/.ad-doc-main rule above so
+   it actually wins the cascade at this breakpoint. */
+@media (max-width: 480px) {
+  .ad-doc-main { flex-wrap: wrap; }
+  .ad-doc-name { flex: 1 1 100%; white-space: normal; }
+}
 
 .ad-decl-badges { display: flex; flex-direction: column; gap: 8px; }
 .ad-decl-badge { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: #047857; }

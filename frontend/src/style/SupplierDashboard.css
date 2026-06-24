@@ -119,17 +119,6 @@
   font-size: 11px; color: var(--text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.sd-sidebar-expand {
-  width: 28px; height: 28px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  border: 1px solid #1e2d40;
-  flex-shrink: 0;
-  transition: all 0.15s;
-}
-.sd-sidebar-expand:hover { background: rgba(255,255,255,0.08); color: white; }
 
 .sd-main { flex: 1; min-width: 0; margin-left: 260px; display: flex; flex-direction: column; height: 100vh; min-height: 0; }
 .sd-header {
@@ -258,6 +247,11 @@
 .sd-body { padding: 28px; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
 .sd-content { display: flex; flex-direction: column; gap: 24px; flex: 1; min-height: 0; }
 
+/* A page card keeps its natural height instead of being squeezed (and clipped
+   by its own overflow:hidden) when the content is taller than the viewport —
+   e.g. My Profile on a short browser window. The body (.sd-body) then scrolls. */
+.sd-content > .sd-card { flex-shrink: 0; }
+
 .sd-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -287,6 +281,41 @@
 .sd-icon-green { background: rgba(16,185,129,0.1); color: var(--primary); }
 .sd-icon-purple { background: rgba(139,92,246,0.1); color: #8b5cf6; }
 .sd-stat-value { font-size: 30px; font-weight: 800; color: var(--text-dark); }
+.sd-val-green  { color: var(--primary) !important; }
+.sd-val-blue   { color: #3b82f6 !important; }
+.sd-val-purple { color: #8b5cf6 !important; }
+.sd-val-yellow { color: #f59e0b !important; }
+.sd-val-red    { color: #ef4444 !important; }
+
+/* ── REPORTS PAGE ─────────────────────────────────────── */
+.sd-report-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.sd-export-btns { display: flex; align-items: center; gap: 8px; }
+.sd-btn-export-csv {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  background: white;
+  color: var(--text-gray);
+  border: 1.5px solid var(--light-border);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sd-btn-export-csv:hover { border-color: var(--primary); color: var(--primary); }
+.sd-report-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+}
 
 .sd-card {
   background: white;
@@ -779,6 +808,9 @@
 .sd-sidebar { transition: transform 0.25s ease; }
 .sd-nav-backdrop { position: fixed; inset: 0; z-index: 45; background: rgba(2, 6, 23, 0.55); }
 
+@media (max-width: 1300px) {
+  .sd-report-stats { grid-template-columns: repeat(3, 1fr); }
+}
 @media (max-width: 1100px) {
   .sd-grid { grid-template-columns: 1fr; }
   .sd-stats { grid-template-columns: repeat(2, 1fr); }
@@ -795,13 +827,18 @@
   .sd-search { display: none; }
   .sd-header { padding: 0 16px; }
   .sd-body, .sd-content { padding: 16px; }
-  .sd-stats { grid-template-columns: 1fr 1fr; }
+  .sd-stats, .sd-report-stats { grid-template-columns: 1fr 1fr; }
   .sd-card-header { flex-wrap: wrap; gap: 10px; }
   .sd-modal-meta { grid-template-columns: 1fr; }
   .sd-user-info { display: none; }   /* keep just the avatar on phones */
 }
 @media (max-width: 480px) {
-  .sd-stats { grid-template-columns: 1fr; }
+  .sd-stats, .sd-report-stats { grid-template-columns: 1fr; }
+  /* The document row (name + status badge + expiry + view link) has too many
+     fixed-width pieces to fit one line on a phone — wrap instead of letting
+     the name get squeezed down to nothing. */
+  .sd-doc-row { flex-wrap: wrap; }
+  .sd-doc-row .sd-file-rowname { flex: 1 1 100%; white-space: normal; }
 }
 
 /* ─── Full bid submission modal ──────────────────────────────────────────── */
@@ -991,6 +1028,8 @@
   margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
   font-size: 12px; font-weight: 700; color: #3b82f6; flex-shrink: 0;
 }
+.sd-doc-expiry { font-size: 11.5px; font-weight: 600; color: var(--text-gray); flex-shrink: 0; }
+.sd-doc-expiry-warn { color: #dc2626; }
 .sd-decl-badges { display: flex; flex-direction: column; gap: 8px; }
 .sd-decl-badge {
   display: flex; align-items: center; gap: 8px;

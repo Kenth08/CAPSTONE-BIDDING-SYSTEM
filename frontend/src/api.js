@@ -242,6 +242,9 @@ export const apiSelectWinner = (bidId) =>
 // ── Awards (admin) ───────────────────────────────────────────────────────────────
 export const apiListAwards = () => apiFetch('/awards/')
 
+// ── Documents (admin) ────────────────────────────────────────────────────────────
+export const apiListDocuments = () => apiFetch('/documents/')
+
 // ── Notifications ──────────────────────────────────────────────────────────────
 export const apiListNotifications = () => apiFetch('/notifications/')
 export const apiMarkNotificationsRead = () =>

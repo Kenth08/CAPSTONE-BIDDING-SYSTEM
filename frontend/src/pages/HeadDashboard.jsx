@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
-  ChevronDown, ChevronRight, LogOut,
+  ChevronDown, LogOut,
   ClipboardCheck, AlertCircle, FolderOpen, Eye,
   ThumbsUp, ThumbsDown, FileText, Menu, X
 } from 'lucide-react'
@@ -22,7 +22,6 @@ const NAV = [
 ]
 
 function Sidebar({ active, open, onClose }) {
-  const navigate = useNavigate()
   return (
     <aside className={`hd-sidebar${open ? ' open' : ''}`}>
       <div className="hd-sidebar-logo">
@@ -50,12 +49,6 @@ function Sidebar({ active, open, onClose }) {
             <span className="hd-sidebar-user-name">School Head</span>
             <span className="hd-sidebar-user-email">head@district.edu.ph</span>
           </div>
-          <button
-            className="hd-sidebar-expand"
-            onClick={() => { apiLogout(); navigate('/login') }}
-          >
-            <ChevronRight size={14} />
-          </button>
         </div>
       </div>
     </aside>

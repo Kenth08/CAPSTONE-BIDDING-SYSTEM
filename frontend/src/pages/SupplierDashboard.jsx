@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, FileText, Clock, CheckCircle2,
-  Building2, Bell, Search, ChevronDown, ChevronRight, LogOut, Settings,
-  Eye, ArrowRight, Shield, User, X, Send, Trophy, Trash2,
+  Building2, Bell, Search, ChevronDown, LogOut, Settings,
+  Eye, ArrowRight, Shield, User, X, Send, Trophy, Trash2, BarChart2,
   AlertTriangle, Upload, Lock, Menu, Camera, Check, Plus, Loader2, XCircle
 } from 'lucide-react'
 import {
@@ -13,6 +13,7 @@ import {
   apiUpdateMySupplier, apiChangePassword,
 } from '../api'
 import { TableSkeleton, ListSkeleton } from '../components/Skeleton'
+import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import '../style/SupplierDashboard.css'
 
 // API → UI mapping (backend uses code/decimal/ISO; the UI shows ₱ + dates).
@@ -50,8 +51,9 @@ function collectBidFiles(b) {
 }
 
 const mapBid = (b) => ({
-  id: b.id, project: b.project_name, projectId: b.project_code,
-  amount: fmtPeso(b.amount), submitted: fmtDate(b.submitted_at), status: b.status, notes: b.notes,
+  id: b.id, project: b.project_name, projectId: b.project_code, category: b.project_category,
+  amount: fmtPeso(b.amount), amountRaw: Number(b.amount || 0),
+  submitted: fmtDate(b.submitted_at), submittedAt: b.submitted_at, status: b.status, notes: b.notes,
   deliveryTimeline: b.delivery_timeline || '',
   brandName: b.brand_name || '', modelNumber: b.model_number || '',
   additionalComments: b.additional_comments || '',
@@ -99,6 +101,7 @@ const NAV = [
   { icon: FolderOpen,      label: 'Bid Opportunities', to: '/supplier/projects' },
   { icon: FileText,        label: 'My Bids',    to: '/supplier/bids' },
   { icon: Clock,           label: 'Status',     to: '/supplier/status' },
+  { icon: BarChart2,       label: 'Reports',    to: '/supplier/reports' },
 ]
 
 const BID_STATUS = {
@@ -178,6 +181,9 @@ function BidModal({ project, profile, onClose, onSubmit }) {
   const [deliveryTimeline, setDeliveryTimeline] = useState('')
   const [notes, setNotes] = useState('')
   const [additionalComments, setAdditionalComments] = useState('')
+  const [brandName, setBrandName] = useState('')
+  const [modelNumber, setModelNumber] = useState('')
+  const [warrantyPeriod, setWarrantyPeriod] = useState('')
   // Files
   const [productImage, setProductImage] = useState(null)
   const [datasheet, setDatasheet] = useState(null)
@@ -263,6 +269,9 @@ function BidModal({ project, profile, onClose, onSubmit }) {
     fd.append('delivery_timeline', deliveryTimeline.trim())
     fd.append('notes', notes.trim())
     fd.append('additional_comments', additionalComments.trim())
+    fd.append('brand_name', brandName.trim())
+    fd.append('model_number', modelNumber.trim())
+    fd.append('warranty_period', warrantyPeriod.trim())
     fd.append('terms_accepted', terms)
     fd.append('interest_declared', interest)
     fd.append('scm_declared', scm)
@@ -365,6 +374,28 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                     {notes.trim().length} / 20 characters minimum
                   </span>
                   {errors.notes && <span className="sd-field-error">{errors.notes}</span>}
+                </div>
+              </div>
+            )}
+
+            {step === 0 && (
+              <div className="sd-bid-section">
+                <h4 className="sd-bid-section-label">Product Details <span className="sd-optional">(optional)</span></h4>
+                <p className="sd-bid-section-hint">If you are offering a specific branded product, provide its details below.</p>
+                <div className="sd-form-group">
+                  <label>Brand Name</label>
+                  <input type="text" placeholder="e.g. HP, Samsung" value={brandName}
+                    onChange={e => setBrandName(e.target.value)} />
+                </div>
+                <div className="sd-form-group">
+                  <label>Model Number</label>
+                  <input type="text" placeholder="e.g. ProBook 450 G9" value={modelNumber}
+                    onChange={e => setModelNumber(e.target.value)} />
+                </div>
+                <div className="sd-form-group">
+                  <label>Warranty Period</label>
+                  <input type="text" placeholder="e.g. 1 year parts and labor" value={warrantyPeriod}
+                    onChange={e => setWarrantyPeriod(e.target.value)} />
                 </div>
               </div>
             )}
@@ -731,7 +762,6 @@ function RevisionPanel({ profile, onResubmitted, setToast }) {
 // ─── Sidebar / Header ────────────────────────────────────────────────────────
 
 function SupplierSidebar({ active, open, onClose, profile }) {
-  const navigate = useNavigate()
   const isActive = (to) => to === '/supplier' ? active === '/supplier' : active.startsWith(to)
   const name = profile?.full_name || profile?.contact || 'Supplier User'
   const email = profile?.email || ''
@@ -763,12 +793,6 @@ function SupplierSidebar({ active, open, onClose, profile }) {
             <span className="sd-sidebar-user-name">{name}</span>
             <span className="sd-sidebar-user-email">{email}</span>
           </div>
-          <button
-            className="sd-sidebar-expand"
-            onClick={() => { apiLogout(); navigate('/login') }}
-          >
-            <ChevronRight size={14} />
-          </button>
         </div>
       </div>
     </aside>
@@ -898,7 +922,7 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
         {[
           { label: 'Eligible Projects', value: String(projects.length),                                       icon: FolderOpen,   color: 'blue'   },
           { label: 'My Active Bids',  value: String(bids.length),                                             icon: FileText,     color: 'green'  },
-          { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'shortlisted').length),     icon: CheckCircle2, color: 'purple' },
+          { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'qualified').length),       icon: CheckCircle2, color: 'purple' },
           { label: 'Approval Status', value: approvalLabel,                                                   icon: Shield,       color: eligible ? 'green' : 'yellow' },
         ].map(({ label, value, icon: Icon, color }) => (
           <div className="sd-stat-card" key={label}>
@@ -1147,6 +1171,113 @@ function SupplierBids({ bids, onWithdraw, loading }) {
   )
 }
 
+const BID_LABEL = {
+  under_review: 'Under Review', qualified: 'Qualified',
+  disqualified: 'Disqualified', winner: 'Winner',
+}
+
+function SupplierReportsPage({ bids, profile }) {
+  const totalBids   = bids.length
+  const underReview = bids.filter(b => b.status === 'under_review').length
+  const qualified   = bids.filter(b => b.status === 'qualified').length
+  const won         = bids.filter(b => b.status === 'winner').length
+  const awardedValue = bids.filter(b => b.status === 'winner').reduce((s, b) => s + b.amountRaw, 0)
+
+  const stats = [
+    { label: 'TOTAL BIDS',     value: totalBids,            cls: ''             },
+    { label: 'UNDER REVIEW',   value: underReview,          cls: 'sd-val-yellow' },
+    { label: 'QUALIFIED',      value: qualified,            cls: 'sd-val-blue'   },
+    { label: 'WON',            value: won,                  cls: 'sd-val-purple' },
+    { label: 'AWARDED VALUE',  value: fmtPeso(awardedValue), cls: 'sd-val-green'  },
+  ]
+
+  const categoryCount = bids.reduce((acc, b) => {
+    const key = b.category || 'Uncategorized'
+    acc[key] = (acc[key] || 0) + 1
+    return acc
+  }, {})
+
+  const reportShape = {
+    title: 'My Bidding Report',
+    stats: stats.map(({ label, value }) => ({ label, value })),
+    sections: [
+      {
+        heading: 'By Category',
+        columns: ['Category', 'Bids'],
+        rows: Object.entries(categoryCount).map(([cat, count]) => [cat, count]),
+      },
+      {
+        heading: 'Bid History',
+        columns: ['Project', 'Amount', 'Status', 'Submitted'],
+        rows: bids.map(b => [b.project, b.amount, BID_LABEL[b.status] || b.status, b.submitted]),
+      },
+    ],
+  }
+
+  const filename = `my-bidding-report-${new Date().toISOString().slice(0, 10)}`
+
+  return (
+    <div className="sd-content">
+      <div className="sd-report-bar">
+        <div>
+          <h2 className="sd-bold" style={{ fontSize: 16 }}>{profile?.company || 'My'} Bidding Report</h2>
+          <p className="sd-muted sd-small">A summary of your bid history and performance.</p>
+        </div>
+        <div className="sd-export-btns">
+          <button className="sd-btn-export-csv" onClick={() => exportReportCSV(reportShape, `${filename}.csv`)}>
+            Export CSV
+          </button>
+          <button className="sd-btn-primary" onClick={() => exportReportPDF(reportShape, `${filename}.pdf`)}>
+            Export PDF
+          </button>
+        </div>
+      </div>
+
+      <div className="sd-report-stats">
+        {stats.map(({ label, value, cls }) => (
+          <div className="sd-stat-card" key={label}>
+            <div className="sd-stat-label">{label}</div>
+            <div className={`sd-stat-value ${cls}`} style={{ fontSize: 22 }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="sd-card">
+        <div className="sd-card-header"><h2>By Category</h2></div>
+        <table className="sd-table">
+          <thead><tr><th>CATEGORY</th><th>BIDS</th></tr></thead>
+          <tbody>
+            {Object.keys(categoryCount).length === 0 ? (
+              <tr><td colSpan={2} className="sd-empty-msg">No bids yet.</td></tr>
+            ) : Object.entries(categoryCount).map(([cat, count]) => (
+              <tr key={cat}><td>{cat}</td><td>{count}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="sd-card">
+        <div className="sd-card-header"><h2>Bid History</h2></div>
+        <table className="sd-table">
+          <thead><tr><th>PROJECT</th><th>AMOUNT</th><th>STATUS</th><th>SUBMITTED</th></tr></thead>
+          <tbody>
+            {bids.length === 0 ? (
+              <tr><td colSpan={4} className="sd-empty-msg">No bids yet.</td></tr>
+            ) : bids.map(b => (
+              <tr key={b.id}>
+                <td className="sd-bold">{b.project}</td>
+                <td className="sd-bold">{b.amount}</td>
+                <td><span className={`badge ${BID_STATUS[b.status] || 'badge-yellow'}`}>{BID_LABEL[b.status] || b.status}</span></td>
+                <td className="sd-muted">{b.submitted}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function SupplierStatusPage({ bids, profile, eligible }) {
   const qs = profile?.qualification_status
   const verifyDate =
@@ -1181,8 +1312,8 @@ function SupplierStatusPage({ bids, profile, eligible }) {
     },
     {
       label: 'Bid Shortlisted',
-      date: bids.some(b => b.status === 'shortlisted') ? 'Active' : 'Pending evaluation',
-      done: bids.some(b => b.status === 'shortlisted'),
+      date: bids.some(b => b.status === 'qualified') ? 'Active' : 'Pending evaluation',
+      done: bids.some(b => b.status === 'qualified'),
       desc: 'At least one of your bids has been shortlisted for final evaluation.',
     },
     {
@@ -1199,7 +1330,7 @@ function SupplierStatusPage({ bids, profile, eligible }) {
         {[
           { label: 'Bids Submitted',  value: String(bids.length),                                             icon: FileText,     color: 'blue'   },
           { label: 'Under Review',    value: String(bids.filter(b => b.status === 'under_review').length),    icon: Clock,        color: 'yellow' },
-          { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'shortlisted').length),     icon: CheckCircle2, color: 'green'  },
+          { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'qualified').length),       icon: CheckCircle2, color: 'green'  },
           { label: 'Won',             value: String(bids.filter(b => b.status === 'winner').length),          icon: Trophy,       color: 'purple' },
         ].map(({ label, value, icon: Icon, color }) => (
           <div className="sd-stat-card" key={label}>
@@ -1254,6 +1385,21 @@ function docStatusBadge(doc) {
   if (doc.review_status === 'needs_revision') return { label: 'Needs Revision', cls: 'badge-red' }
   if (doc.review_status === 'resubmitted') return { label: 'Resubmitted', cls: 'badge-blue' }
   return { label: 'Pending Review', cls: 'badge-yellow' }
+}
+
+// Only mayors_permit and tax_clearance_certificate carry an expiry date on the
+// Supplier model — every other document type has none.
+const DOC_EXPIRY_FIELD = {
+  mayors_permit: 'mayors_permit_expiry',
+  tax_clearance_certificate: 'tax_clearance_expiry',
+}
+function docExpiryInfo(doc, profile) {
+  const field = DOC_EXPIRY_FIELD[doc.key]
+  const raw = field ? profile?.[field] : null
+  if (!raw) return null
+  const date = new Date(raw)
+  const daysLeft = Math.ceil((date - new Date()) / (1000 * 60 * 60 * 24))
+  return { date, expired: daysLeft < 0, expiringSoon: daysLeft >= 0 && daysLeft <= 30 }
 }
 
 function SupplierProfile({ profile, eligible }) {
@@ -1317,21 +1463,29 @@ function SupplierProfile({ profile, eligible }) {
         <div className="sd-doc-list" style={{ padding: '8px 24px 20px' }}>
           {(profile.documents || []).map(d => {
             const badge = docStatusBadge(d)
+            const expiry = docExpiryInfo(d, profile)
             const labelEl = (
               <span className="sd-file-rowname">
                 {d.label}{!d.required && <span className="sd-optional"> (optional)</span>}
+              </span>
+            )
+            const expiryEl = expiry && (
+              <span className={`sd-doc-expiry${expiry.expired || expiry.expiringSoon ? ' sd-doc-expiry-warn' : ''}`}>
+                {expiry.expired ? 'Expired ' : 'Expires '}{expiry.date.toLocaleDateString()}
               </span>
             )
             return d.url ? (
               <a key={d.key} className="sd-doc-row" href={d.url} target="_blank" rel="noreferrer">
                 {labelEl}
                 <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                {expiryEl}
                 <span className="sd-doc-view"><Eye size={13} /> View</span>
               </a>
             ) : (
               <div key={d.key} className="sd-doc-row sd-doc-row-missing">
                 {labelEl}
                 <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                {expiryEl}
               </div>
             )
           })}
@@ -1553,6 +1707,7 @@ export default function SupplierDashboard() {
     '/supplier/projects': 'Bid Opportunities',
     '/supplier/bids':     'My Bids',
     '/supplier/status':   'Status',
+    '/supplier/reports':  'Reports',
     '/supplier/profile':  'Profile',
     '/supplier/settings': 'Settings',
   }
@@ -1571,6 +1726,7 @@ export default function SupplierDashboard() {
             <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} loading={loadingProjects} profile={profile} />} />
             <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} loading={loadingBids} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
+            <Route path="reports"  element={<SupplierReportsPage bids={bids} profile={profile} />} />
             <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} />} />
             <Route path="settings" element={<SupplierSettings profile={profile} setToast={setToast} onUpdated={loadProfile} />} />
             <Route path="*"        element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />

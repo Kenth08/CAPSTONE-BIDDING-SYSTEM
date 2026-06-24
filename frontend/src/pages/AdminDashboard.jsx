@@ -10,7 +10,7 @@ import {
   apiLogout, apiListSuppliers, apiGetSupplier,
   apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision,
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
-  apiListAwards,
+  apiListAwards, apiListDocuments,
 } from '../api'
 import { useProjects, createProject, publishProject, refreshProjects, isExpired } from '../store/projectsStore'
 import { CATEGORIES } from '../constants/categories'
@@ -29,11 +29,6 @@ const NAV = [
   { icon: BarChart2,       label: 'Reports',   to: '/admin/reports' },
 ]
 
-const EXPIRING_DOCS = [
-  { company: 'PA co.', docType: "Mayor's Permit", date: '7/4/2026' },
-  { company: 'PA co.', docType: 'Tax Clearance',  date: '7/3/2026' },
-]
-
 const STATUS_LABEL = {
   draft: 'Draft', pending_head: 'Pending', approved: 'Approved', rejected: 'Rejected',
   published: 'Open for Bidding', awarded: 'Awarded', closed: 'Closed', active: 'Active',
@@ -46,7 +41,6 @@ const STATUS_CLS = {
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 function Sidebar({ active, open, onClose }) {
-  const navigate = useNavigate()
   return (
     <aside className={`ad-sidebar${open ? ' open' : ''}`}>
       <div className="ad-sidebar-logo">
@@ -82,12 +76,6 @@ function Sidebar({ active, open, onClose }) {
             <span className="ad-sidebar-user-name">System Administr...</span>
             <span className="ad-sidebar-user-email">admin@gmail.com</span>
           </div>
-          <button
-            className="ad-sidebar-expand"
-            onClick={() => { apiLogout(); navigate('/login') }}
-          >
-            <ChevronRight size={14} />
-          </button>
         </div>
       </div>
     </aside>
@@ -146,7 +134,18 @@ function Header({ title, onMenu }) {
 function DashboardHome() {
   const { projects, loading } = useProjects()
   const [tab, setTab] = useState('All')
+  const [expiringDocs, setExpiringDocs] = useState([])
+  const [docsLoading, setDocsLoading] = useState(true)
   const TABS = ['All', 'Draft', 'Active', 'Closed', 'Awarded']
+
+  useEffect(() => {
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() + 30)
+    apiListDocuments()
+      .then(docs => setExpiringDocs(docs.filter(d => new Date(d.expiry_date) <= cutoff)))
+      .catch(() => setExpiringDocs([]))
+      .finally(() => setDocsLoading(false))
+  }, [])
 
   const totalProjects    = projects.length
   const totalBids        = projects.reduce((s, p) => s + p.bids, 0)
@@ -227,15 +226,22 @@ function DashboardHome() {
               <h2>Expiring Documents (30 days)</h2>
             </div>
             <div className="ad-expiring-list">
-              {EXPIRING_DOCS.map((doc, i) => (
-                <div className="ad-expiring-row" key={i}>
-                  <div>
-                    <div className="ad-bold">{doc.company}</div>
-                    <div className="ad-muted ad-small">{doc.docType}</div>
+              {docsLoading
+                ? <ListSkeleton rows={2} height={40} />
+                : expiringDocs.length === 0
+                ? <div className="ad-empty-msg">No documents expiring soon.</div>
+                : expiringDocs.map(doc => (
+                  <div className="ad-expiring-row" key={doc.id}>
+                    <div>
+                      <div className="ad-bold">{doc.company}</div>
+                      <div className="ad-muted ad-small">{doc.doc_type}</div>
+                    </div>
+                    <span className="ad-expiring-date">
+                      {new Date(doc.expiry_date).toLocaleDateString()}
+                    </span>
                   </div>
-                  <span className="ad-expiring-date">{doc.date}</span>
-                </div>
-              ))}
+                ))
+              }
             </div>
           </div>
         </div>
