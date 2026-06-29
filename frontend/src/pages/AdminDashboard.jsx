@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
-  apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision,
+  apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision, apiAdminRegisterSupplier,
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
   apiListAwards, apiListDocuments,
 } from '../api'
@@ -528,6 +528,30 @@ const checkImage = (f) => {
   if (f.size > 5 * 1024 * 1024) return 'Image must be under 5MB.'
   return ''
 }
+// ── Assisted Registration (admin fills the supplier's form for a walk-in
+// applicant who brought physical documents) ─────────────────────────────────
+const ASSISTED_EMPTY = {
+  full_name: '', email: '', password: '', confirm_password: '',
+  company_name: '', company_address: '', phone_number: '', tin: '',
+  representative_name: '', mayors_permit_expiry: '', tax_clearance_expiry: '',
+  financial_statement_year: '', track_record_description: '',
+  declaration_accepted: false,
+}
+const ASSISTED_REQUIRED_DOCS = [
+  { key: 'sec_dti_certificate', label: 'SEC or DTI Certificate' },
+  { key: 'mayors_permit', label: "Mayor's Permit / Business Permit" },
+  { key: 'philgeps_certificate', label: 'PhilGEPS Registration Certificate' },
+  { key: 'valid_id', label: 'Valid ID (Government-issued)' },
+  { key: 'tax_clearance_certificate', label: 'Tax Clearance Certificate' },
+  { key: 'audited_financial_statements', label: 'Audited Financial Statements' },
+  { key: 'bank_reference_letter', label: 'Bank Reference Letter' },
+  { key: 'authorization_letter', label: 'Authorization Letter / SPA' },
+]
+const ASSISTED_OPTIONAL_DOCS = [
+  { key: 'performance_certificates', label: 'Performance Certificates / ISO' },
+  { key: 'past_contracts', label: 'Past Contracts / Purchase Orders' },
+]
+
 const fmtBytes = (n) => {
   if (!n && n !== 0) return ''
   if (n < 1024) return `${n} B`
@@ -600,11 +624,13 @@ function ReferenceImageUploader({ file, existingUrl, onFile, onRemove }) {
 }
 
 // Single document upload control used in the procurement creation form.
-function DocUploader({ doc, file, onFile, onRemove }) {
+function DocUploader({ doc, file, onFile, onRemove, optional }) {
   const inputId = `doc-${doc.key}`
   return (
     <div className="ad-doc-field">
-      <div className="ad-doc-label">{doc.label} <span className="ad-doc-req">Required</span></div>
+      <div className="ad-doc-label">
+        {doc.label} <span className={optional ? 'ad-doc-opt' : 'ad-doc-req'}>{optional ? 'Optional' : 'Required'}</span>
+      </div>
       {file ? (
         <div className="ad-doc-file">
           <FileText size={14} />
@@ -937,6 +963,52 @@ function SuppliersPage() {
   const [toast, setToast] = useState(null) // { type, message }
   const TABS = ['All', 'Pending', 'Approved', 'Rejected']
 
+  // ── Assisted Registration (walk-in supplier) ────────────────────────────────
+  const [showRegisterForm, setShowRegisterForm] = useState(false)
+  const [regForm, setRegForm] = useState(ASSISTED_EMPTY)
+  const [regTypes, setRegTypes] = useState([])
+  const [regFiles, setRegFiles] = useState({})
+  const [regErr, setRegErr] = useState('')
+  const [regSubmitting, setRegSubmitting] = useState(false)
+  const setReg = (k, v) => setRegForm(f => ({ ...f, [k]: v }))
+  const toggleRegType = (t) =>
+    setRegTypes(list => list.includes(t) ? list.filter(x => x !== t) : [...list, t])
+  const onRegDoc = (key, file) => {
+    if (!file) return
+    const msg = checkDoc(file)
+    if (msg) { setRegErr(`${key.replace(/_/g, ' ')}: ${msg}`); return }
+    setRegErr('')
+    setRegFiles(f => ({ ...f, [key]: file }))
+  }
+  const removeRegFile = (key) => setRegFiles(f => { const n = { ...f }; delete n[key]; return n })
+  const resetRegForm = () => {
+    setRegForm(ASSISTED_EMPTY); setRegTypes([]); setRegFiles({}); setRegErr(''); setShowRegisterForm(false)
+  }
+  const handleRegSubmit = async (e) => {
+    e.preventDefault()
+    if (regForm.password !== regForm.confirm_password) { setRegErr('Passwords do not match.'); return }
+    if (regTypes.length === 0) { setRegErr('Select at least one business type.'); return }
+    const missing = ASSISTED_REQUIRED_DOCS.filter(d => !regFiles[d.key])
+    if (missing.length) { setRegErr(`Upload all required documents (${missing.length} missing).`); return }
+    if (!regForm.declaration_accepted) { setRegErr('Confirm the declaration before submitting.'); return }
+    setRegErr(''); setRegSubmitting(true)
+    try {
+      const fd = new FormData()
+      Object.entries(regForm).forEach(([k, v]) => { if (v !== '' && v !== false) fd.append(k, v) })
+      fd.append('declaration_accepted', regForm.declaration_accepted)
+      fd.append('business_types', JSON.stringify(regTypes))
+      Object.entries(regFiles).forEach(([k, file]) => fd.append(k, file))
+      await apiAdminRegisterSupplier(fd)
+      resetRegForm()
+      showToast('success', 'Supplier registered. Pending admin verification.')
+      load({ background: true })
+    } catch (err) {
+      setRegErr(err.message || 'Could not register the supplier. Please try again.')
+    } finally {
+      setRegSubmitting(false)
+    }
+  }
+
   // `background` = refresh silently without blanking the table (used on revisit
   // and after a review action, since we already have data to show).
   const load = ({ background = false } = {}) => {
@@ -981,16 +1053,31 @@ function SuppliersPage() {
 
       <div className="ad-card">
         <div className="ad-card-header" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 12 }}>
-          <div className="ad-filter-pills">
-            {TABS.map(t => (
-              <button key={t} className={`ad-pill${filterTab === t ? ' ad-pill-active' : ''}`} onClick={() => setFilterTab(t)}>{t}</button>
-            ))}
+          <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: 12 }}>
+            <div className="ad-filter-pills">
+              {TABS.map(t => (
+                <button key={t} className={`ad-pill${filterTab === t ? ' ad-pill-active' : ''}`} onClick={() => setFilterTab(t)}>{t}</button>
+              ))}
+            </div>
+            <button className="ad-btn-primary-sm" onClick={() => setShowRegisterForm(true)}>
+              <Plus size={12} /> Register Supplier
+            </button>
           </div>
           <div className="ad-search-inline">
             <Search size={14} />
             <input placeholder="Search by company or name" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
         </div>
+
+        {showRegisterForm && (
+          <AssistedRegisterModal
+            form={regForm} set={setReg} types={regTypes} toggleType={toggleRegType}
+            files={regFiles} onFile={onRegDoc} removeFile={removeRegFile}
+            error={regErr} setError={setRegErr} submitting={regSubmitting}
+            onSubmit={handleRegSubmit} onClose={resetRegForm}
+          />
+        )}
+
         <div className="ad-table-scroll">
         <table className="ad-table">
           <thead>
@@ -1033,6 +1120,222 @@ function SuppliersPage() {
             }
           </tbody>
         </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Walk-in supplier registration, filled out by the Admin on the supplier's
+// behalf. Same fields/validation as the public self-registration form — only
+// who fills it in differs. Opens as a modal so it never pushes the table down.
+const ASSISTED_STEPS = ['Basic Info', 'Documents', 'Declaration', 'Review']
+
+function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, removeFile, error, setError, submitting, onSubmit, onClose }) {
+  const [step, setStep] = useState(0)
+
+  const validateStep = () => {
+    if (step === 0) {
+      const need = ['full_name', 'email', 'company_name', 'company_address',
+        'phone_number', 'tin', 'representative_name']
+      if (need.some(k => !form[k].trim())) return 'Please fill in all required fields.'
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return 'Enter a valid email address.'
+      if (!/^\d+$/.test(form.phone_number)) return 'Phone number must contain digits only.'
+      if (!/^[\d-]+$/.test(form.tin)) return 'TIN must contain digits only.'
+      if (form.password.length < 8) return 'Password must be at least 8 characters.'
+      if (form.password !== form.confirm_password) return 'Passwords do not match.'
+      if (types.length === 0) return 'Select at least one business type.'
+    }
+    if (step === 1) {
+      const missing = ASSISTED_REQUIRED_DOCS.filter(d => !files[d.key])
+      if (missing.length) return `Upload all required documents (${missing.length} missing).`
+    }
+    if (step === 2 && !form.declaration_accepted) {
+      return 'Confirm the declaration before continuing.'
+    }
+    return ''
+  }
+
+  const next = () => {
+    const msg = validateStep()
+    if (msg) { setError(msg); return }
+    setError('')
+    setStep(s => Math.min(s + 1, ASSISTED_STEPS.length - 1))
+  }
+  const back = () => { setError(''); setStep(s => Math.max(s - 1, 0)) }
+
+  const requiredUploaded = ASSISTED_REQUIRED_DOCS.filter(d => files[d.key]).length
+  const optionalUploaded = ASSISTED_OPTIONAL_DOCS.filter(d => files[d.key]).length
+
+  return (
+    <div className="ad-modal-overlay" onClick={onClose}>
+      <div className="ad-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 680 }}>
+        <div className="ad-modal-header">
+          <div>
+            <h3>Assisted Supplier Registration</h3>
+            <p className="ad-muted ad-small">
+              For a supplier who came in person with physical documents — their account is created the
+              same way as a self-registration and still needs your approval before they can bid.
+            </p>
+          </div>
+          <button type="button" className="ad-modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <div className="ad-modal-body">
+          <div className="ad-filter-pills" style={{ marginBottom: 20 }}>
+            {ASSISTED_STEPS.map((label, i) => (
+              <span key={label} className={`ad-pill${i === step ? ' ad-pill-active' : ''}`} style={{ cursor: 'default' }}>
+                {i + 1}. {label}
+              </span>
+            ))}
+          </div>
+
+          {error && <div className="ad-modal-error"><AlertTriangle size={15} /> {error}</div>}
+
+          {step === 0 && (
+            <div className="ad-form-grid">
+              <div className="ad-form-group">
+                <label>Full Name</label>
+                <input value={form.full_name} onChange={e => set('full_name', e.target.value)} />
+              </div>
+              <div className="ad-form-group">
+                <label>Email Address</label>
+                <input type="email" value={form.email} onChange={e => set('email', e.target.value)} />
+              </div>
+              <div className="ad-form-group">
+                <label>Password</label>
+                <input type="password" value={form.password} onChange={e => set('password', e.target.value)} />
+              </div>
+              <div className="ad-form-group">
+                <label>Confirm Password</label>
+                <input type="password" value={form.confirm_password} onChange={e => set('confirm_password', e.target.value)} />
+              </div>
+
+              <div className="ad-form-group ad-form-full">
+                <label>Company Name</label>
+                <input value={form.company_name} onChange={e => set('company_name', e.target.value)} />
+              </div>
+              <div className="ad-form-group ad-form-full">
+                <label>Company Address</label>
+                <input value={form.company_address} onChange={e => set('company_address', e.target.value)} />
+              </div>
+              <div className="ad-form-group">
+                <label>Phone Number</label>
+                <input value={form.phone_number} onChange={e => set('phone_number', e.target.value.replace(/[^\d]/g, ''))} />
+              </div>
+              <div className="ad-form-group">
+                <label>TIN</label>
+                <input value={form.tin} onChange={e => set('tin', e.target.value.replace(/[^\d-]/g, ''))} />
+              </div>
+              <div className="ad-form-group ad-form-full">
+                <label>Representative Name</label>
+                <input value={form.representative_name} onChange={e => set('representative_name', e.target.value)} />
+              </div>
+              <div className="ad-form-group ad-form-full">
+                <label>Business Type</label>
+                <div className="ad-checks">
+                  {CATEGORIES.map(t => (
+                    <label key={t} className={types.includes(t) ? 'on' : ''}>
+                      <input type="checkbox" checked={types.includes(t)} onChange={() => toggleType(t)} />
+                      {t}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {step === 1 && (
+            <div className="ad-form-grid">
+              <div className="ad-form-full">
+                <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-dark)' }}>Required Documents</label>
+                <div className="ad-muted ad-small" style={{ marginBottom: 10 }}>
+                  Upload a clear scanned copy or photo of the document. Make sure the full document is readable.
+                  PDF, JPG, or PNG · max 5 MB each.
+                </div>
+                <div className="ad-doc-grid">
+                  {ASSISTED_REQUIRED_DOCS.map(d => (
+                    <DocUploader key={d.key} doc={d} file={files[d.key]} onFile={onFile}
+                      onRemove={() => removeFile(d.key)} />
+                  ))}
+                </div>
+              </div>
+              <div className="ad-form-group">
+                <label>Mayor's Permit Expiry</label>
+                <input type="date" value={form.mayors_permit_expiry} onChange={e => set('mayors_permit_expiry', e.target.value)} />
+              </div>
+              <div className="ad-form-group">
+                <label>Tax Clearance Expiry</label>
+                <input type="date" value={form.tax_clearance_expiry} onChange={e => set('tax_clearance_expiry', e.target.value)} />
+              </div>
+              <div className="ad-form-group">
+                <label>Financial Statement Year</label>
+                <input value={form.financial_statement_year}
+                  onChange={e => set('financial_statement_year', e.target.value.replace(/[^\d]/g, '').slice(0, 4))}
+                  placeholder="e.g. 2026" />
+              </div>
+
+              <div className="ad-form-full">
+                <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-dark)' }}>Optional Documents</label>
+                <div className="ad-doc-grid">
+                  {ASSISTED_OPTIONAL_DOCS.map(d => (
+                    <DocUploader key={d.key} doc={d} file={files[d.key]} onFile={onFile}
+                      onRemove={() => removeFile(d.key)} optional />
+                  ))}
+                </div>
+              </div>
+              <div className="ad-form-group ad-form-full">
+                <label>Track Record Description</label>
+                <textarea rows={2} value={form.track_record_description}
+                  onChange={e => set('track_record_description', e.target.value)}
+                  placeholder="Brief description of similar projects" />
+              </div>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div>
+              <p className="ad-small" style={{ lineHeight: 1.6 }}>
+                Before submitting, confirm with the supplier (present in person) that all information and
+                documents provided are true, accurate, and authentic. Any false statement or falsified
+                document is grounds for disqualification.
+              </p>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, fontWeight: 500, marginTop: 12 }}>
+                <input type="checkbox" checked={form.declaration_accepted}
+                  onChange={e => set('declaration_accepted', e.target.checked)} style={{ marginTop: 3 }} />
+                <span>The supplier confirms the information and documents provided are true, accurate, and authentic to the best of their knowledge.</span>
+              </label>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div>
+              <div className="ad-info-grid">
+                <Info2 label="Company" value={form.company_name} />
+                <Info2 label="Representative" value={form.representative_name} />
+                <Info2 label="Email" value={form.email} />
+                <Info2 label="Phone" value={form.phone_number} />
+                <Info2 label="Required Docs Uploaded" value={`${requiredUploaded}/${ASSISTED_REQUIRED_DOCS.length}`} />
+                <Info2 label="Optional Docs Uploaded" value={`${optionalUploaded}`} />
+                <Info2 label="Status After Submission" value="Pending Verification" />
+              </div>
+              <p className="ad-muted ad-small" style={{ marginTop: 8 }}>
+                The supplier account is created now and queued the same as any self-registration — review
+                and approve it from this Suppliers list before they can bid.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="ad-modal-footer">
+          {step > 0
+            ? <button type="button" className="ad-btn-cancel" onClick={back}>Back</button>
+            : <button type="button" className="ad-btn-cancel" onClick={onClose}>Cancel</button>}
+          {step < ASSISTED_STEPS.length - 1
+            ? <button type="button" className="ad-btn-primary" onClick={next}>Continue</button>
+            : <button type="button" className="ad-btn-primary" disabled={submitting} onClick={onSubmit}>
+                {submitting ? 'Registering…' : 'Register Supplier'}
+              </button>}
         </div>
       </div>
     </div>
@@ -1911,7 +2214,7 @@ function BidEvaluationPage() {
     <div className="ad-content">
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
 
-      <button className="ad-back-link" onClick={() => navigate('/admin/bids')}>
+      <button className="ad-back-link" onClick={() => navigate('/admin/projects')}>
         <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} /> Back to projects
       </button>
 

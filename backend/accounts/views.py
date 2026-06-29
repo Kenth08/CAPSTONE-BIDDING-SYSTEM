@@ -14,6 +14,8 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
+from procurement.permissions import IsAdminRole
+
 from .serializers import (
     ChangePasswordSerializer,
     PasswordResetConfirmSerializer,
@@ -68,6 +70,28 @@ class SupplierRegisterView(generics.CreateAPIView):
         self.perform_create(serializer)
         return Response(
             {"detail": "Registration submitted. Your account is pending admin verification."},
+            status=201,
+        )
+
+
+class AdminAssistedSupplierRegisterView(generics.CreateAPIView):
+    """POST multipart form -> an Admin registers a supplier on their behalf
+    (e.g. the supplier walked into the office with physical documents that
+    were scanned/photographed). Goes through the exact same serializer and
+    verification gate as self-registration — only who submits the form
+    differs, not the resulting record or approval pipeline."""
+
+    queryset = User.objects.all()
+    serializer_class = SupplierRegisterSerializer
+    permission_classes = [IsAdminRole]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response(
+            {"detail": "Supplier registered. Their account is pending admin verification."},
             status=201,
         )
 

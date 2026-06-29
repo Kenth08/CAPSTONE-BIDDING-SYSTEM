@@ -735,6 +735,14 @@
   border-radius: 4px;
   padding: 1px 6px;
 }
+.ad-doc-opt {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
 .ad-doc-upload {
   display: inline-flex;
   align-items: center;
@@ -1055,6 +1063,22 @@
 
 .ad-btn-primary:hover { background: var(--primary-dark); }
 
+.ad-btn-primary-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  background: var(--primary);
+  color: white;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s;
+}
+.ad-btn-primary-sm:hover { background: var(--primary-dark); }
+
 .ad-btn-cancel {
   display: inline-flex;
   align-items: center;
@@ -1208,6 +1232,32 @@
   gap: 10px;
   grid-column: 1 / -1;
   padding-top: 4px;
+}
+
+.ad-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ad-checks label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-gray);
+  text-transform: none;
+  letter-spacing: normal;
+  border: 1.5px solid var(--light-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  background: white;
+}
+.ad-checks label.on {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: rgba(16, 185, 129, 0.08);
 }
 
 /* ── BIDS PAGE CARDS ──────────────────────────────────── */

@@ -183,6 +183,10 @@ async function apiUpload(path, formData, method = 'POST') {
   return res.status === 204 ? null : res.json()
 }
 
+// Admin fills out the same registration form on behalf of a supplier who
+// walked in with physical documents (scanned/photographed beforehand).
+export const apiAdminRegisterSupplier = (formData) => apiUpload('/auth/admin/register-supplier/', formData)
+
 // ── Suppliers (admin review + supplier self-service) ───────────────────────────
 export const apiListSuppliers = () => apiFetch('/suppliers/')
 export const apiGetSupplier = (id) => apiFetch(`/suppliers/${id}/`)
