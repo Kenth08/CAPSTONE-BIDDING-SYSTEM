@@ -670,6 +670,14 @@
   color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe;
   border-radius: 999px;
 }
+/* Clickable variant for the editable Business Types picker in Settings. */
+.sd-chip-toggle {
+  cursor: pointer; user-select: none;
+  color: var(--text-gray); background: #f3f4f6; border-color: #e5e7eb;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.sd-chip-toggle:hover { border-color: #bfdbfe; }
+.sd-chip-toggle.on { color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe; }
 .sd-profile-form {
   display: grid;
   grid-template-columns: 1fr 1fr;

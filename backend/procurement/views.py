@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -12,6 +12,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import (
+    BID_DOCUMENT_FIELDS,
+    BID_DOCUMENT_KEYS,
+    PROCUREMENT_DOCUMENT_FIELDS,
+    PROCUREMENT_DOCUMENT_KEYS,
     SUPPLIER_DOCUMENT_FIELDS,
     SUPPLIER_DOCUMENT_KEYS,
     Award,
@@ -56,6 +60,18 @@ BID_TEXT_FIELD_LIMITS = {
 }
 
 
+def close_expired_published_projects():
+    """Flip any PUBLISHED procurement whose bid deadline has passed to CLOSED.
+
+    There's no separate worker/scheduler in this deployment, so this runs
+    lazily on read instead of via cron: called from every entry point that
+    lists projects, so the transition happens within one request of the
+    deadline passing rather than needing an external trigger."""
+    Project.objects.filter(
+        status=Project.Status.PUBLISHED, deadline__lt=timezone.localdate(),
+    ).update(status=Project.Status.CLOSED)
+
+
 class PublicProcurementView(APIView):
     """Unauthenticated public window into the procurement process.
 
@@ -69,6 +85,7 @@ class PublicProcurementView(APIView):
     authentication_classes = []
 
     def get(self, request):
+        close_expired_published_projects()
         published = (
             Project.objects.filter(status=Project.Status.PUBLISHED)
             .annotate(num_bids=Count("bids"))
@@ -115,9 +132,10 @@ class ProjectViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_permissions(self):
-        # Head approves/rejects; suppliers bid; Admin creates & manages; everyone
-        # signed in can read (suppliers see only eligible projects — get_queryset).
-        if self.action in {"approve", "reject"}:
+        # Head approves/rejects/requests-revision; suppliers bid; Admin creates,
+        # manages & resubmits flagged documents; everyone signed in can read
+        # (suppliers see only eligible projects — get_queryset).
+        if self.action in {"approve", "reject", "request_revision"}:
             return [IsHeadRole()]
         if self.action == "bid":
             return [IsSupplierRole()]
@@ -126,6 +144,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         return [IsAdminRole()]
 
     def get_queryset(self):
+        close_expired_published_projects()
         # Annotate the bid count in one query instead of a COUNT per project.
         qs = Project.objects.annotate(num_bids=Count("bids"))
         # Suppliers only ever see PUBLISHED procurements whose category matches
@@ -152,6 +171,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
             )
         if project.status != Project.Status.PUBLISHED:
             return Response({"detail": "This procurement is not open for bidding."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+        if project.deadline and timezone.localdate() > project.deadline:
+            return Response({"detail": "The bid submission deadline for this procurement has passed."},
                             status=http_status.HTTP_400_BAD_REQUEST)
 
         data = request.data
@@ -333,9 +355,103 @@ class ProjectViewSet(viewsets.ModelViewSet):
         )
         return Response(self.get_serializer(project).data)
 
+    @action(detail=True, methods=["post"], url_path="request-revision")
+    def request_revision(self, request, pk=None):
+        """Head flags one or more procurement documents as needing a fix,
+        instead of an outright reject. The project leaves the Head's Pending
+        Approval queue and goes back to the Admin's Planning page; once the
+        Admin re-uploads the flagged file(s) via resubmit-documents, it
+        automatically returns to pending_head for a fresh look."""
+        project = self.get_object()
+        documents = request.data.get("documents") or {}
+        if not isinstance(documents, dict) or not documents:
+            return Response(
+                {"detail": "Flag at least one document for revision."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        for key in documents:
+            if key not in PROCUREMENT_DOCUMENT_KEYS:
+                return Response({"detail": f"Unknown document '{key}'."}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        # Same approach as Supplier/Bid request_revision: flagged -> needs_revision
+        # (with the Head's note), every other uploaded document -> approved.
+        reviews = dict(project.document_reviews or {})
+        for key in PROCUREMENT_DOCUMENT_KEYS:
+            if key in documents:
+                reviews[key] = {"status": "needs_revision", "note": documents[key] or ""}
+            elif getattr(project, key, None):
+                reviews[key] = {"status": "approved", "note": ""}
+            else:
+                reviews.pop(key, None)
+
+        project.document_reviews = reviews
+        project.status = Project.Status.NEEDS_REVISION
+        project.reviewed_at = timezone.now()
+        project.save()
+
+        flagged = ", ".join(label for key, label, _ in PROCUREMENT_DOCUMENT_FIELDS if key in documents)
+        notify_users(
+            [project.created_by],
+            f"The Head requested a revision on \"{project.name}\" ({project.code}): {flagged}. "
+            "Please re-upload the flagged document(s).",
+            link="/admin/planning",
+        )
+        return Response(self.get_serializer(project).data)
+
+    @action(detail=True, methods=["post"], url_path="resubmit-documents")
+    def resubmit_documents(self, request, pk=None):
+        """Admin re-uploads just the document(s) the Head flagged. The project
+        automatically returns to pending_head so the Head sees it again."""
+        project = self.get_object()
+        if project.status != Project.Status.NEEDS_REVISION:
+            return Response(
+                {"detail": "This procurement is not awaiting a document revision."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        for key in PROCUREMENT_DOCUMENT_KEYS:
+            uploaded = request.FILES.get(key)
+            if uploaded is not None:
+                try:
+                    validate_upload(uploaded)
+                except DjangoValidationError as exc:
+                    return Response({key: exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        reviews = dict(project.document_reviews or {})
+        updated = []
+        for key in PROCUREMENT_DOCUMENT_KEYS:
+            uploaded = request.FILES.get(key)
+            if uploaded:
+                setattr(project, key, uploaded)
+                prev_note = (reviews.get(key) or {}).get("note", "")
+                reviews[key] = {"status": "resubmitted", "note": prev_note}
+                updated.append(key)
+
+        if not updated:
+            return Response(
+                {"detail": "Upload at least one document to resubmit."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        project.document_reviews = reviews
+        project.status = Project.Status.PENDING_HEAD
+        project.save()
+
+        notify_heads(
+            f"\"{project.name}\" ({project.code}) re-submitted {len(updated)} document(s) for review.",
+            link="/head/pending",
+        )
+        return Response(self.get_serializer(project).data)
+
     @action(detail=True, methods=["post"])
     def publish(self, request, pk=None):
+        """Open the procurement for bidding. The deadline is computed HERE, now,
+        from the stored bidding period — never chosen ahead of time — so the
+        bidding window is always real no matter how long this project sat
+        waiting in approval (see Project.bidding_period_days)."""
         project = self.get_object()
+        if project.bidding_period_days:
+            project.deadline = timezone.localdate() + timedelta(days=project.bidding_period_days)
         project.status = Project.Status.PUBLISHED
         project.published_at = timezone.now()
         project.save()
@@ -550,8 +666,10 @@ class BidViewSet(viewsets.ModelViewSet):
     serializer_class = BidSerializer
 
     def get_permissions(self):
-        # Suppliers list/withdraw their OWN bids (scoped by get_queryset);
-        # Admin lists all + runs the evaluation actions.
+        # Suppliers list/withdraw their OWN bids (scoped by get_queryset) and
+        # resubmit flagged documents; Admin lists all + runs evaluation actions.
+        if self.action == "resubmit_documents":
+            return [IsSupplierRole()]
         if self.action in {"list", "retrieve", "destroy"}:
             return [permissions.IsAuthenticated()]
         return [IsAdminRole()]
@@ -600,12 +718,116 @@ class BidViewSet(viewsets.ModelViewSet):
         )
         return self._set_status(bid, Bid.Status.DISQUALIFIED)
 
+    @action(detail=True, methods=["post"], url_path="request-revision")
+    def request_revision(self, request, pk=None):
+        """Admin flags one or more documents on this bid as needing a fix.
+
+        This does NOT disqualify the bid — the supplier stays in the running
+        and just re-uploads the flagged file(s) via resubmit-documents. The
+        only hard gate is select-winner, which is blocked while any document
+        here is still 'needs_revision'."""
+        bid = self.get_object()
+        documents = request.data.get("documents") or {}
+        if not isinstance(documents, dict) or not documents:
+            return Response(
+                {"detail": "Flag at least one document for revision."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        for key in documents:
+            if key not in BID_DOCUMENT_KEYS:
+                return Response({"detail": f"Unknown document '{key}'."}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        # Same approach as Supplier.request_revision: flagged -> needs_revision
+        # (with the admin's note), every other uploaded document -> approved.
+        reviews = dict(bid.document_reviews or {})
+        for key in BID_DOCUMENT_KEYS:
+            if key in documents:
+                reviews[key] = {"status": "needs_revision", "note": documents[key] or ""}
+            elif getattr(bid, key, None):
+                reviews[key] = {"status": "approved", "note": ""}
+            else:
+                reviews.pop(key, None)
+
+        bid.document_reviews = reviews
+        bid.save(update_fields=["document_reviews"])
+
+        flagged = ", ".join(label for key, label, _ in BID_DOCUMENT_FIELDS if key in documents)
+        notify_supplier(
+            bid.supplier,
+            f"Document revision requested on your bid for \"{bid.project.name}\" ({bid.project.code}): "
+            f"{flagged}. You're still in this bidding — please re-upload the flagged document(s).",
+            link="/supplier/bids",
+            email_subject=f"Action needed on your bid documents for {bid.project.code}",
+        )
+        return Response(self.get_serializer(bid).data)
+
+    @action(detail=True, methods=["post"], url_path="resubmit-documents")
+    def resubmit_documents(self, request, pk=None):
+        """Supplier re-uploads just the document(s) the Admin flagged on their
+        own bid (ownership is enforced by get_queryset scoping suppliers to
+        their own bids — get_object() 404s on any other supplier's bid)."""
+        bid = self.get_object()
+        if bid.project.status == Project.Status.AWARDED:
+            return Response(
+                {"detail": "This procurement has already been awarded."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate every re-uploaded file BEFORE touching the DB — setattr()/
+        # save() never calls full_clean(), so validate_bid_upload would
+        # otherwise never run on this path (same reasoning as ProjectViewSet.bid).
+        for key in BID_DOCUMENT_KEYS:
+            uploaded = request.FILES.get(key)
+            if uploaded is not None:
+                try:
+                    validate_bid_upload(uploaded)
+                except DjangoValidationError as exc:
+                    return Response({key: exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        reviews = dict(bid.document_reviews or {})
+        updated = []
+        for key in BID_DOCUMENT_KEYS:
+            uploaded = request.FILES.get(key)
+            if uploaded:
+                setattr(bid, key, uploaded)
+                prev_note = (reviews.get(key) or {}).get("note", "")
+                reviews[key] = {"status": "resubmitted", "note": prev_note}
+                updated.append(key)
+
+        if not updated:
+            return Response(
+                {"detail": "Upload at least one document to resubmit."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        bid.document_reviews = reviews
+        bid.save()
+
+        notify_admins(
+            f"{bid.supplier.company} re-submitted {len(updated)} document(s) on their bid for "
+            f"\"{bid.project.name}\" ({bid.project.code}).",
+            link=f"/admin/bids/{bid.project_id}",
+        )
+        return Response(self.get_serializer(bid).data)
+
     @action(detail=True, methods=["post"], url_path="select-winner")
     def select_winner(self, request, pk=None):
         """Select this bid as the winner: records the Award, marks the project
         Awarded, and notifies the participating suppliers."""
         bid = self.get_object()
         project = bid.project
+
+        flagged_keys = [
+            key for key, review in (bid.document_reviews or {}).items()
+            if (review or {}).get("status") == "needs_revision"
+        ]
+        if flagged_keys:
+            labels = ", ".join(label for key, label, _ in BID_DOCUMENT_FIELDS if key in flagged_keys)
+            return Response(
+                {"detail": f"This bid still has document(s) flagged for revision and can't be "
+                           f"selected as the winner until they're fixed: {labels}."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
 
         bid.status = Bid.Status.WINNER
         bid.save(update_fields=["status"])
@@ -616,7 +838,15 @@ class BidViewSet(viewsets.ModelViewSet):
         )
         project.status = Project.Status.AWARDED
         project.awarded_at = timezone.now()
-        project.save(update_fields=["status", "awarded_at"])
+        update_fields = ["status", "awarded_at"]
+        # Expected delivery is computed HERE, at award — not chosen ahead of
+        # time — so the promise is always real no matter how long evaluation
+        # took (standard procurement practice counts delivery from Notice to
+        # Proceed, i.e. after a winner is chosen, not from bid close).
+        if project.delivery_period_days:
+            project.expected_delivery_date = timezone.localdate() + timedelta(days=project.delivery_period_days)
+            update_fields.append("expected_delivery_date")
+        project.save(update_fields=update_fields)
 
         # Notify the winner and the other bidders (skip suppliers with no account).
         for other in project.bids.select_related("supplier__user"):

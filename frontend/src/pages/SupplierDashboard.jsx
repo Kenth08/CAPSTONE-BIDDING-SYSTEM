@@ -8,10 +8,11 @@ import {
 } from 'lucide-react'
 import {
   apiLogout, apiGetMySupplier, apiResubmitDocuments,
-  apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid,
+  apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid, apiResubmitBidDocuments,
   apiListNotifications, apiMarkNotificationsRead,
   apiUpdateMySupplier, apiChangePassword, apiResendVerification,
 } from '../api'
+import { CATEGORIES } from '../constants/categories'
 import { TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import '../style/SupplierDashboard.css'
@@ -20,11 +21,15 @@ import '../style/SupplierDashboard.css'
 const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''
 const fmtPeso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
 const parseAmount = (s) => Number(String(s).replace(/[^\d.]/g, '')) || 0
+// Backend deadline is an ISO date (YYYY-MM-DD) — plain string comparison
+// against today's ISO date is enough and avoids timezone-conversion bugs.
+const todayISO = () => new Date().toISOString().slice(0, 10)
 const mapProject = (p) => ({
   id: p.code, pk: p.id, name: p.name, budget: fmtPeso(p.budget),
   budgetRaw: Number(p.budget || 0),  // numeric ABC for the live budget comparison
   deadline: fmtDate(p.deadline), category: p.category, description: p.description,
   referenceImage: p.reference_image_url || '',  // optional required-product reference
+  isExpired: !!p.deadline && p.deadline < todayISO(),
 })
 
 // Declaration fields in display order: [serializer key, badge label].
@@ -58,6 +63,7 @@ const mapBid = (b) => ({
   brandName: b.brand_name || '', modelNumber: b.model_number || '',
   additionalComments: b.additional_comments || '',
   files: collectBidFiles(b),
+  documents: b.documents || [],  // per-document review state (flag/approve/resubmit)
   declarations: BID_DECLARATIONS.map(([key, label]) => ({ label, ok: !!b[key] })),
 })
 
@@ -408,17 +414,14 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                     <h4 className="sd-bid-section-label">Your Product Response</h4>
                     <p className="sd-bid-section-hint">Upload files showing your matching product and confirm your product meets the specification.</p>
                     <BidUpload label="Your Product Image" rule={UPLOAD_RULES.productImage}
-                      hint="Upload a photo of the exact product you are offering."
                       file={productImage} error={fileErrors.productImage}
                       onPick={pickFile(UPLOAD_RULES.productImage, setProductImage, 'productImage')}
                       onRemove={() => setProductImage(null)} />
-                    <BidUpload label="Product Datasheet or Specification Sheet" rule={UPLOAD_RULES.datasheet}
-                      hint="Upload your product technical datasheet or specification document."
+                    <BidUpload label="Product Datasheet" rule={UPLOAD_RULES.datasheet}
                       file={datasheet} error={fileErrors.datasheet}
                       onPick={pickFile(UPLOAD_RULES.datasheet, setDatasheet, 'datasheet')}
                       onRemove={() => setDatasheet(null)} />
-                    <BidUpload label="Compliance or Certificate Document" rule={UPLOAD_RULES.compliance}
-                      hint="Upload any relevant compliance certificate or product authorization document."
+                    <BidUpload label="Compliance / Certificate Document" rule={UPLOAD_RULES.compliance}
                       file={compliance} error={fileErrors.compliance}
                       onPick={pickFile(UPLOAD_RULES.compliance, setCompliance, 'compliance')}
                       onRemove={() => setCompliance(null)} />
@@ -436,13 +439,11 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                 <div className="sd-bid-section">
                   <h4 className="sd-bid-section-label">Supporting Documents</h4>
                   <BidUpload label="Quotation Document" required rule={UPLOAD_RULES.quotation}
-                    hint="Upload your formal price quotation with itemized costs and company letterhead. This is SBD 3 of the Philippine Government Procurement process."
                     file={quotation} error={fileErrors.quotation}
                     onPick={pickFile(UPLOAD_RULES.quotation, setQuotation, 'quotation')}
                     onRemove={() => setQuotation(null)} />
                   {errors.quotation && <span className="sd-field-error">{errors.quotation}</span>}
-                  <BidUpload label="Technical Proposal Document" rule={UPLOAD_RULES.technical}
-                    hint="Optional supporting document with detailed technical specifications or product brochures."
+                  <BidUpload label="Technical Proposal" rule={UPLOAD_RULES.technical}
                     file={technical} error={fileErrors.technical}
                     onPick={pickFile(UPLOAD_RULES.technical, setTechnical, 'technical')}
                     onRemove={() => setTechnical(null)} />
@@ -466,7 +467,6 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                     )}
                     <input ref={otherRef} type="file" accept={UPLOAD_RULES.other.accept} hidden
                       onChange={e => { if (e.target.files[0]) addOthers(e.target.files[0]); e.target.value = '' }} />
-                    <span className="sd-upload-hint">Any other relevant documents such as certifications, licenses or additional proposals.</span>
                     {fileErrors.other && <span className="sd-field-error">{fileErrors.other}</span>}
                   </div>
                 </div>
@@ -554,8 +554,64 @@ function BidModal({ project, profile, onClose, onSubmit }) {
 
 // ─── Bid detail modal — read-only view of the supplier's own submission ──────
 
-function BidDetailModal({ bid, onClose, onWithdraw }) {
+// One flagged-document row inside the bid detail modal: shows the admin's
+// note and a re-upload control, mirroring RevisionPanel's per-row UI but
+// scoped to a single bid's documents instead of the whole supplier profile.
+function BidDocRevisionRow({ doc, file, onFile, onRemove }) {
+  const ref = useRef(null)
+  return (
+    <div className="sd-revision-row">
+      <div className="sd-revision-info">
+        <span className="sd-bold">{doc.label}</span>
+        {doc.review_note && <span className="sd-revision-note"><AlertTriangle size={12} /> {doc.review_note}</span>}
+      </div>
+      <div className="sd-revision-action">
+        {file ? (
+          <div className="sd-revision-file">
+            <FileText size={14} /><span className="sd-file-name" title={file.name}>{file.name}</span>
+            <button onClick={onRemove}><X size={14} /></button>
+          </div>
+        ) : (
+          <button className="sd-reupload-btn" onClick={() => ref.current?.click()}>
+            <Upload size={14} /> Re-upload
+          </button>
+        )}
+        <input ref={ref} type="file" accept=".pdf,.jpg,.jpeg,.png,.docx,.xlsx" hidden
+          onChange={e => onFile(e.target.files[0])} />
+      </div>
+    </div>
+  )
+}
+
+function BidDetailModal({ bid, onClose, onWithdraw, onResubmitted, setToast }) {
   const canWithdraw = bid.status === 'submitted' || bid.status === 'under_review'
+  const flaggedDocs = (bid.documents || []).filter(d => d.review_status === 'needs_revision')
+  const [files, setFiles] = useState({})  // { key: File }
+  const [busy, setBusy] = useState(false)
+
+  const onFile = (key, file) => {
+    if (!file) return
+    const msg = validateFile(file)
+    if (msg) { setToast({ type: 'error', message: `${key.replace(/_/g, ' ')}: ${msg}` }); return }
+    setFiles(f => ({ ...f, [key]: file }))
+  }
+
+  const doResubmit = async () => {
+    setBusy(true)
+    try {
+      const fd = new FormData()
+      Object.entries(files).forEach(([k, file]) => fd.append(k, file))
+      await apiResubmitBidDocuments(bid.id, fd)
+      setToast({ type: 'success', message: 'Documents resubmitted — the admin will take another look.' })
+      onResubmitted()
+      onClose()
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Could not resubmit documents.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="sd-modal-overlay" onClick={onClose}>
       <div className="sd-modal sd-modal-lg" onClick={e => e.stopPropagation()}>
@@ -589,6 +645,37 @@ function BidDetailModal({ bid, onClose, onWithdraw }) {
                 </div>
               )}
             </div>
+
+            {flaggedDocs.length > 0 && (
+              <div className="sd-bid-section sd-revision-card" style={{ borderColor: 'rgba(249,115,22,0.3)' }}>
+                <h4 className="sd-bid-section-label">Documents Needing Revision</h4>
+                <p className="sd-bid-section-hint">
+                  The admin flagged the document(s) below. You're still in this bidding — just
+                  re-upload the fixed file(s) and resubmit.
+                </p>
+                <div className="sd-revision-list">
+                  {flaggedDocs.map(d => (
+                    <BidDocRevisionRow
+                      key={d.key} doc={d} file={files[d.key]}
+                      onFile={(file) => onFile(d.key, file)}
+                      onRemove={() => setFiles(f => { const n = { ...f }; delete n[d.key]; return n })}
+                    />
+                  ))}
+                </div>
+                <div className="sd-revision-footer">
+                  <button
+                    className="sd-btn-primary"
+                    disabled={!flaggedDocs.every(d => files[d.key]) || busy}
+                    onClick={doResubmit}
+                  >
+                    <Send size={14} /> {busy ? 'Resubmitting…' : 'Resubmit Documents'}
+                  </button>
+                  {!flaggedDocs.every(d => files[d.key]) && (
+                    <span className="sd-muted sd-small">Replace all flagged documents to enable resubmission.</span>
+                  )}
+                </div>
+              </div>
+            )}
 
             <div className="sd-bid-section">
               <h4 className="sd-bid-section-label">Submitted Documents</h4>
@@ -998,7 +1085,9 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
                     <span className="sd-proj-budget">{p.budget}</span>
                     <span className="sd-muted sd-small">Due {p.deadline}</span>
                   </div>
-                  {eligible
+                  {p.isExpired
+                    ? <span className="badge badge-red">Deadline Passed</span>
+                    : eligible
                     ? <button className="sd-bid-btn" onClick={() => setModal(p)}>Bid <ArrowRight size={13} /></button>
                     : <button className="sd-bid-btn sd-bid-locked" disabled title="Approval required before bidding"><Lock size={12} /> Locked</button>}
                 </div>
@@ -1119,6 +1208,8 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
                   <td>
                     {alreadyBid.has(p.id)
                       ? <span className="badge badge-green">Bid Submitted</span>
+                      : p.isExpired
+                      ? <span className="badge badge-red">Deadline Passed</span>
                       : eligible
                       ? <button className="sd-bid-btn-table" onClick={() => setModal(p)}>Submit Bid</button>
                       : <span className="badge badge-yellow"><Lock size={11} /> Locked</span>}
@@ -1134,7 +1225,7 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
   )
 }
 
-function SupplierBids({ bids, onWithdraw, loading }) {
+function SupplierBids({ bids, onWithdraw, loading, onResubmitted, setToast }) {
   const [detail, setDetail] = useState(null)
   const [search, setSearch] = useState('')
 
@@ -1150,6 +1241,8 @@ function SupplierBids({ bids, onWithdraw, loading }) {
           bid={detail}
           onClose={() => setDetail(null)}
           onWithdraw={() => { onWithdraw(detail.id); setDetail(null) }}
+          onResubmitted={onResubmitted}
+          setToast={setToast}
         />
       )}
       <div className="sd-card">
@@ -1558,7 +1651,9 @@ function SupplierSettings({ profile, setToast, onUpdated }) {
   const [repName, setRepName] = useState('')
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
+  const [businessTypes, setBusinessTypes] = useState([])
   const [savingProfile, setSavingProfile] = useState(false)
+  const [profileError, setProfileError] = useState('')
 
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -1572,7 +1667,11 @@ function SupplierSettings({ profile, setToast, onUpdated }) {
     setRepName(profile.representative_name || '')
     setPhone(profile.phone_number || '')
     setAddress(profile.company_address || '')
+    setBusinessTypes(profileBusinessTypes(profile))
   }, [profile])
+
+  const toggleBusinessType = (t) =>
+    setBusinessTypes(list => list.includes(t) ? list.filter(x => x !== t) : [...list, t])
 
   if (!profile) {
     return (
@@ -1584,6 +1683,11 @@ function SupplierSettings({ profile, setToast, onUpdated }) {
 
   const saveProfile = async (e) => {
     e.preventDefault()
+    setProfileError('')
+    if (businessTypes.length === 0) {
+      setProfileError('Select at least one business type.')
+      return
+    }
     setSavingProfile(true)
     try {
       await apiUpdateMySupplier({
@@ -1591,6 +1695,7 @@ function SupplierSettings({ profile, setToast, onUpdated }) {
         representative_name: repName.trim(),
         phone_number: phone.trim(),
         company_address: address.trim(),
+        business_types: businessTypes,
       })
       await onUpdated()
       setToast({ type: 'success', message: 'Profile updated successfully.' })
@@ -1640,6 +1745,25 @@ function SupplierSettings({ profile, setToast, onUpdated }) {
             <label>Business Address</label>
             <input type="text" value={address} onChange={e => setAddress(e.target.value)} />
           </div>
+          <div className="sd-form-group sd-profile-field-full">
+            <label>Business Types</label>
+            <span className="sd-muted sd-small" style={{ marginBottom: 6 }}>
+              Controls which procurement categories you see and can bid on. Changes apply immediately.
+            </span>
+            <div className="sd-chips">
+              {CATEGORIES.map(t => (
+                <button
+                  type="button"
+                  key={t}
+                  className={`sd-chip sd-chip-toggle${businessTypes.includes(t) ? ' on' : ''}`}
+                  onClick={() => toggleBusinessType(t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+          {profileError && <span className="sd-field-error sd-profile-field-full">{profileError}</span>}
           <div className="sd-profile-actions">
             <button type="submit" className="sd-btn-primary" disabled={savingProfile}>
               {savingProfile ? 'Saving…' : 'Save Changes'}
@@ -1770,11 +1894,11 @@ export default function SupplierDashboard() {
           <Routes>
             <Route index element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
             <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} loading={loadingProjects} profile={profile} />} />
-            <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} loading={loadingBids} />} />
+            <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} loading={loadingBids} onResubmitted={loadBids} setToast={setToast} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="reports"  element={<SupplierReportsPage bids={bids} profile={profile} />} />
             <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} />} />
-            <Route path="settings" element={<SupplierSettings profile={profile} setToast={setToast} onUpdated={loadProfile} />} />
+            <Route path="settings" element={<SupplierSettings profile={profile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} />} />
             <Route path="*"        element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
           </Routes>
         </div>

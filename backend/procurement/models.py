@@ -26,6 +26,19 @@ SUPPLIER_DOCUMENT_FIELDS = [
 SUPPLIER_DOCUMENT_KEYS = [key for key, _, _ in SUPPLIER_DOCUMENT_FIELDS]
 
 
+# Bid documents in display order: (model field, human label, required at submission).
+# Same per-document review pattern as SUPPLIER_DOCUMENT_FIELDS above — lets the
+# Admin flag a single document on a bid without disqualifying the whole bid.
+BID_DOCUMENT_FIELDS = [
+    ("quotation_document", "Quotation Document", True),
+    ("technical_document", "Technical Proposal", False),
+    ("supplier_product_image", "Product Image", False),
+    ("supplier_datasheet", "Product Datasheet", False),
+    ("supplier_compliance_doc", "Compliance Document", False),
+]
+BID_DOCUMENT_KEYS = [key for key, _, _ in BID_DOCUMENT_FIELDS]
+
+
 # Single source of truth for procurement/business categories — used BOTH for
 # supplier registration (a supplier may pick several) and for the procurement
 # category on a project (exactly one). Supplier eligibility = the project's
@@ -175,11 +188,14 @@ class Supplier(models.Model):
 
 class Project(models.Model):
     """A procurement project. Flows: draft -> pending_head -> approved ->
-    published -> awarded / closed; or pending_head -> rejected (by the Head)."""
+    published -> awarded / closed; or pending_head -> rejected (by the Head);
+    or pending_head -> needs_revision -> pending_head (Head flags a specific
+    document, Admin fixes it, it returns to the Head's queue)."""
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
         PENDING_HEAD = "pending_head", "Pending Head Approval"
+        NEEDS_REVISION = "needs_revision", "Needs Revision"
         APPROVED = "approved", "Approved"
         REJECTED = "rejected", "Rejected"
         PUBLISHED = "published", "Published"
@@ -190,12 +206,26 @@ class Project(models.Model):
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)  # Approved Budget (ABC)
-    deadline = models.DateField(null=True, blank=True)  # bid submission deadline
+    # Bid submission deadline. NOT set by the Admin directly — it's computed
+    # automatically when the procurement is published (today + bidding_period_days),
+    # so it can never go stale while the project waits in approval. Stays null
+    # until publish.
+    deadline = models.DateField(null=True, blank=True)
+    # How many days suppliers get to bid, chosen at creation time. The actual
+    # deadline date is calculated from this the moment Publish is clicked —
+    # see ProjectViewSet.publish.
+    bidding_period_days = models.PositiveSmallIntegerField(null=True, blank=True)
     type = models.CharField(max_length=120, blank=True)
     # Procurement category (one of PROCUREMENT_CATEGORIES) — drives supplier eligibility.
     category = models.CharField(max_length=120, blank=True)
     delivery_location = models.CharField(max_length=255, blank=True)
+    # Expected delivery date. NOT set by the Admin directly — like `deadline`,
+    # it's computed automatically (at AWARD time: awarded_at + delivery_period_days)
+    # so a delivery promise never goes stale while the project sits in approval
+    # or bid evaluation. Standard procurement practice counts delivery period
+    # from Notice to Proceed (i.e. after a winner is chosen), not from bid close.
     expected_delivery_date = models.DateField(null=True, blank=True)
+    delivery_period_days = models.PositiveSmallIntegerField(null=True, blank=True)
     eligible_types = models.CharField(max_length=120, default="Open to All")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     # Required procurement documents (blank at model level so drafts can exist;
@@ -216,9 +246,13 @@ class Project(models.Model):
     # the same row, so no copy step is needed).
     reference_image = models.FileField(
         upload_to=procurement_image_path, blank=True, null=True, validators=[validate_image_upload])
-    # Set when the Head approves/rejects; reject_reason explains a rejection.
+    # Set when the Head approves/rejects/requests revision; reject_reason
+    # explains a rejection. document_reviews is per-document review state for
+    # the request-revision flow, keyed by document field name — same shape as
+    # Supplier.document_reviews and Bid.document_reviews.
     reviewed_at = models.DateTimeField(null=True, blank=True)
     reject_reason = models.TextField(blank=True)
+    document_reviews = models.JSONField(default=dict, blank=True)
     # Set when the Admin publishes the project for bidding / when a winner is
     # selected — together with created_at/reviewed_at these make up the full
     # procurement timeline shown to the Admin.
@@ -262,6 +296,12 @@ class Bid(models.Model):
     # Set when the Admin qualifies/disqualifies this bid — part of the
     # procurement timeline (evaluation step).
     reviewed_at = models.DateTimeField(null=True, blank=True)
+    # Per-document review state, keyed by document field name (same shape as
+    # Supplier.document_reviews): {"quotation_document": {"status": "needs_revision", "note": "..."}}.
+    # Flagging a document here does NOT disqualify the bid — the supplier stays
+    # in the running and just re-uploads the flagged file via resubmit-documents.
+    # A bid can't be selected as winner while any document is still flagged.
+    document_reviews = models.JSONField(default=dict, blank=True)
 
     # ── Required bid information (enforced in the view, nullable so older bids
     #    submitted before these fields existed are never broken) ──────────────

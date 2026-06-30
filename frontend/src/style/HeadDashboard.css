@@ -736,6 +736,35 @@
   font-weight: 500;
 }
 
+/* Per-document revision-flag checklist (Head review) */
+.hd-doc-review-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.hd-doc-review-row {
+  border: 1px solid var(--light-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.hd-doc-review-row.flagged { background: rgba(249,115,22,0.06); border-color: rgba(249,115,22,0.3); }
+.hd-doc-review-main { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.hd-doc-review-label { font-weight: 600; color: var(--text-dark); }
+.hd-doc-review-flag {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  color: #c2410c; background: rgba(249,115,22,0.12); border-radius: 5px; padding: 2px 6px;
+}
+.hd-doc-review-note {
+  width: 100%; margin-top: 8px; padding: 7px 10px; font-size: 12.5px;
+  border: 1px solid rgba(249,115,22,0.3); border-radius: 6px; background: white;
+}
+.hd-btn-revision {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-top: 10px; padding: 7px 14px; border-radius: 7px;
+  font-size: 13px; font-weight: 700; color: #c2410c;
+  background: rgba(249,115,22,0.1); border: 1px solid rgba(249,115,22,0.25);
+  transition: all 0.15s;
+}
+.hd-btn-revision:hover:not(:disabled) { background: #f97316; color: white; }
+.hd-btn-revision:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* SMALL APPROVE / REJECT BUTTONS IN CARD */
 .hd-btn-approve {
   display: inline-flex;

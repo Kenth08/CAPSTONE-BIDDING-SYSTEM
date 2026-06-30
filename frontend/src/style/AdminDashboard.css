@@ -1788,24 +1788,28 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* Scoped under .ad-doc-list (the BidDetailModal "Submitted Documents" plain
+   link list) so these don't collide with the unrelated .ad-doc-row/.ad-doc-name/
+   etc. used by the per-document REVIEW rows (.ad-docs-list, plural) elsewhere
+   in this file — those need block layout, this needs a flex row. */
 .ad-doc-list { display: flex; flex-direction: column; gap: 8px; }
-.ad-doc-row {
+.ad-doc-list .ad-doc-link-row {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 12px; border-radius: 8px; text-decoration: none;
   border: 1px solid var(--light-border); background: white; transition: all 0.15s;
 }
-.ad-doc-row:hover { border-color: #3b82f6; background: #eff6ff; }
-.ad-doc-check {
+.ad-doc-list .ad-doc-link-row:hover { border-color: #3b82f6; background: #eff6ff; }
+.ad-doc-list .ad-doc-check {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border-radius: 50%;
   background: #10b981; color: white; flex-shrink: 0;
 }
-.ad-doc-name { flex: 1; font-size: 13px; font-weight: 600; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ad-doc-tag-mini {
+.ad-doc-list .ad-doc-name { flex: 1; font-size: 13px; font-weight: 600; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-doc-list .ad-doc-tag-mini {
   font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
   color: #64748b; background: #f1f5f9; border-radius: 5px; padding: 2px 6px; flex-shrink: 0;
 }
-.ad-doc-view { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: #3b82f6; flex-shrink: 0; }
+.ad-doc-list .ad-doc-view { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: #3b82f6; flex-shrink: 0; }
 
 /* Document rows (checkbox + name + required/optional tag + review badge +
    view link) pack too many fixed-width pieces to fit one line on a phone —

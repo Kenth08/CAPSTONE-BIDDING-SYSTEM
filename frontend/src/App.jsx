@@ -9,6 +9,8 @@ import ResetPasswordPage from './pages/ResetPasswordPage'
 import VerifyEmailPage from './pages/VerifyEmailPage'
 import SupplierRegister from './pages/SupplierRegister'
 import PublicResultsPage from './pages/PublicResultsPage'
+import TermsPage from './pages/TermsPage'
+import PrivacyPage from './pages/PrivacyPage'
 import { getToken, getRole } from './api'
 
 function ProtectedRoute({ children, role }) {
@@ -30,6 +32,8 @@ function App() {
         <Route path="/verify-email"    element={<VerifyEmailPage />} />
         <Route path="/register"   element={<SupplierRegister />} />
         <Route path="/public"     element={<PublicResultsPage />} />
+        <Route path="/terms"      element={<TermsPage />} />
+        <Route path="/privacy"    element={<PrivacyPage />} />
         <Route path="/admin/*"    element={<ProtectedRoute role="admin"><AdminDashboard /></ProtectedRoute>} />
         <Route path="/supplier/*" element={<ProtectedRoute role="supplier"><SupplierDashboard /></ProtectedRoute>} />
         <Route path="/head/*"     element={<ProtectedRoute role="head"><HeadDashboard /></ProtectedRoute>} />

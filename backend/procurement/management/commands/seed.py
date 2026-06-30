@@ -71,34 +71,41 @@ class Command(BaseCommand):
         )
 
         # --- Projects ------------------------------------------------------
+        # Already published-awarded in the past — keep explicit deadline/delivery
+        # dates (the cycle already ran its course) plus the periods that produced them.
         p1 = Project.objects.create(
             code="P-2026-001", name="computer", budget=2000,
-            deadline=date(2026, 6, 3), type="Goods", category="IT Equipment",
-            delivery_location="Main Campus", expected_delivery_date=date(2026, 6, 20),
+            deadline=date(2026, 6, 3), bidding_period_days=14, type="Goods", category="IT Equipment",
+            delivery_location="Main Campus",
+            expected_delivery_date=date(2026, 6, 20), delivery_period_days=14,
             status=Project.Status.AWARDED,
             description="Procurement of computer units for office use.",
         )
         p2 = Project.objects.create(
             code="P-2026-002", name="chair/table", budget=100000,
-            deadline=date(2026, 7, 10), type="Goods", category="Furniture",
-            delivery_location="Main Campus", expected_delivery_date=date(2026, 7, 25),
+            deadline=date(2026, 7, 10), bidding_period_days=14, type="Goods", category="Furniture",
+            delivery_location="Main Campus",
+            expected_delivery_date=date(2026, 7, 25), delivery_period_days=30,
             status=Project.Status.AWARDED,
             description="Procurement of chairs and tables for conference rooms.",
         )
-        # Awaiting the Head's approval (shows in Head → Pending Approval).
+        # Awaiting the Head's approval (shows in Head → Pending Approval). Not
+        # published/awarded yet, so only PERIODS are set — no deadline or
+        # delivery date exists until Publish/select-winner respectively.
         Project.objects.create(
             code="P-2026-003", name="IT Systems Upgrade", budget=450000,
-            deadline=date(2026, 8, 1), type="Goods", category="IT Equipment",
-            delivery_location="Main Campus", expected_delivery_date=date(2026, 8, 20),
+            bidding_period_days=21, type="Goods", category="IT Equipment",
+            delivery_location="Main Campus", delivery_period_days=60,
             status=Project.Status.PENDING_HEAD,
             description="Upgrade of school IT infrastructure and network systems, "
                         "including hardware replacement and software licensing.",
         )
-        # Approved by the Head (shows in Admin → Projects).
+        # Approved by the Head (shows in Admin → Projects) but not yet
+        # published/awarded — same "no date until the milestone happens" rule.
         Project.objects.create(
             code="P-2026-004", name="Hospital Equipment Procurement", budget=890000,
-            deadline=date(2026, 6, 30), type="Goods", category="Medical Supplies",
-            delivery_location="District Hospital", expected_delivery_date=date(2026, 7, 15),
+            bidding_period_days=14, type="Goods", category="Medical Supplies",
+            delivery_location="District Hospital", delivery_period_days=30,
             status=Project.Status.APPROVED,
             description="Procurement of medical equipment for the district hospital.",
         )

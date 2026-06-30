@@ -10,9 +10,12 @@ import {
   apiLogout, apiListSuppliers, apiGetSupplier,
   apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision, apiAdminRegisterSupplier,
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
-  apiListAwards, apiListDocuments,
+  apiListAwards, apiListDocuments, apiBidRequestRevision,
 } from '../api'
-import { useProjects, createProject, publishProject, refreshProjects, isExpired } from '../store/projectsStore'
+import {
+  useProjects, createProject, publishProject, refreshProjects, isExpired, deadlineLabel, deliveryLabel,
+  resubmitProjectDocuments,
+} from '../store/projectsStore'
 import { CATEGORIES } from '../constants/categories'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import NotificationBell from '../components/NotificationBell'
@@ -30,11 +33,11 @@ const NAV = [
 ]
 
 const STATUS_LABEL = {
-  draft: 'Draft', pending_head: 'Pending', approved: 'Approved', rejected: 'Rejected',
+  draft: 'Draft', pending_head: 'Pending', needs_revision: 'Needs Revision', approved: 'Approved', rejected: 'Rejected',
   published: 'Open for Bidding', awarded: 'Awarded', closed: 'Closed', active: 'Active',
 }
 const STATUS_CLS = {
-  draft: 'badge-gray', pending_head: 'badge-yellow', approved: 'badge-green', rejected: 'badge-red',
+  draft: 'badge-gray', pending_head: 'badge-yellow', needs_revision: 'badge-orange', approved: 'badge-green', rejected: 'badge-red',
   published: 'badge-blue', awarded: 'badge-awarded', active: 'badge-blue',
 }
 
@@ -210,7 +213,7 @@ function DashboardHome() {
                   <div className="ad-project-row" key={p.id}>
                     <div>
                       <div className="ad-bold">{p.name}</div>
-                      <div className="ad-muted ad-small">{p.budget} · {p.deadline}</div>
+                      <div className="ad-muted ad-small">{p.budget} · {deadlineLabel(p)}</div>
                     </div>
                     <span className={`badge ${STATUS_CLS[p.status] || 'badge-gray'}`}>
                       • {STATUS_LABEL[p.status] || p.status}
@@ -293,7 +296,7 @@ function ProjectsPage() {
 
   // Only projects the Head has already approved appear here. Projects still being
   // planned, awaiting approval, or rejected stay on the Planning page.
-  const approved = projects.filter(p => !['draft', 'pending_head', 'rejected'].includes(p.status))
+  const approved = projects.filter(p => !['draft', 'pending_head', 'needs_revision', 'rejected'].includes(p.status))
 
   // Once a project's bid deadline has passed, the bidding window is over — pull
   // it out of the active table and into History instead of leaving it to sit
@@ -354,7 +357,7 @@ function ProjectsPage() {
                 <tr key={p.id}>
                   <td className="ad-bold">{p.name}</td>
                   <td>{p.budget}</td>
-                  <td className="ad-muted">{p.deadline}</td>
+                  <td className="ad-muted">{deadlineLabel(p)}</td>
                   <td>{p.type}</td>
                   <td><span className="badge badge-gray">{p.eligibleTypes}</span></td>
                   <td>
@@ -400,7 +403,7 @@ function ProjectHistoryPage() {
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
 
-  const approved = projects.filter(p => !['draft', 'pending_head', 'rejected'].includes(p.status))
+  const approved = projects.filter(p => !['draft', 'pending_head', 'needs_revision', 'rejected'].includes(p.status))
   const history = approved.filter(isExpired)
 
   const filtered = history.filter(p => {
@@ -450,7 +453,7 @@ function ProjectHistoryPage() {
                 <tr key={p.id}>
                   <td className="ad-bold">{p.name}</td>
                   <td>{p.budget}</td>
-                  <td className="ad-muted">{p.deadline}</td>
+                  <td className="ad-muted">{deadlineLabel(p)}</td>
                   <td>{p.type}</td>
                   <td><span className="badge badge-gray">{p.eligibleTypes}</span></td>
                   <td>
@@ -501,9 +504,17 @@ function PublishButton({ project, onPublished }) {
 const PROCUREMENT_TYPES = ['Goods', 'Services', 'Infrastructure', 'Consulting Services']
 const EMPTY_PROJECT = {
   name: '', category: '', type: 'Goods', budget: '',
-  delivery_location: '', deadline: '', expected_delivery_date: '', description: '',
+  delivery_location: '', bidding_period_days: '', delivery_period_days: '', description: '',
   reference_image: null,   // optional product reference photo (File)
 }
+// Common bidding windows — the deadline itself is computed at publish time
+// (today + this many days), never chosen as a fixed calendar date, so it can
+// never go stale while the project waits in approval.
+const BIDDING_PERIOD_OPTIONS = [7, 14, 21, 30, 45, 60]
+// Delivery windows, counted from AWARD (Notice to Proceed), not bid close —
+// standard procurement practice. No same-day option: even an urgent order
+// needs time for Notice of Award + contract signing first.
+const DELIVERY_PERIOD_OPTIONS = [3, 7, 14, 30, 60, 90]
 const REQUIRED_PROCUREMENT_DOCS = [
   { key: 'purchase_request', label: 'Purchase Request (PR)' },
   { key: 'technical_specifications', label: 'Technical Specifications' },
@@ -649,7 +660,38 @@ function DocUploader({ doc, file, onFile, onRemove, optional }) {
 }
 
 // Read-only detail view for a planning procurement: its info + uploaded documents.
-function ProjectDetailModal({ project, onClose }) {
+function ProjectDetailModal({ project, onClose, setToast }) {
+  const needsRevision = project.status === 'needs_revision'
+  const [files, setFiles] = useState({})   // { docKey: File }
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  const onFile = (key, file) => {
+    if (!file) return
+    const msg = checkDoc(file)
+    if (msg) { setErr(`${key.replace(/_/g, ' ')}: ${msg}`); return }
+    setErr('')
+    setFiles(f => ({ ...f, [key]: file }))
+  }
+
+  const flaggedDocs = project.documents.filter(d => d.review_status === 'needs_revision')
+  const allReplaced = flaggedDocs.every(d => files[d.key])
+
+  const doResubmit = async () => {
+    setBusy(true)
+    try {
+      const fd = new FormData()
+      Object.entries(files).forEach(([k, file]) => fd.append(k, file))
+      await resubmitProjectDocuments(project.id, fd)
+      setToast({ type: 'success', message: 'Document(s) resubmitted — back in the Head\'s queue for review.' })
+      onClose()
+    } catch (e) {
+      setErr(e.message || 'Could not resubmit documents.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="ad-modal-overlay" onClick={onClose}>
       <div className="ad-modal" onClick={e => e.stopPropagation()}>
@@ -672,6 +714,13 @@ function ProjectDetailModal({ project, onClose }) {
             <div className="ad-modal-error"><AlertTriangle size={15} /> Reason: {project.rejectReason}</div>
           )}
 
+          {needsRevision && (
+            <div className="ad-modal-error" style={{ background: 'rgba(249,115,22,0.08)', borderColor: 'rgba(249,115,22,0.3)', color: '#c2410c' }}>
+              <AlertTriangle size={15} /> The Head flagged {flaggedDocs.length} document(s) below — re-upload the
+              fixed file(s) and resubmit. The project will go back to the Head's queue automatically.
+            </div>
+          )}
+
           {project.referenceImage && (
             <div className="ad-refimg-section">
               <div className="ad-refimg-section-label"><ImageIcon size={14} /> Reference Image</div>
@@ -682,8 +731,8 @@ function ProjectDetailModal({ project, onClose }) {
           <div className="ad-info-grid">
             <Info2 label="Procurement Type" value={project.type} />
             <Info2 label="Approved Budget (ABC)" value={project.budget} />
-            <Info2 label="Bid Submission Deadline" value={project.deadline} />
-            <Info2 label="Expected Delivery" value={project.expectedDelivery} />
+            <Info2 label="Bid Submission Deadline" value={deadlineLabel(project)} />
+            <Info2 label="Expected Delivery" value={deliveryLabel(project)} />
             <Info2 label="Delivery Location" value={project.deliveryLocation} />
             <Info2 label="Submitted" value={project.submittedAt} />
             <Info2 label="Description" value={project.description} full />
@@ -691,24 +740,56 @@ function ProjectDetailModal({ project, onClose }) {
 
           <div className="ad-docs-head"><FileText size={15} /> Procurement Documents</div>
           <div className="ad-docs-list">
-            {project.documents.map(d => (
-              <div className="ad-doc-row" key={d.key}>
-                <div className="ad-doc-main">
-                  <div className="ad-doc-name">
-                    <span className="ad-bold">{d.label}</span>
-                    <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+            {project.documents.map(d => {
+              const flagged = d.review_status === 'needs_revision'
+              return (
+                <div className={`ad-doc-row${flagged ? ' flagged' : ''}`} key={d.key}>
+                  <div className="ad-doc-main">
+                    <div className="ad-doc-name">
+                      <span className="ad-bold">{d.label}</span>
+                      <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+                      {flagged
+                        ? <span className="ad-doc-status ad-doc-flag">Flagged for revision</span>
+                        : d.review_status === 'approved'
+                          ? <span className="ad-doc-status ad-doc-ok"><Check size={11} /> Reviewed</span>
+                          : null}
+                    </div>
+                    {d.url
+                      ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                      : <span className="ad-doc-missing">Not uploaded</span>}
                   </div>
-                  {d.url
-                    ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
-                    : <span className="ad-doc-missing">Not uploaded</span>}
+                  {flagged && d.review_note && (
+                    <div className="ad-doc-prevnote">Head's note: “{d.review_note}”</div>
+                  )}
+                  {flagged && (
+                    files[d.key] ? (
+                      <div className="ad-doc-file" style={{ marginTop: 8 }}>
+                        <FileText size={14} />
+                        <span className="ad-doc-name" title={files[d.key].name}>{files[d.key].name}</span>
+                        <button type="button" onClick={() => setFiles(f => { const n = { ...f }; delete n[d.key]; return n })} aria-label="Remove"><X size={14} /></button>
+                      </div>
+                    ) : (
+                      <label className="ad-doc-upload" style={{ marginTop: 8 }}>
+                        <FileText size={14} /> Upload fixed file
+                        <input type="file" accept=".pdf,.jpg,.jpeg,.png" hidden
+                          onChange={e => onFile(d.key, e.target.files[0])} />
+                      </label>
+                    )
+                  )}
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
+          {err && <div className="ad-modal-error" style={{ marginTop: 12 }}><AlertTriangle size={15} /> {err}</div>}
         </div>
 
         <div className="ad-modal-footer">
           <button className="ad-btn-cancel" onClick={onClose}>Close</button>
+          {needsRevision && (
+            <button className="ad-btn-primary" disabled={!allReplaced || busy} onClick={doResubmit}>
+              {busy ? 'Resubmitting…' : 'Resubmit Documents'}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -768,7 +849,7 @@ function PlanningPage() {
 
   // Planning holds projects still in the pipeline: drafts, those awaiting the
   // Head's approval, and any the Head rejected. Approved projects move to Projects.
-  const planning = projects.filter(p => ['draft', 'pending_head', 'rejected'].includes(p.status))
+  const planning = projects.filter(p => ['draft', 'pending_head', 'needs_revision', 'rejected'].includes(p.status))
 
   const filtered = planning.filter(p => {
     const q = search.toLowerCase()
@@ -778,7 +859,13 @@ function PlanningPage() {
   return (
     <div className="ad-content">
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
-      {viewProject && <ProjectDetailModal project={viewProject} onClose={() => setViewProject(null)} />}
+      {viewProject && (
+        <ProjectDetailModal
+          project={viewProject}
+          onClose={() => setViewProject(null)}
+          setToast={setToast}
+        />
+      )}
       <div className="ad-card">
         <div className="ad-card-header">
           <div className="ad-search-inline">
@@ -820,12 +907,24 @@ function PlanningPage() {
                 <input value={form.delivery_location} onChange={e => set('delivery_location', e.target.value)} placeholder="e.g. Main Campus" required />
               </div>
               <div className="ad-form-group">
-                <label>Bid Submission Deadline</label>
-                <input type="date" value={form.deadline} onChange={e => set('deadline', e.target.value)} required />
+                <label>Bidding Period</label>
+                <select value={form.bidding_period_days} onChange={e => set('bidding_period_days', e.target.value)} required>
+                  <option value="" disabled>Select a period…</option>
+                  {BIDDING_PERIOD_OPTIONS.map(n => <option key={n} value={n}>{n} days</option>)}
+                </select>
+                <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
+                  The actual deadline is set automatically when you publish — suppliers always get the full window.
+                </span>
               </div>
               <div className="ad-form-group">
-                <label>Expected Delivery Date</label>
-                <input type="date" value={form.expected_delivery_date} onChange={e => set('expected_delivery_date', e.target.value)} required />
+                <label>Delivery Period</label>
+                <select value={form.delivery_period_days} onChange={e => set('delivery_period_days', e.target.value)} required>
+                  <option value="" disabled>Select a period…</option>
+                  {DELIVERY_PERIOD_OPTIONS.map(n => <option key={n} value={n}>{n} days</option>)}
+                </select>
+                <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
+                  Counted from the day a winner is selected, not from today.
+                </span>
               </div>
               <div className="ad-form-group ad-form-full">
                 <label>Project Description</label>
@@ -873,7 +972,7 @@ function PlanningPage() {
           <thead>
             <tr>
               <th>PROJECT TITLE</th><th>BUDGET</th><th>TYPE</th>
-              <th>DEADLINE</th><th>STATUS</th><th>ACTIONS</th>
+              <th>BIDDING PERIOD</th><th>STATUS</th><th>ACTIONS</th>
             </tr>
           </thead>
           <tbody>
@@ -890,10 +989,15 @@ function PlanningPage() {
                         Reason: {p.rejectReason}
                       </div>
                     )}
+                    {p.status === 'needs_revision' && (
+                      <div className="ad-muted ad-small" style={{ fontWeight: 400, marginTop: 2, color: '#c2410c' }}>
+                        {p.documents.filter(d => d.review_status === 'needs_revision').length} document(s) flagged by the Head — click View Details to fix.
+                      </div>
+                    )}
                   </td>
                   <td>{p.budget}</td>
                   <td>{p.type}</td>
-                  <td className="ad-muted">{p.deadline}</td>
+                  <td className="ad-muted">{deadlineLabel(p)}</td>
                   <td>
                     <span className={`badge ${STATUS_CLS[p.status] || 'badge-gray'}`}>
                       • {STATUS_LABEL[p.status] || p.status}
@@ -1605,13 +1709,13 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
               {!decided && (
                 <div className="ad-modal-footer-actions">
                   <button className="ad-btn-reject" disabled={busy} onClick={handleReject}>
-                    <XCircle size={14} /> Reject
+                    <XCircle size={14} /> {busy ? 'Working…' : 'Reject'}
                   </button>
                   <button className="ad-btn-revision" disabled={busy} onClick={handleRequestRevision}>
-                    <AlertTriangle size={14} /> Request Revision
+                    <AlertTriangle size={14} /> {busy ? 'Working…' : 'Request Revision'}
                   </button>
                   <button className="ad-btn-approve" disabled={busy} onClick={handleApprove}>
-                    <Check size={14} /> Approve
+                    <Check size={14} /> {busy ? 'Working…' : 'Approve'}
                   </button>
                 </div>
               )}
@@ -1736,7 +1840,7 @@ function BidsPage() {
 
   // Only Head-approved projects can receive/evaluate bids — not drafts, items
   // still awaiting approval, or rejected ones (those stay in Planning).
-  const biddable = projects.filter(p => !['draft', 'pending_head', 'rejected'].includes(p.status))
+  const biddable = projects.filter(p => !['draft', 'pending_head', 'needs_revision', 'rejected'].includes(p.status))
 
   const matchesType = (p) => {
     if (filterTab === 'Services')       return p.type.includes('Services')
@@ -2008,10 +2112,25 @@ function TimelineModal({ project, bids, onClose }) {
 // Full bid detail modal (admin evaluation) — opened by clicking a supplier's row.
 // Shows every field, with images previewed inline so the admin doesn't have to
 // download each one to check it.
-function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqualify, onMarkWinner, confirm, onConfirmWinner, onCancelConfirm, onClose }) {
+function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqualify, onMarkWinner, onRequestRevision, confirm, onConfirmWinner, onCancelConfirm, onClose }) {
   const files = collectBidFiles(bid)
   const images = files.filter(f => isImageFile(f.name))
   const docs = files.filter(f => !isImageFile(f.name))
+
+  // Per-document review flags — same { key: { checked, note } } shape and
+  // initFlagsFrom() helper the Supplier document review modal uses.
+  const [flags, setFlags] = useState(() => initFlagsFrom(bid))
+  const toggleFlag = (key) =>
+    setFlags(f => ({ ...f, [key]: { checked: !f[key]?.checked, note: f[key]?.note || '' } }))
+  const setFlagNote = (key, val) =>
+    setFlags(f => ({ ...f, [key]: { checked: f[key]?.checked ?? true, note: val } }))
+  const flaggedDocs = () => {
+    const out = {}
+    Object.entries(flags).forEach(([k, v]) => { if (v.checked) out[k] = v.note || '' })
+    return out
+  }
+  const hasFlaggedDocs = (bid.documents || []).some(d => d.review_status === 'needs_revision')
+  const canDecide = bid.status !== 'winner' && !awarded
 
   return (
     <div className="ad-modal-overlay" onClick={onClose}>
@@ -2059,7 +2178,7 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
             ) : (
               <div className="ad-doc-list">
                 {docs.map((f, i) => (
-                  <a key={i} className="ad-doc-row" href={f.url} target="_blank" rel="noreferrer">
+                  <a key={i} className="ad-doc-link-row" href={f.url} target="_blank" rel="noreferrer">
                     <span className="ad-doc-check"><Check size={12} /></span>
                     <span className="ad-doc-name" title={f.name}>{f.name}</span>
                     <span className="ad-doc-tag-mini">{f.label}</span>
@@ -2067,6 +2186,73 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
                   </a>
                 ))}
               </div>
+            )}
+          </div>
+
+          <div className="ad-bid-details-sec">
+            <div className="ad-bid-details-title">Document Review</div>
+            {canDecide && (
+              <div className="ad-docs-hint">
+                <Info size={15} />
+                <span>
+                  <strong>Tick the checkbox</strong> next to a document with a problem and add a note, then click
+                  <strong> Request Revision</strong>. The bid stays in this bidding — the supplier just re-uploads
+                  the flagged file.
+                </span>
+              </div>
+            )}
+            <div className="ad-docs-list">
+              {(bid.documents || []).map(d => {
+                const checked = !!flags[d.key]?.checked
+                const rs = d.review_status
+                const rowCls = checked ? ' flagged' : rs === 'resubmitted' ? ' resubmitted' : ''
+                return (
+                  <div className={`ad-doc-row${rowCls}`} key={d.key}>
+                    <div className="ad-doc-main">
+                      {canDecide && (
+                        <label className="ad-doc-check">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={!d.url}
+                            onChange={() => toggleFlag(d.key)}
+                          />
+                        </label>
+                      )}
+                      <div className="ad-doc-name">
+                        <span className="ad-bold">{d.label}</span>
+                        <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+                        {checked
+                          ? <span className="ad-doc-status ad-doc-flag">Flagged for revision</span>
+                          : rs === 'resubmitted'
+                            ? <span className="ad-doc-status ad-doc-resub">Resubmitted — please review</span>
+                            : rs === 'approved'
+                              ? <span className="ad-doc-status ad-doc-ok"><Check size={11} /> Reviewed</span>
+                              : null}
+                      </div>
+                      {d.url
+                        ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                        : <span className="ad-doc-missing">Not uploaded</span>}
+                    </div>
+                    {!checked && rs === 'resubmitted' && d.review_note && (
+                      <div className="ad-doc-prevnote">Previously flagged: “{d.review_note}”</div>
+                    )}
+                    {checked && (
+                      <input
+                        className="ad-doc-note"
+                        placeholder="What needs fixing? (e.g. wrong file, illegible scan)"
+                        value={flags[d.key]?.note || ''}
+                        onChange={e => setFlagNote(d.key, e.target.value)}
+                      />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            {hasFlaggedDocs && (
+              <p className="ad-muted ad-small" style={{ marginTop: 8 }}>
+                This bid can't be selected as the winner until the flagged document(s) above are fixed.
+              </p>
             )}
           </div>
 
@@ -2085,21 +2271,28 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
 
         <div className="ad-modal-footer">
           <button className="ad-btn-cancel" onClick={onClose}>Close</button>
-          {bid.status !== 'winner' && !awarded && (
+          {canDecide && (
             <div className="ad-modal-footer-actions">
+              <button
+                className="ad-btn-revision"
+                disabled={busyId === bid.id || Object.keys(flaggedDocs()).length === 0}
+                onClick={() => onRequestRevision(bid, flaggedDocs())}
+              >
+                <AlertTriangle size={14} /> {busyId === bid.id ? 'Working…' : 'Request Revision'}
+              </button>
               {bid.status !== 'qualified' && (
                 <button className="ad-btn-approve" disabled={busyId === bid.id} onClick={() => onQualify(bid)}>
-                  <Check size={14} /> Qualify
+                  <Check size={14} /> {busyId === bid.id ? 'Working…' : 'Qualify'}
                 </button>
               )}
               {bid.status !== 'disqualified' && (
                 <button className="ad-btn-reject" disabled={busyId === bid.id} onClick={() => onDisqualify(bid)}>
-                  <XCircle size={14} /> Disqualify
+                  <XCircle size={14} /> {busyId === bid.id ? 'Working…' : 'Disqualify'}
                 </button>
               )}
-              {bid.status === 'qualified' && (
+              {bid.status === 'qualified' && !hasFlaggedDocs && (
                 <button className="ad-btn-publish" disabled={busyId === bid.id} onClick={() => onMarkWinner(bid)}>
-                  <Award size={14} /> Mark as Winner
+                  <Award size={14} /> {busyId === bid.id ? 'Working…' : 'Mark as Winner'}
                 </button>
               )}
             </div>
@@ -2210,6 +2403,24 @@ function BidEvaluationPage() {
     finally { setBusyId(null) }
   }
 
+  const requestRevision = async (bid, documents) => {
+    setBusyId(bid.id)
+    try {
+      await apiBidRequestRevision(bid.id, { documents })
+      loadBidsList()
+      // Close the modal — its checkbox/note UI reflects local clicks, not the
+      // server's confirmed state, so leaving it open after a successful submit
+      // looks like nothing happened. Closing (then reopening, if needed) shows
+      // the real "Flagged for revision" status fresh from the server.
+      setViewBid(null)
+      setToast({ type: 'success', message: 'Revision request sent to the supplier.' })
+    } catch (e) {
+      setToast({ type: 'error', message: e.message || 'Could not request revision.' })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   const confirmWinner = async () => {
     const bid = confirm.bid
     setBusyId(bid.id); setConfirm(null)
@@ -2299,6 +2510,9 @@ function BidEvaluationPage() {
                         <span className={`badge ${QUAL_BID_CLS[b.status] || 'badge-gray'}`}>
                           {QUAL_BID_LABEL[b.status] || b.status}
                         </span>
+                        {(b.documents || []).some(d => d.review_status === 'needs_revision') && (
+                          <span className="badge badge-orange" style={{ marginLeft: 6 }}>Docs Flagged</span>
+                        )}
                       </td>
                       <td onClick={e => e.stopPropagation()}>
                         {b.status === 'winner' ? (
@@ -2329,6 +2543,7 @@ function BidEvaluationPage() {
           onQualify={(b) => act(b, apiQualifyBid, 'Could not qualify.')}
           onDisqualify={(b) => act(b, apiDisqualifyBid, 'Could not disqualify.')}
           onMarkWinner={(b) => setConfirm({ bid: b })}
+          onRequestRevision={requestRevision}
           confirm={confirm}
           onConfirmWinner={confirmWinner}
           onCancelConfirm={() => setConfirm(null)}

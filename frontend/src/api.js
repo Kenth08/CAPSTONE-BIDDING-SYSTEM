@@ -246,6 +246,17 @@ export const apiRejectProject = (id, reason) =>
   apiFetch(`/projects/${id}/reject/`, { method: 'POST', body: JSON.stringify({ reason }) })
 export const apiPublishProject = (id) =>
   apiFetch(`/projects/${id}/publish/`, { method: 'POST', body: '{}' })
+// Head flags one or more procurement documents — does NOT reject the project,
+// it bounces back to Admin's Planning queue for a fix.
+export const apiProjectRequestRevision = (id, documents) =>
+  apiFetch(`/projects/${id}/request-revision/`, {
+    method: 'POST',
+    body: JSON.stringify({ documents }),
+  })
+// Admin re-uploads just the flagged document(s) (multipart) — returns the
+// project to pending_head automatically.
+export const apiResubmitProjectDocuments = (id, formData) =>
+  apiUpload(`/projects/${id}/resubmit-documents/`, formData)
 
 // ── Bidding (supplier) ─────────────────────────────────────────────────────────
 export const apiListMyBids = () => apiFetch('/bids/')
@@ -264,6 +275,16 @@ export const apiDisqualifyBid = (bidId) =>
   apiFetch(`/bids/${bidId}/disqualify/`, { method: 'POST', body: '{}' })
 export const apiSelectWinner = (bidId) =>
   apiFetch(`/bids/${bidId}/select-winner/`, { method: 'POST', body: '{}' })
+// Flag one or more documents on a bid as needing revision — does NOT
+// disqualify the bid, the supplier just re-uploads the flagged file(s).
+export const apiBidRequestRevision = (bidId, { note, documents }) =>
+  apiFetch(`/bids/${bidId}/request-revision/`, {
+    method: 'POST',
+    body: JSON.stringify({ note, documents }),
+  })
+// Supplier re-uploads just the flagged document(s) on their own bid (multipart).
+export const apiResubmitBidDocuments = (bidId, formData) =>
+  apiUpload(`/bids/${bidId}/resubmit-documents/`, formData)
 
 // ── Awards (admin) ───────────────────────────────────────────────────────────────
 export const apiListAwards = () => apiFetch('/awards/')

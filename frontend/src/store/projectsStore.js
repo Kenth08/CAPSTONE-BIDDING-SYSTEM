@@ -11,6 +11,7 @@ import { useEffect } from 'react'
 import { useSyncExternalStore } from 'react'
 import {
   apiListProjects, apiCreateProject, apiApproveProject, apiRejectProject, apiPublishProject,
+  apiProjectRequestRevision, apiResubmitProjectDocuments,
 } from '../api'
 
 // ── Internal state ────────────────────────────────────────────────────────────
@@ -51,13 +52,21 @@ function fromApi(p) {
     budget: fmtPeso(p.budget),
     deadline: fmtDate(p.deadline),
     deadlineRaw: p.deadline || null,  // unformatted ISO date, for chronological sorting
+    // Null until the project is published — the deadline itself doesn't exist
+    // yet (see ProjectViewSet.publish on the backend). biddingPeriodDays is the
+    // configured window length, used to show "N-day period" before that point.
+    biddingPeriodDays: p.bidding_period_days || null,
     deliveryLocation: p.delivery_location || '',
+    // Null until a winner is selected — like deadline, the date doesn't exist
+    // yet (see BidViewSet.select_winner). deliveryPeriodDays is the configured
+    // window length, used to show "N-day period" before that point.
     expectedDelivery: fmtDate(p.expected_delivery_date),
+    deliveryPeriodDays: p.delivery_period_days || null,
     eligibleTypes: p.eligible_types,
     bids: p.bid_count,
     status: p.status,
     description: p.description,
-    documents: p.documents || [],   // [{ key, label, required, url }]
+    documents: p.documents || [],   // [{ key, label, required, url, review_status, review_note }]
     referenceImage: p.reference_image_url || '',  // optional product reference photo
     submittedAt: fmtDate(p.created_at),
     reviewedAt: p.reviewed_at ? fmtDate(p.reviewed_at) : null,
@@ -128,8 +137,8 @@ export async function createProject(form, files = {}) {
   fd.append('category', form.category)
   fd.append('budget', parseBudget(form.budget))
   fd.append('delivery_location', form.delivery_location || '')
-  if (form.deadline) fd.append('deadline', form.deadline)
-  if (form.expected_delivery_date) fd.append('expected_delivery_date', form.expected_delivery_date)
+  if (form.bidding_period_days) fd.append('bidding_period_days', form.bidding_period_days)
+  if (form.delivery_period_days) fd.append('delivery_period_days', form.delivery_period_days)
   fd.append('eligible_types', 'Open to All')
   Object.entries(files).forEach(([key, file]) => { if (file) fd.append(key, file) })
   // Optional reference image — only sent when the admin attached one.
@@ -143,6 +152,18 @@ export async function approveProject(id) {
 
 export async function rejectProject(id, reason = '') {
   upsert(await apiRejectProject(id, reason))
+}
+
+// Head flags one or more procurement documents — project bounces to Admin's
+// Planning queue (status `needs_revision`) instead of being rejected outright.
+export async function requestProjectRevision(id, documents) {
+  upsert(await apiProjectRequestRevision(id, documents))
+}
+
+// Admin re-uploads just the flagged document(s) — project returns to
+// `pending_head` automatically so the Head sees it again.
+export async function resubmitProjectDocuments(id, formData) {
+  upsert(await apiResubmitProjectDocuments(id, formData))
 }
 
 // Admin publishes an approved procurement → status `published` (open for bidding).
@@ -173,3 +194,15 @@ function todayISO() {
 // belongs in the History view instead of the active Projects table. The
 // deadline day itself still counts as open.
 export const isExpired = (p) => !!p.deadlineRaw && p.deadlineRaw < todayISO()
+
+// Display text for the deadline column anywhere a project might still be
+// unpublished: real deadline once it exists, otherwise the configured period
+// ("14-day period — set on publish") so it's clear nothing has lapsed, it
+// just hasn't started yet.
+export const deadlineLabel = (p) =>
+  p.deadline || (p.biddingPeriodDays ? `${p.biddingPeriodDays}-day period (set on publish)` : '—')
+
+// Same idea for expected delivery: real date once a winner is selected,
+// otherwise the configured period so it's clear nothing has lapsed.
+export const deliveryLabel = (p) =>
+  p.expectedDelivery || (p.deliveryPeriodDays ? `${p.deliveryPeriodDays}-day period (set on award)` : '—')

@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
@@ -18,6 +20,12 @@ def dummy_pdf(name="doc.pdf"):
 def make_admin():
     return User.objects.create_user(
         username="admin", email="admin@example.com", password="pw", role=User.Role.ADMIN
+    )
+
+
+def make_head():
+    return User.objects.create_user(
+        username="head", email="head@example.com", password="pw", role=User.Role.HEAD
     )
 
 
@@ -90,6 +98,114 @@ class SupplierReviewTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class SupplierSelfEditBusinessTypesTests(APITestCase):
+    """A supplier may change their own business_types from Settings — no
+    admin re-approval, applies immediately (per user decision, see memory)."""
+
+    def setUp(self):
+        cache.clear()
+        self.supplier = make_supplier(verified=True, categories=["IT Equipment"])
+
+    def test_supplier_can_update_own_business_types(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.patch(
+            "/api/suppliers/me/", {"business_types": ["IT Equipment", "Furniture"]}, format="json"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.business_types, ["IT Equipment", "Furniture"])
+        # No re-approval triggered — verification status is untouched.
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.VERIFIED)
+
+    def test_business_types_cannot_be_emptied(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.patch("/api/suppliers/me/", {"business_types": []}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unknown_business_type_rejected(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.patch("/api/suppliers/me/", {"business_types": ["Not A Real Category"]}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_new_business_type_immediately_unlocks_matching_projects(self):
+        # Supplier starts with only "IT Equipment" — a Furniture project isn't visible yet.
+        make_project(status=Project.Status.PUBLISHED, category="Furniture")
+        self.client.force_authenticate(user=self.supplier.user)
+        before = self.client.get("/api/projects/")
+        self.assertEqual(len(before.json()), 0)
+
+        self.client.patch("/api/suppliers/me/", {"business_types": ["IT Equipment", "Furniture"]}, format="json")
+        after = self.client.get("/api/projects/")
+        self.assertEqual(len(after.json()), 1)
+        self.assertEqual(after.json()[0]["category"], "Furniture")
+
+
+class ProjectDocumentRevisionTests(APITestCase):
+    """Head can flag a specific procurement document instead of an outright
+    reject; the project bounces to Admin's Planning queue, then back to the
+    Head's Pending Approval queue once the Admin fixes it."""
+
+    def setUp(self):
+        cache.clear()
+        self.head = make_head()
+        self.admin = make_admin()
+        self.project = make_project(status=Project.Status.PENDING_HEAD)
+        self.project.purchase_request = dummy_pdf()
+        self.project.save()
+
+    def test_head_can_request_revision_on_one_document(self):
+        self.client.force_authenticate(user=self.head)
+        res = self.client.post(
+            f"/api/projects/{self.project.pk}/request-revision/",
+            {"documents": {"purchase_request": "wrong file, please reupload"}},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, Project.Status.NEEDS_REVISION)
+        self.assertEqual(
+            self.project.document_reviews["purchase_request"]["status"], "needs_revision"
+        )
+
+    def test_admin_cannot_request_revision(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f"/api/projects/{self.project.pk}/request-revision/",
+            {"documents": {"purchase_request": "x"}}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_resubmit_returns_project_to_pending_head(self):
+        self.client.force_authenticate(user=self.head)
+        self.client.post(
+            f"/api/projects/{self.project.pk}/request-revision/",
+            {"documents": {"purchase_request": "wrong file"}}, format="json",
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f"/api/projects/{self.project.pk}/resubmit-documents/",
+            {"purchase_request": dummy_pdf("fixed.pdf")}, format="multipart",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, Project.Status.PENDING_HEAD)
+        self.assertEqual(
+            self.project.document_reviews["purchase_request"]["status"], "resubmitted"
+        )
+
+    def test_cannot_resubmit_when_not_flagged(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f"/api/projects/{self.project.pk}/resubmit-documents/",
+            {"purchase_request": dummy_pdf("fixed.pdf")}, format="multipart",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
 class BidEvaluationTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -143,6 +259,22 @@ class BidEvaluationTests(APITestCase):
         self.assertEqual(len(mail.outbox), 2)
         recipients = {m.to[0] for m in mail.outbox}
         self.assertEqual(recipients, {self.winner_supplier.user.email, self.other_supplier.user.email})
+
+    def test_select_winner_computes_expected_delivery_from_award_not_publish(self):
+        # Standard procurement practice counts delivery from Notice to Proceed
+        # (i.e. from award), not from when bidding closed — so this must be
+        # computed at select-winner time, using whatever delivery_period_days
+        # was configured, regardless of how long evaluation took.
+        self.project.delivery_period_days = 30
+        self.project.save(update_fields=["delivery_period_days"])
+        self.assertIsNone(self.project.expected_delivery_date)
+
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/bids/{self.winning_bid.pk}/select-winner/")
+
+        self.project.refresh_from_db()
+        expected = timezone.localdate() + timedelta(days=30)
+        self.assertEqual(self.project.expected_delivery_date, expected)
 
 
 class BidSubmissionEligibilityTests(APITestCase):

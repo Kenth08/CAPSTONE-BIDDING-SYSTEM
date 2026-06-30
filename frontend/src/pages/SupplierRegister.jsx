@@ -373,7 +373,9 @@ function StepDeclaration({ form, set }) {
       <label className="sr-agree">
         <input type="checkbox" checked={form.declaration_accepted}
           onChange={e => set('declaration_accepted', e.target.checked)} />
-        I have read and agree to the declaration above.
+        I have read and agree to the declaration above, the{' '}
+        <Link to="/terms" target="_blank" rel="noopener noreferrer">Terms of Service</Link>, and the{' '}
+        <Link to="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</Link>.
       </label>
     </Section>
   )

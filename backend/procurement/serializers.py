@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import (
+    BID_DOCUMENT_FIELDS,
     PROCUREMENT_CATEGORIES,
     PROCUREMENT_DOCUMENT_FIELDS,
     SUPPLIER_DOCUMENT_FIELDS,
@@ -76,17 +77,28 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
 class SupplierMeUpdateSerializer(serializers.ModelSerializer):
     """Fields a supplier may edit about their own profile from the Settings page.
 
-    Company name, TIN and business types are excluded — they were verified at
-    registration and changing them silently would undermine that review.
+    Company name and TIN are excluded — they were verified at registration and
+    changing them silently would undermine that review. business_types is
+    editable: it only controls which procurement categories the supplier sees
+    and can bid on, it isn't a verified/audited fact like the company's legal
+    name, so a change takes effect immediately with no re-approval needed.
     """
 
     class Meta:
         model = Supplier
-        fields = ["phone_number", "company_address", "representative_name"]
+        fields = ["phone_number", "company_address", "representative_name", "business_types"]
 
     def validate_phone_number(self, value):
         if value and not value.isdigit():
             raise serializers.ValidationError("Phone number must contain digits only.")
+        return value
+
+    def validate_business_types(self, value):
+        if not isinstance(value, list) or not value:
+            raise serializers.ValidationError("Select at least one business type.")
+        invalid = [v for v in value if v not in PROCUREMENT_CATEGORIES]
+        if invalid:
+            raise serializers.ValidationError(f"Unknown business type(s): {', '.join(invalid)}.")
         return value
 
 
@@ -111,14 +123,20 @@ class ProjectSerializer(serializers.ModelSerializer):
         return val if val is not None else obj.bid_count
 
     def get_documents(self, obj):
-        """Read-side view of the procurement documents: {key,label,required,url}.
-        The Head review screen uses this to show/download what the Admin uploaded."""
+        """Read-side view of the procurement documents: {key,label,required,url,
+        review_status,review_note}. The Head review screen uses this to
+        show/download what the Admin uploaded and to flag individual documents."""
         request = self.context.get("request")
+        reviews = obj.document_reviews or {}
         out = []
         for key, label, required in PROCUREMENT_DOCUMENT_FIELDS:
             f = getattr(obj, key, None)
             url = (request.build_absolute_uri(f.url) if request else f.url) if f else None
-            out.append({"key": key, "label": label, "required": required, "url": url})
+            review = reviews.get(key) or {}
+            out.append({
+                "key": key, "label": label, "required": required, "url": url,
+                "review_status": review.get("status"), "review_note": review.get("note", ""),
+            })
         return out
 
     def validate(self, attrs):
@@ -128,11 +146,26 @@ class ProjectSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"category": "Select a valid procurement category."})
             required_fields = {
                 "type": "Procurement Type", "delivery_location": "Delivery Location",
-                "deadline": "Bid Submission Deadline", "expected_delivery_date": "Expected Delivery Date",
             }
             for field, label in required_fields.items():
                 if not attrs.get(field):
                     raise serializers.ValidationError({field: f"{label} is required."})
+            # Neither the bid deadline nor the expected delivery date is chosen
+            # directly — only PERIODS are. The deadline is computed from
+            # bidding_period_days at publish time (ProjectViewSet.publish); the
+            # expected delivery date is computed from delivery_period_days at
+            # AWARD time (BidViewSet.select_winner), matching how real
+            # procurement counts delivery from Notice to Proceed, not bid close.
+            # Both guarantee the dates can never go stale while a project sits
+            # in approval, revision, or evaluation.
+            period = attrs.get("bidding_period_days")
+            if not period or period < 1 or period > 180:
+                raise serializers.ValidationError(
+                    {"bidding_period_days": "Enter a bidding period between 1 and 180 days."})
+            delivery_period = attrs.get("delivery_period_days")
+            if not delivery_period or delivery_period < 1 or delivery_period > 365:
+                raise serializers.ValidationError(
+                    {"delivery_period_days": "Enter a delivery period between 1 and 365 days."})
             if not attrs.get("budget") or attrs["budget"] <= 0:
                 raise serializers.ValidationError({"budget": "Enter the Approved Budget (ABC)."})
             missing = [label for key, label, req in PROCUREMENT_DOCUMENT_FIELDS if req and not attrs.get(key)]
@@ -144,10 +177,10 @@ class ProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = Project
         fields = [
-            "id", "code", "name", "description", "budget", "deadline",
-            "type", "category", "delivery_location", "expected_delivery_date",
+            "id", "code", "name", "description", "budget", "deadline", "bidding_period_days",
+            "type", "category", "delivery_location", "expected_delivery_date", "delivery_period_days",
             "eligible_types", "status", "bid_count", "created_at",
-            "reviewed_at", "reject_reason", "published_at", "awarded_at", "documents",
+            "reviewed_at", "reject_reason", "document_reviews", "published_at", "awarded_at", "documents",
             # write-only file inputs (read side is exposed via `documents`)
             "purchase_request", "technical_specifications", "terms_of_reference",
             "approved_budget_document", "bid_evaluation_criteria",
@@ -155,10 +188,12 @@ class ProjectSerializer(serializers.ModelSerializer):
             "reference_image", "reference_image_url",
         ]
         # Status transitions only happen through the approve/reject/publish
-        # actions, never by directly writing the field.
+        # actions, never by directly writing the field. `deadline` and
+        # `expected_delivery_date` are likewise computed, not chosen — see the
+        # `validate()` comment above.
         read_only_fields = [
             "code", "created_at", "status", "reviewed_at", "reject_reason",
-            "published_at", "awarded_at",
+            "published_at", "awarded_at", "deadline", "expected_delivery_date",
         ]
         extra_kwargs = {
             **{
@@ -200,6 +235,10 @@ class BidSerializer(serializers.ModelSerializer):
     supplier_datasheet_url = serializers.SerializerMethodField()
     supplier_compliance_doc_url = serializers.SerializerMethodField()
     attachments = BidAttachmentSerializer(many=True, read_only=True)
+    # Per-document review state — same {key,label,required,url,review_status,
+    # review_note} shape as SupplierDetailSerializer.documents, so the Admin
+    # can flag a single document on a bid without disqualifying the whole bid.
+    documents = serializers.SerializerMethodField()
 
     class Meta:
         model = Bid
@@ -213,6 +252,8 @@ class BidSerializer(serializers.ModelSerializer):
             "quotation_document_url", "technical_document_url",
             "supplier_product_image_url", "supplier_datasheet_url",
             "supplier_compliance_doc_url", "attachments",
+            # per-document review state
+            "document_reviews", "documents",
             # declarations
             "terms_accepted", "interest_declared", "scm_declared",
             "accuracy_confirmed", "specification_confirmed",
@@ -238,6 +279,21 @@ class BidSerializer(serializers.ModelSerializer):
 
     def get_supplier_compliance_doc_url(self, obj):
         return self._abs_url(obj.supplier_compliance_doc)
+
+    def get_documents(self, obj):
+        reviews = obj.document_reviews or {}
+        result = []
+        for key, label, required in BID_DOCUMENT_FIELDS:
+            review = reviews.get(key) or {}
+            result.append({
+                "key": key,
+                "label": label,
+                "required": required,
+                "url": self._abs_url(getattr(obj, key, None)),
+                "review_status": review.get("status"),
+                "review_note": review.get("note", ""),
+            })
+        return result
 
 
 class AwardSerializer(serializers.ModelSerializer):

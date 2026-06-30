@@ -3,13 +3,14 @@ import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
   ChevronDown, LogOut,
-  ClipboardCheck, AlertCircle, FolderOpen, Eye,
+  ClipboardCheck, AlertCircle, AlertTriangle, FolderOpen, Eye,
   ThumbsUp, ThumbsDown, FileText, Menu, X, Image as ImageIcon
 } from 'lucide-react'
 import { apiLogout } from '../api'
 import {
   useProjects, approveProject as storeApprove, rejectProject as storeReject,
-  isReviewed, decisionOf,
+  requestProjectRevision as storeRequestRevision,
+  isReviewed, decisionOf, deadlineLabel, deliveryLabel,
 } from '../store/projectsStore'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import NotificationBell from '../components/NotificationBell'
@@ -118,12 +119,25 @@ function Toast({ type, message, onClose }) {
   )
 }
 
-function PendingCard({ project, onApprove, onReject }) {
+function PendingCard({ project, onApprove, onReject, onRequestRevision }) {
   const [expanded, setExpanded] = useState(false)
   const [showRejectForm, setShowRejectForm] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  // Per-document flags — tick the box next to a problem document, add a note,
+  // then "Request Revision" instead of an outright reject.
+  const [flags, setFlags] = useState({})   // { key: { checked, note } }
+
+  const toggleFlag = (key) =>
+    setFlags(f => ({ ...f, [key]: { checked: !f[key]?.checked, note: f[key]?.note || '' } }))
+  const setFlagNote = (key, val) =>
+    setFlags(f => ({ ...f, [key]: { checked: f[key]?.checked ?? true, note: val } }))
+  const flaggedDocs = () => {
+    const out = {}
+    Object.entries(flags).forEach(([k, v]) => { if (v.checked) out[k] = v.note || '' })
+    return out
+  }
 
   const handleApprove = async () => {
     setBusy(true); setErr('')
@@ -138,6 +152,18 @@ function PendingCard({ project, onApprove, onReject }) {
     catch (e2) { setErr(e2.message || 'Could not reject.'); setBusy(false) }
   }
 
+  const handleRequestRevision = async () => {
+    const docs = flaggedDocs()
+    if (Object.keys(docs).length === 0) {
+      setErr('Tick at least one document below to flag it for revision.')
+      return
+    }
+    setBusy(true); setErr('')
+    // On success the card disappears (project leaves the pending list).
+    try { await onRequestRevision(project.id, docs) }
+    catch (e) { setErr(e.message || 'Could not request revision.'); setBusy(false) }
+  }
+
   return (
     <div className="hd-pending-card">
       <div className="hd-pending-card-top">
@@ -148,7 +174,7 @@ function PendingCard({ project, onApprove, onReject }) {
         </div>
         <div className="hd-pending-meta">
           <span className="hd-bold" style={{ fontSize: 16 }}>{project.budget}</span>
-          <span className="hd-muted" style={{ fontSize: 12 }}>Due {project.deadline}</span>
+          <span className="hd-muted" style={{ fontSize: 12 }}>{deadlineLabel(project)}</span>
         </div>
         <div className="hd-pending-actions">
           <button className="hd-btn-expand" onClick={() => setExpanded(e => !e)}>
@@ -173,8 +199,8 @@ function PendingCard({ project, onApprove, onReject }) {
             <div><span className="hd-label">Procurement Type</span><span>{project.type}</span></div>
             <div><span className="hd-label">Approved Budget (ABC)</span><strong>{project.budget}</strong></div>
             <div><span className="hd-label">Delivery Location</span><span>{project.deliveryLocation || '—'}</span></div>
-            <div><span className="hd-label">Bid Submission Deadline</span><span>{project.deadline}</span></div>
-            <div><span className="hd-label">Expected Delivery</span><span>{project.expectedDelivery || '—'}</span></div>
+            <div><span className="hd-label">Bidding Period</span><span>{deadlineLabel(project)}</span></div>
+            <div><span className="hd-label">Expected Delivery</span><span>{deliveryLabel(project)}</span></div>
             <div><span className="hd-label">Submitted</span><span>{project.submittedAt}</span></div>
           </div>
 
@@ -190,19 +216,49 @@ function PendingCard({ project, onApprove, onReject }) {
           {project.documents?.length > 0 && (
             <div className="hd-doc-review">
               <span className="hd-label">Procurement Documents</span>
-              <div className="hd-doc-links">
-                {project.documents.map(d => (
-                  d.url ? (
-                    <a key={d.key} href={d.url} target="_blank" rel="noopener noreferrer" className="hd-doc-link">
-                      <FileText size={13} /> {d.label}
-                    </a>
-                  ) : (
-                    <span key={d.key} className="hd-doc-link hd-doc-missing">
-                      <FileText size={13} /> {d.label} — not provided
-                    </span>
+              <p className="hd-muted" style={{ fontSize: 12, margin: '2px 0 8px' }}>
+                Tick a document with a problem, add a note, then click Request Revision below — this does not reject
+                the whole project, the Admin just fixes that one file.
+              </p>
+              <div className="hd-doc-review-list">
+                {project.documents.map(d => {
+                  const checked = !!flags[d.key]?.checked
+                  return (
+                    <div className={`hd-doc-review-row${checked ? ' flagged' : ''}`} key={d.key}>
+                      <label className="hd-doc-review-main">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={!d.url}
+                          onChange={() => toggleFlag(d.key)}
+                        />
+                        <FileText size={13} />
+                        <span className="hd-doc-review-label">{d.label}</span>
+                        {checked && <span className="hd-doc-review-flag">Flagged</span>}
+                        {d.url
+                          ? <a href={d.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="hd-doc-link" style={{ marginLeft: 'auto' }}>View</a>
+                          : <span className="hd-muted" style={{ marginLeft: 'auto', fontSize: 12 }}>Not provided</span>}
+                      </label>
+                      {checked && (
+                        <input
+                          className="hd-doc-review-note"
+                          placeholder="What's wrong with this document?"
+                          value={flags[d.key]?.note || ''}
+                          onChange={e => setFlagNote(d.key, e.target.value)}
+                        />
+                      )}
+                    </div>
                   )
-                ))}
+                })}
               </div>
+              <button
+                type="button"
+                className="hd-btn-revision"
+                disabled={busy || Object.keys(flaggedDocs()).length === 0}
+                onClick={handleRequestRevision}
+              >
+                <AlertTriangle size={13} /> {busy ? 'Working…' : 'Request Revision'}
+              </button>
             </div>
           )}
         </div>
@@ -245,6 +301,11 @@ function HeadHome() {
     const proj = projects.find(p => p.id === id)
     await storeReject(id, reason)
     setToast({ type: 'success', message: `"${proj?.name}" was rejected.` })
+  }
+  const onRequestRevision = async (id, documents) => {
+    const proj = projects.find(p => p.id === id)
+    await storeRequestRevision(id, documents)
+    setToast({ type: 'success', message: `Revision requested on "${proj?.name}" — sent back to Admin to fix.` })
   }
   return (
     <div className="hd-content">
@@ -297,7 +358,7 @@ function HeadHome() {
         ) : (
           <div className="hd-pending-list">
             {pending.map(p => (
-              <PendingCard key={p.id} project={p} onApprove={onApprove} onReject={onReject} />
+              <PendingCard key={p.id} project={p} onApprove={onApprove} onReject={onReject} onRequestRevision={onRequestRevision} />
             ))}
           </div>
         )}
@@ -352,6 +413,11 @@ function PendingPage() {
     await storeReject(id, reason)
     setToast({ type: 'success', message: `"${proj?.name}" was rejected.` })
   }
+  const onRequestRevision = async (id, documents) => {
+    const proj = projects.find(p => p.id === id)
+    await storeRequestRevision(id, documents)
+    setToast({ type: 'success', message: `Revision requested on "${proj?.name}" — sent back to Admin to fix.` })
+  }
   return (
     <div className="hd-content">
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
@@ -376,7 +442,7 @@ function PendingPage() {
         ) : (
           <div className="hd-pending-list" style={{ padding: '16px 24px' }}>
             {pending.map(p => (
-              <PendingCard key={p.id} project={p} onApprove={onApprove} onReject={onReject} />
+              <PendingCard key={p.id} project={p} onApprove={onApprove} onReject={onReject} onRequestRevision={onRequestRevision} />
             ))}
           </div>
         )}
@@ -436,7 +502,7 @@ function ApprovedPage() {
           <div className="hd-table-wrap">
             <table className="hd-table">
               <thead>
-                <tr><th>ID</th><th>Project Name</th><th>Category</th><th>Budget</th><th>Deadline</th><th>Reviewed On</th><th>Decision</th></tr>
+                <tr><th>ID</th><th>Project Name</th><th>Category</th><th>Budget</th><th>Bidding Period</th><th>Reviewed On</th><th>Decision</th></tr>
               </thead>
               <tbody>
                 {filtered.map(p => (
@@ -445,7 +511,7 @@ function ApprovedPage() {
                     <td className="hd-bold">{p.name}</td>
                     <td><span className="badge badge-gray">{p.type}</span></td>
                     <td>{p.budget}</td>
-                    <td className="hd-muted">{p.deadline}</td>
+                    <td className="hd-muted">{deadlineLabel(p)}</td>
                     <td className="hd-muted">{p.reviewedAt}</td>
                     <td>
                       <span className={`badge ${decisionOf(p) === 'approved' ? 'badge-green' : 'badge-red'}`}>
