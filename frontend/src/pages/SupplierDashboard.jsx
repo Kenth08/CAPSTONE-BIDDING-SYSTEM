@@ -1711,6 +1711,16 @@ export default function SupplierDashboard() {
   }
   useEffect(() => { loadProfile(); loadProjects(); loadBids() }, [])
 
+  // The email-verify link opens in its own tab, so this dashboard's `profile`
+  // state never hears about it. Refetch just the profile when the user comes
+  // back to this tab — cheap (one request) and catches that case, instead of
+  // polling continuously or requiring a manual page refresh.
+  useEffect(() => {
+    const onFocus = () => loadProfile()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
+
   // Verification is the real bidding gate (the admin approve action sets this).
   const eligible = profile?.qualification_status === 'verified'
 

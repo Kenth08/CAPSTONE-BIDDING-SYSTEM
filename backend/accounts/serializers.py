@@ -3,8 +3,10 @@ from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
+from django.utils.timesince import timesince
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -48,6 +50,7 @@ class ChangePasswordSerializer(serializers.Serializer):
     def save(self):
         user = self.context["request"].user
         user.set_password(self.validated_data["new_password"])
+        user.password_changed_at = timezone.now()
         user.save()
         return user
 
@@ -83,6 +86,7 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
     def save(self):
         user = self.validated_data["user"]
         user.set_password(self.validated_data["new_password"])
+        user.password_changed_at = timezone.now()
         user.save()
         return user
 
@@ -299,9 +303,10 @@ class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
         try:
             data = super().validate(attrs)
         except AuthenticationFailed:
-            raise serializers.ValidationError(
-                {"detail": "Incorrect password. Please try again."}
-            )
+            detail = "Incorrect password. Please try again."
+            if user_obj.password_changed_at:
+                detail += f" Note: your password was changed {timesince(user_obj.password_changed_at)} ago."
+            raise serializers.ValidationError({"detail": detail})
 
         data["user"] = UserSerializer(self.user).data
         return data

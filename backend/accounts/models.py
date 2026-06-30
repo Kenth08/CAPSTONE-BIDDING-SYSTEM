@@ -16,6 +16,9 @@ class User(AbstractUser):
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.SUPPLIER)
     full_name = models.CharField(max_length=150, blank=True)
+    # Set whenever the password is changed (self-service change or reset
+    # confirm) so a failed login can tell the user how recently it happened.
+    password_changed_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.username} ({self.role})"

@@ -2163,20 +2163,33 @@ function BidEvaluationPage() {
   const navigate = useNavigate()
   const [project, setProject] = useState(null)
   const [bids, setBids] = useState([])
-  const [loading, setLoading] = useState(true)
+  // Loaded independently — the project header and the bids table are
+  // unrelated requests, so one being slow shouldn't hold the other back.
+  const [loadingProject, setLoadingProject] = useState(true)
+  const [loadingBids, setLoadingBids] = useState(true)
   const [busyId, setBusyId] = useState(null)
   const [confirm, setConfirm] = useState(null)   // { bid }
   const [toast, setToast] = useState(null)
   const [viewBid, setViewBid] = useState(null)   // bid shown in the detail modal
   const [showTimeline, setShowTimeline] = useState(false)
 
-  const load = () => {
-    setLoading(true)
-    Promise.all([apiGetProject(id), apiListProjectBids(id)])
-      .then(([proj, bidList]) => { setProject(proj); setBids(bidList) })
+  const loadProject = () => {
+    setLoadingProject(true)
+    apiGetProject(id)
+      .then(setProject)
       .catch(() => setToast({ type: 'error', message: 'Could not load this procurement.' }))
-      .finally(() => setLoading(false))
+      .finally(() => setLoadingProject(false))
   }
+  const loadBidsList = () => {
+    setLoadingBids(true)
+    apiListProjectBids(id)
+      .then(setBids)
+      .catch(() => setToast({ type: 'error', message: 'Could not load the bids for this procurement.' }))
+      .finally(() => setLoadingBids(false))
+  }
+  // Only used where both genuinely need to refresh together (selecting a
+  // winner changes the project's own status, not just a bid's).
+  const load = () => { loadProject(); loadBidsList() }
   useEffect(load, [id])
 
   // Keep the open detail modal in sync with the bid's latest status after an action.
@@ -2188,9 +2201,11 @@ function BidEvaluationPage() {
 
   const awarded = project?.status === 'awarded'
 
+  // Qualify/disqualify only change the bid's own status — refetch just the
+  // bids table, not the project header too.
   const act = async (bid, fn, errMsg) => {
     setBusyId(bid.id)
-    try { await fn(bid.id); load() }
+    try { await fn(bid.id); loadBidsList() }
     catch (e) { setToast({ type: 'error', message: e.message || errMsg }) }
     finally { setBusyId(null) }
   }
@@ -2218,7 +2233,7 @@ function BidEvaluationPage() {
         <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} /> Back to projects
       </button>
 
-      {loading && !project ? (
+      {loadingProject && !project ? (
         <div className="ad-card" style={{ padding: '20px 24px' }}>
           <Skeleton width="40%" height={20} />
           <Skeleton width="60%" style={{ marginTop: 10 }} />
@@ -2271,7 +2286,7 @@ function BidEvaluationPage() {
                 <tr><th>SUPPLIER</th><th>BID AMOUNT</th><th>SUBMITTED</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
               </thead>
               <tbody>
-                {loading
+                {loadingBids
                   ? <TableSkeleton rows={3} cols={5} />
                   : bids.length === 0
                   ? <tr><td colSpan={5} className="ad-empty-row">No bids submitted yet.</td></tr>
