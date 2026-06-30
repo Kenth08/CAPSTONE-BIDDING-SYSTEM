@@ -11,6 +11,8 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from procurement.models import PROCUREMENT_CATEGORIES, Supplier
 
+from .emails import email_verification_token, send_verification_email
+
 User = get_user_model()
 
 # Documents the supplier must upload to register (the optional ones are excluded).
@@ -215,6 +217,7 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
         validated_data["contact"] = validated_data.get("representative_name", "")
         validated_data["business_type"] = ", ".join(validated_data.get("business_types", []))
         supplier = Supplier.objects.create(user=user, **validated_data)
+        send_verification_email(user)
 
         # Let the admins know a new supplier is waiting for verification.
         from procurement.notifications import notify_admins
@@ -223,6 +226,33 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
             link="/admin/suppliers",
         )
         return supplier
+
+
+class EmailVerifyConfirmSerializer(serializers.Serializer):
+    uid = serializers.CharField()
+    token = serializers.CharField()
+
+    def validate(self, attrs):
+        try:
+            user = User.objects.get(pk=force_str(urlsafe_base64_decode(attrs["uid"])))
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            raise serializers.ValidationError({"detail": "This verification link is invalid."})
+
+        if not email_verification_token.check_token(user, attrs["token"]):
+            raise serializers.ValidationError(
+                {"detail": "This verification link is invalid or has expired."}
+            )
+
+        attrs["user"] = user
+        return attrs
+
+    def save(self):
+        user = self.validated_data["user"]
+        supplier = Supplier.objects.filter(user=user).first()
+        if supplier and not supplier.email_verified:
+            supplier.email_verified = True
+            supplier.save(update_fields=["email_verified"])
+        return user
 
 
 class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):

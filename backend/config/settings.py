@@ -207,6 +207,27 @@ STORAGES = {
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Render's web service filesystem is EPHEMERAL — anything written to MEDIA_ROOT
+# (every supplier/bid document) is wiped on every redeploy or restart. Set
+# AWS_STORAGE_BUCKET_NAME to switch uploads to any S3-compatible bucket instead
+# (Supabase Storage — already used for the DB — exposes an S3-compatible
+# endpoint; AWS S3, Backblaze B2, etc. all work the same way). Falls back to
+# local disk with zero setup otherwise, so local dev is unaffected.
+AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME')
+if AWS_STORAGE_BUCKET_NAME:
+    INSTALLED_APPS.append('storages')
+    AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
+    AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
+    # Only needed for non-AWS S3-compatible providers (e.g. Supabase Storage);
+    # leave unset for real AWS S3.
+    AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL') or None
+    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'us-east-1')
+    AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN') or None
+    AWS_DEFAULT_ACL = None          # bucket policy controls access, not per-object ACLs
+    AWS_QUERYSTRING_AUTH = False    # serve plain URLs, no expiring signed query string
+    AWS_S3_FILE_OVERWRITE = False   # never silently clobber a same-named upload
+    STORAGES['default'] = {'BACKEND': 'storages.backends.s3.S3Storage'}
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Custom user model
@@ -237,6 +258,7 @@ REST_FRAMEWORK = {
         'login': '5/15m',
         'register': '10/h',
         'password_reset': '5/h',
+        'email_verify': '5/h',
     },
 }
 

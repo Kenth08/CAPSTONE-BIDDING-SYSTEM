@@ -54,3 +54,11 @@ class PasswordResetRateThrottle(IPRateThrottle):
     their email or fat-fingers their new password once or twice."""
 
     scope = "password_reset"
+
+
+class EmailVerifyRateThrottle(IPRateThrottle):
+    """Throttle for email verification confirm/resend: max 5 per hour per IP —
+    same reasoning as PasswordResetRateThrottle (stops token brute-forcing /
+    resend-mail spam, leaves room for a genuine retry)."""
+
+    scope = "email_verify"

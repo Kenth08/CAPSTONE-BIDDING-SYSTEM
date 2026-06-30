@@ -117,15 +117,20 @@
   border-radius: 999px;
 }
 
-/* CARDS */
+/* CARDS — flex (not grid) so a partial row centers instead of leaving a
+   stranded card with dead space beside it; max-width keeps a lone card from
+   stretching edge-to-edge. */
 .pub-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 20px;
 }
 .pub-card {
   display: flex;
   flex-direction: column;
+  flex: 1 1 320px;
+  max-width: 380px;
   background: var(--dark-card);
   border: 1px solid var(--dark-border);
   border-radius: 14px;
@@ -316,5 +321,5 @@
   .pub-back { font-size: 13px; }
   .pub-header { padding: 44px 20px 28px; }
   .pub-section-head { flex-wrap: wrap; gap: 10px; }
-  .pub-cards { grid-template-columns: 1fr; }
+  .pub-card { max-width: 100%; }
 }

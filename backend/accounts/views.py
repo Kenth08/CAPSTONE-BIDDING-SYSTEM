@@ -16,8 +16,10 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from procurement.permissions import IsAdminRole
 
+from .emails import send_verification_email
 from .serializers import (
     ChangePasswordSerializer,
+    EmailVerifyConfirmSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     RegisterSerializer,
@@ -25,7 +27,12 @@ from .serializers import (
     SupplierRegisterSerializer,
     UserSerializer,
 )
-from .throttling import LoginRateThrottle, PasswordResetRateThrottle, RegisterRateThrottle
+from .throttling import (
+    EmailVerifyRateThrottle,
+    LoginRateThrottle,
+    PasswordResetRateThrottle,
+    RegisterRateThrottle,
+)
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -94,6 +101,33 @@ class AdminAssistedSupplierRegisterView(generics.CreateAPIView):
             {"detail": "Supplier registered. Their account is pending admin verification."},
             status=201,
         )
+
+
+class EmailVerifyConfirmView(APIView):
+    """POST {uid, token} -> marks the supplier behind that account as
+    email-verified. AllowAny because the link itself (mailed only to the
+    account's own address) is the credential."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [EmailVerifyRateThrottle]
+
+    def post(self, request):
+        serializer = EmailVerifyConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({"detail": "Email verified. Thank you."})
+
+
+class ResendVerificationEmailView(APIView):
+    """POST (authenticated) -> resends the verification link to the caller's
+    own address. Always returns the same generic response and never lets an
+    SMTP failure surface, for the same reasons as PasswordResetRequestView."""
+
+    throttle_classes = [EmailVerifyRateThrottle]
+
+    def post(self, request):
+        send_verification_email(request.user)
+        return Response({"detail": "A verification email has been sent to your address."})
 
 
 class MeView(APIView):
