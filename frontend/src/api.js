@@ -127,6 +127,28 @@ export async function apiRegisterSupplier(formData) {
   return res.json()
 }
 
+export async function apiVerifyEmail(uid, token) {
+  let res
+  try {
+    res = await fetch(`${API_URL}/auth/verify-email/confirm/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid, token }),
+    })
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(readError(body, 'This verification link is invalid or has expired.'))
+  }
+  return res.json()
+}
+
+// Authenticated supplier resends their own verification email.
+export const apiResendVerification = () =>
+  apiFetch('/auth/verify-email/resend/', { method: 'POST', body: '{}' })
+
 // ── Public (no auth) ────────────────────────────────────────────────────────
 // The public "Public Results" page anyone can browse: procurements open for
 // bidding + already-awarded contracts. No token is sent.

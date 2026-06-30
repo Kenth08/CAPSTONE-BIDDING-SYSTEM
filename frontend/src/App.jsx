@@ -6,6 +6,7 @@ import HeadDashboard from './pages/HeadDashboard'
 import LoginPage from './pages/LoginPage'
 import ForgotPasswordPage from './pages/ForgotPasswordPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
+import VerifyEmailPage from './pages/VerifyEmailPage'
 import SupplierRegister from './pages/SupplierRegister'
 import PublicResultsPage from './pages/PublicResultsPage'
 import { getToken, getRole } from './api'
@@ -26,6 +27,7 @@ function App() {
         <Route path="/login"      element={<LoginPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password"  element={<ResetPasswordPage />} />
+        <Route path="/verify-email"    element={<VerifyEmailPage />} />
         <Route path="/register"   element={<SupplierRegister />} />
         <Route path="/public"     element={<PublicResultsPage />} />
         <Route path="/admin/*"    element={<ProtectedRoute role="admin"><AdminDashboard /></ProtectedRoute>} />

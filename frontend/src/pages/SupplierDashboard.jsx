@@ -10,7 +10,7 @@ import {
   apiLogout, apiGetMySupplier, apiResubmitDocuments,
   apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid,
   apiListNotifications, apiMarkNotificationsRead,
-  apiUpdateMySupplier, apiChangePassword,
+  apiUpdateMySupplier, apiChangePassword, apiResendVerification,
 } from '../api'
 import { TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
@@ -666,6 +666,41 @@ function VerificationBanner({ profile }) {
   )
 }
 
+// Shown until the supplier confirms their email via the link we mailed them
+// at registration — independent of qualification_status, so it can appear
+// alongside any of those banners.
+function EmailVerifyBanner({ profile, setToast }) {
+  const [sending, setSending] = useState(false)
+  if (!profile || profile.email_verified) return null
+
+  const resend = async () => {
+    setSending(true)
+    try {
+      await apiResendVerification()
+      setToast({ type: 'success', message: 'Verification email sent. Check your inbox.' })
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Could not send the verification email.' })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="sd-verify-banner sd-verify-pending">
+      <div className="sd-verify-icon"><Send size={16} /></div>
+      <div className="sd-verify-text">
+        <span className="sd-bold">Verify your email</span>
+        <span className="sd-muted sd-small">
+          Confirm your email address so we can reach you with bid results and account updates.
+        </span>
+      </div>
+      <button type="button" className="sd-btn-back" disabled={sending} onClick={resend}>
+        {sending ? 'Sending…' : 'Resend Email'}
+      </button>
+    </div>
+  )
+}
+
 // Lists the documents the admin flagged and lets the supplier re-upload + resubmit.
 function RevisionPanel({ profile, onResubmitted, setToast }) {
   const flagged = (profile?.documents || []).filter(d => d.review_status === 'needs_revision')
@@ -916,6 +951,7 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
       {modal && <BidModal project={modal} profile={profile} onClose={() => setModal(null)} onSubmit={onBid} />}
 
       <VerificationBanner profile={profile} />
+      <EmailVerifyBanner profile={profile} setToast={setToast} />
       <RevisionPanel profile={profile} onResubmitted={onResubmitted} setToast={setToast} />
 
       <div className="sd-stats">

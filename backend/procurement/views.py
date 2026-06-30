@@ -24,7 +24,7 @@ from .models import (
 )
 from rest_framework import permissions
 
-from .notifications import notify_admins, notify_heads, notify_supplier, notify_users
+from .notifications import email_user, notify_admins, notify_heads, notify_supplier, notify_users
 from .permissions import IsAdminRole, IsHeadRole, IsSupplierRole
 from .serializers import (
     AwardSerializer,
@@ -478,6 +478,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
             supplier,
             "Your supplier account has been verified. You can now submit bids.",
             link="/supplier/projects",
+            email_subject="Your E-Procurement supplier account has been verified",
         )
         return self._detail_response(supplier)
 
@@ -493,6 +494,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
             supplier,
             "Your supplier registration was rejected." + (f" Reason: {reason}" if reason else ""),
             link="/supplier/profile",
+            email_subject="Your E-Procurement supplier registration was rejected",
         )
         return self._detail_response(supplier)
 
@@ -538,6 +540,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
             supplier,
             f"Revision requested on: {flagged}. Please re-upload the flagged document(s).",
             link="/supplier/profile",
+            email_subject="Action needed on your E-Procurement supplier documents",
         )
         return self._detail_response(supplier)
 
@@ -581,6 +584,7 @@ class BidViewSet(viewsets.ModelViewSet):
             bid.supplier,
             f"Your bid on \"{bid.project.name}\" ({bid.project.code}) qualified for evaluation.",
             link="/supplier/bids",
+            email_subject=f"Your bid on {bid.project.code} qualified for evaluation",
         )
         return self._set_status(bid, Bid.Status.QUALIFIED)
 
@@ -592,6 +596,7 @@ class BidViewSet(viewsets.ModelViewSet):
             bid.supplier,
             f"Your bid on \"{bid.project.name}\" ({bid.project.code}) was disqualified.",
             link="/supplier/bids",
+            email_subject=f"Your bid on {bid.project.code} was disqualified",
         )
         return self._set_status(bid, Bid.Status.DISQUALIFIED)
 
@@ -620,9 +625,12 @@ class BidViewSet(viewsets.ModelViewSet):
                 continue
             if other.id == bid.id:
                 msg = f"Congratulations! Your bid won \"{project.name}\" ({project.code})."
+                subject = f"You won the contract for {project.code}"
             else:
                 msg = f"\"{project.name}\" ({project.code}) has been awarded to another supplier."
+                subject = f"Bid result for {project.code}"
             Notification.objects.create(user=user, message=msg, link="/supplier/bids")
+            email_user(user, subject, msg)
 
         return Response(self.get_serializer(bid).data)
 

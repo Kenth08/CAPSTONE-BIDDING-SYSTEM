@@ -741,7 +741,8 @@
 .sd-verify-pending  .sd-verify-icon { background: rgba(245,158,11,0.15); color: #d97706; }
 .sd-verify-revision .sd-verify-icon { background: rgba(249,115,22,0.15); color: #ea580c; }
 .sd-verify-rejected .sd-verify-icon { background: rgba(239,68,68,0.15);  color: #dc2626; }
-.sd-verify-text { display: flex; flex-direction: column; gap: 3px; }
+.sd-verify-text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.sd-verify-banner .sd-btn-back { flex-shrink: 0; }
 .sd-verify-text .sd-bold { font-size: 14.5px; color: var(--text-dark); }
 .sd-verify-note { margin-top: 6px; font-size: 13px; font-style: italic; color: var(--text-dark); }
 
