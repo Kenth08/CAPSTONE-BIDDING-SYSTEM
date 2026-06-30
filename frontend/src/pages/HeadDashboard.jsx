@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
   ChevronDown, LogOut,
   ClipboardCheck, AlertCircle, FolderOpen, Eye,
-  ThumbsUp, ThumbsDown, FileText, Menu, X
+  ThumbsUp, ThumbsDown, FileText, Menu, X, Image as ImageIcon
 } from 'lucide-react'
 import { apiLogout } from '../api'
 import {
@@ -177,6 +177,15 @@ function PendingCard({ project, onApprove, onReject }) {
             <div><span className="hd-label">Expected Delivery</span><span>{project.expectedDelivery || '—'}</span></div>
             <div><span className="hd-label">Submitted</span><span>{project.submittedAt}</span></div>
           </div>
+
+          {project.referenceImage && (
+            <div className="hd-refimg-section">
+              <span className="hd-refimg-label"><ImageIcon size={13} /> Project Reference Image</span>
+              <a href={project.referenceImage} target="_blank" rel="noopener noreferrer" title="Open full size">
+                <img src={project.referenceImage} alt="Project reference" className="hd-refimg-thumb" />
+              </a>
+            </div>
+          )}
 
           {project.documents?.length > 0 && (
             <div className="hd-doc-review">
