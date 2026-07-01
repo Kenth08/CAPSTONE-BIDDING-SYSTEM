@@ -15,7 +15,7 @@ python manage.py seed            # loads demo data + role accounts
 python manage.py runserver       # http://127.0.0.1:8000
 ```
 
-## Demo accounts (password: `password123`)
+## Demo accounts
 
 | username   | role     |
 |------------|----------|
@@ -23,6 +23,7 @@ python manage.py runserver       # http://127.0.0.1:8000
 | `head`     | head     |
 | `supplier` | supplier |
 
+Passwords are printed to the console when `python manage.py seed` runs.
 `admin` is also a Django superuser → log into `/admin/`.
 
 ## API
