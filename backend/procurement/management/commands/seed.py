@@ -18,15 +18,17 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         # --- Role accounts -------------------------------------------------
-        # username == email; log in with the email address.
+        # Admin and Head log in with a plain username (not an email).
+        # Their email is intentionally blank — they set it themselves on the
+        # Security page before enabling MFA.
         # (username, email, password, role, full_name, is_super)
         accounts = [
-            ("admin@gmail.com", "admin@gmail.com", "admin123", "admin", "System Administrator", True),
-            ("head@gmail.com", "head@gmail.com", "head123", "head", "Department Head", False),
+            ("admin", "", "admin123", "admin", "System Administrator", True),
+            ("head", "", "head123", "head", "Department Head", False),
             ("supplier", "supplier@gmail.com", "password123", "supplier", "Kenthcharles Repollo", False),
         ]
-        # Remove any older demo accounts that used the bare role as a username.
-        User.objects.filter(username__in=["admin", "head"]).delete()
+        # Clean up any older demo accounts (email-based or bare-role variants).
+        User.objects.filter(username__in=["admin", "head", "admin@gmail.com", "head@gmail.com"]).delete()
         for username, email, password, role, full_name, is_super in accounts:
             user, created = User.objects.get_or_create(
                 username=username,

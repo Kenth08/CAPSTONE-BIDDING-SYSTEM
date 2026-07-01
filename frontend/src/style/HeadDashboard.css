@@ -188,6 +188,7 @@
   transition: background 0.15s;
 }
 .hd-dropdown-item:hover { background: var(--light-bg); }
+.hd-dropdown-item:is(a) { text-decoration: none; }
 .hd-dropdown-logout { color: #ef4444; }
 .hd-dropdown-logout:hover { background: rgba(239,68,68,0.06); }
 .hd-avatar {
@@ -898,3 +899,37 @@
 .hd-toast button { background: none; border: none; cursor: pointer; color: inherit; opacity: 0.6; display: flex; }
 .hd-toast button:hover { opacity: 1; }
 @keyframes hd-toast-in { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* ── Security / MFA page ──────────────────────────────── */
+.hd-security-page { max-width: 560px; }
+.hd-security-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 28px; }
+.hd-security-header { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 20px; }
+.hd-security-icon { color: #3b82f6; flex-shrink: 0; margin-top: 2px; }
+.hd-security-title { font-size: 17px; font-weight: 700; color: #1e293b; margin: 0 0 4px; }
+.hd-security-desc { font-size: 13.5px; color: #64748b; margin: 0; line-height: 1.5; }
+.hd-mfa-status { display: flex; align-items: center; gap: 7px; font-size: 13.5px; padding: 10px 14px; border-radius: 8px; margin-bottom: 18px; }
+.hd-mfa-status.enabled { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+.hd-mfa-status.disabled { background: #f8fafc; color: #475569; border: 1px solid #e2e8f0; }
+.hd-mfa-status svg { flex-shrink: 0; }
+.hd-security-msg { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; line-height: 1.5; }
+.hd-security-msg.success { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+.hd-security-msg.error   { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.hd-security-msg.info    { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.hd-security-msg svg { flex-shrink: 0; margin-top: 1px; }
+.hd-mfa-form { display: flex; flex-direction: column; gap: 12px; }
+.hd-mfa-label { font-size: 13px; font-weight: 600; color: #374151; }
+.hd-mfa-email-input { font-size: 14px; padding: 9px 12px; border: 1.5px solid #d1d5db; border-radius: 8px; width: 100%; box-sizing: border-box; }
+.hd-mfa-email-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px #dbeafe; }
+.hd-mfa-code-input { font-size: 22px; letter-spacing: 0.5em; text-align: center; font-weight: 700;
+  padding: 10px 16px; border: 1.5px solid #d1d5db; border-radius: 8px; width: 100%; box-sizing: border-box; }
+.hd-mfa-code-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px #dbeafe; }
+.hd-mfa-hint { font-size: 12.5px; color: #64748b; margin: 0; }
+.hd-mfa-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.hd-btn-primary { background: #3b82f6; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.hd-btn-primary:hover:not(:disabled) { background: #2563eb; }
+.hd-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+.hd-btn-danger { background: #ef4444; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.hd-btn-danger:hover:not(:disabled) { background: #dc2626; }
+.hd-btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
+.hd-btn-outline { background: transparent; color: #374151; border: 1.5px solid #d1d5db; border-radius: 8px; padding: 9px 18px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.hd-btn-outline:hover { background: #f9fafb; }

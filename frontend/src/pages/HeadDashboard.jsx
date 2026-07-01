@@ -4,9 +4,10 @@ import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
   ChevronDown, LogOut,
   ClipboardCheck, AlertCircle, AlertTriangle, FolderOpen, Eye,
-  ThumbsUp, ThumbsDown, FileText, Menu, X, Image as ImageIcon
+  ThumbsUp, ThumbsDown, FileText, Menu, X, Image as ImageIcon,
+  Lock, ShieldCheck, ShieldOff, Mail
 } from 'lucide-react'
-import { apiLogout } from '../api'
+import { apiLogout, apiMfaSendCode, apiMfaEnable, apiMfaDisable, apiUpdateMfaEmail } from '../api'
 import {
   useProjects, approveProject as storeApprove, rejectProject as storeReject,
   requestProjectRevision as storeRequestRevision,
@@ -91,6 +92,9 @@ function Header({ title, onMenu }) {
                   </div>
                 </div>
                 <div className="hd-dropdown-divider" />
+                <Link to="/head/security" className="hd-dropdown-item" onClick={() => setOpen(false)}>
+                  <Lock size={15} /> Security
+                </Link>
                 <button className="hd-dropdown-item hd-dropdown-logout" onClick={() => { apiLogout(); navigate('/login') }}>
                   <LogOut size={15} /> Log out
                 </button>
@@ -529,6 +533,172 @@ function ApprovedPage() {
   )
 }
 
+function HeadSecurityPage() {
+  const session = JSON.parse(localStorage.getItem('session') || '{}')
+  const [mfaEnabled, setMfaEnabled] = useState(session.user?.mfa_enabled ?? false)
+  const initialEmail = session.user?.email || ''
+  const [email, setEmail] = useState(initialEmail)
+  const [savedEmail, setSavedEmail] = useState(initialEmail)
+  const [emailSaving, setEmailSaving] = useState(false)
+  const [emailMsg, setEmailMsg] = useState(null)
+
+  const [phase, setPhase] = useState('idle')
+  const [code, setCode] = useState('')
+  const [mfaMsg, setMfaMsg] = useState(null)
+  const [action, setAction] = useState(null)
+
+  const saveEmail = async (e) => {
+    e.preventDefault(); setEmailMsg(null); setEmailSaving(true)
+    try {
+      const updated = await apiUpdateMfaEmail(email.trim())
+      const s = JSON.parse(localStorage.getItem('session') || '{}')
+      if (s.user) { s.user.email = updated.email; localStorage.setItem('session', JSON.stringify(s)) }
+      setEmail(updated.email)
+      setSavedEmail(updated.email)
+      setEmailMsg({ type: 'success', text: 'Email address saved.' })
+    } catch (err) {
+      setEmailMsg({ type: 'error', text: err.message })
+    } finally {
+      setEmailSaving(false)
+    }
+  }
+
+  const startFlow = async (which) => {
+    setMfaMsg(null); setCode(''); setAction(which); setPhase('loading')
+    try {
+      await apiMfaSendCode()
+      setPhase('code-sent')
+      setMfaMsg({ type: 'info', text: `A 6-digit code was sent to ${email}. It expires in 5 minutes.` })
+    } catch (err) {
+      setPhase('idle')
+      setMfaMsg({ type: 'error', text: err.message })
+    }
+  }
+
+  const submitCode = async (e) => {
+    e.preventDefault(); setMfaMsg(null); setPhase('loading')
+    try {
+      if (action === 'enable') {
+        await apiMfaEnable(code.trim())
+        const s = JSON.parse(localStorage.getItem('session') || '{}')
+        if (s.user) { s.user.mfa_enabled = true; localStorage.setItem('session', JSON.stringify(s)) }
+        setMfaEnabled(true)
+        setMfaMsg({ type: 'success', text: 'Two-factor authentication is now enabled. You will need to enter a code every time you sign in.' })
+      } else {
+        await apiMfaDisable(code.trim())
+        const s = JSON.parse(localStorage.getItem('session') || '{}')
+        if (s.user) { s.user.mfa_enabled = false; localStorage.setItem('session', JSON.stringify(s)) }
+        setMfaEnabled(false)
+        setMfaMsg({ type: 'success', text: 'Two-factor authentication has been disabled.' })
+      }
+      setPhase('idle'); setCode(''); setAction(null)
+    } catch (err) {
+      setPhase('idle')
+      setMfaMsg({ type: 'error', text: err.message })
+    }
+  }
+
+  const cancel = () => { setPhase('idle'); setCode(''); setAction(null); setMfaMsg(null) }
+
+  return (
+    <div className="hd-security-page">
+
+      {/* ── MFA Email ──────────────────────────────── */}
+      <div className="hd-security-card" style={{ marginBottom: 16 }}>
+        <div className="hd-security-header">
+          <Mail size={20} className="hd-security-icon" />
+          <div>
+            <h2 className="hd-security-title">MFA Email Address</h2>
+            <p className="hd-security-desc">
+              Enter the email address where sign-in verification codes will be sent. Required before enabling two-factor authentication.
+            </p>
+          </div>
+        </div>
+        {emailMsg && (
+          <div className={`hd-security-msg ${emailMsg.type}`}>
+            {emailMsg.type === 'success' ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+            <span>{emailMsg.text}</span>
+          </div>
+        )}
+        <form onSubmit={saveEmail} className="hd-mfa-form">
+          <input
+            type="email" placeholder="your@email.com" value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="hd-mfa-email-input" required
+          />
+          <div className="hd-mfa-actions">
+            <button type="submit" className="hd-btn-primary" disabled={emailSaving || email.trim() === savedEmail}>
+              {emailSaving ? 'Saving…' : email.trim() === savedEmail ? 'Saved' : 'Save Email'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* ── Two-Factor Authentication ──────────────── */}
+      <div className="hd-security-card">
+        <div className="hd-security-header">
+          <ShieldCheck size={22} className="hd-security-icon" />
+          <div>
+            <h2 className="hd-security-title">Two-Factor Authentication</h2>
+            <p className="hd-security-desc">
+              When enabled, you will receive a one-time code at your MFA email each time you sign in.
+            </p>
+          </div>
+        </div>
+
+        <div className={`hd-mfa-status ${mfaEnabled ? 'enabled' : 'disabled'}`}>
+          {mfaEnabled
+            ? <><ShieldCheck size={16} /> Two-factor authentication is <strong>ON</strong></>
+            : <><ShieldOff size={16} /> Two-factor authentication is <strong>OFF</strong></>
+          }
+        </div>
+
+        {mfaMsg && (
+          <div className={`hd-security-msg ${mfaMsg.type}`}>
+            {mfaMsg.type === 'success' && <CheckCircle2 size={15} />}
+            {mfaMsg.type === 'error' && <AlertTriangle size={15} />}
+            {mfaMsg.type === 'info' && <Mail size={15} />}
+            <span>{mfaMsg.text}</span>
+          </div>
+        )}
+
+        {phase === 'code-sent' ? (
+          <form onSubmit={submitCode} className="hd-mfa-form">
+            <label className="hd-mfa-label">Enter the 6-digit code from your email</label>
+            <input
+              type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
+              placeholder="000000" value={code}
+              onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              className="hd-mfa-code-input" autoFocus required
+            />
+            <div className="hd-mfa-actions">
+              <button type="submit" className="hd-btn-primary" disabled={code.length < 6}>
+                {action === 'enable' ? 'Enable 2FA' : 'Disable 2FA'}
+              </button>
+              <button type="button" className="hd-btn-outline" onClick={cancel}>Cancel</button>
+            </div>
+          </form>
+        ) : (
+          <div className="hd-mfa-actions">
+            {!email.trim() && !mfaEnabled && (
+              <p className="hd-mfa-hint">Save an MFA email address above before enabling 2FA.</p>
+            )}
+            {mfaEnabled
+              ? <button className="hd-btn-danger" onClick={() => startFlow('disable')} disabled={phase === 'loading'}>
+                  {phase === 'loading' ? 'Please wait…' : 'Disable 2FA'}
+                </button>
+              : <button className="hd-btn-primary" onClick={() => startFlow('enable')}
+                  disabled={phase === 'loading' || !email.trim()}>
+                  {phase === 'loading' ? 'Please wait…' : 'Enable 2FA'}
+                </button>
+            }
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function HeadDashboard() {
   const loc = useLocation()
   const [navOpen, setNavOpen] = useState(false)
@@ -538,6 +708,7 @@ export default function HeadDashboard() {
     '/head': 'Dashboard',
     '/head/pending': 'Pending Approval',
     '/head/approved': 'Reviewed Projects',
+    '/head/security': 'Security',
   }
 
   return (
@@ -551,6 +722,7 @@ export default function HeadDashboard() {
             <Route index element={<HeadHome />} />
             <Route path="pending" element={<PendingPage />} />
             <Route path="approved" element={<ApprovedPage />} />
+            <Route path="security" element={<HeadSecurityPage />} />
             <Route path="*" element={<HeadHome />} />
           </Routes>
         </div>

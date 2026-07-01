@@ -8,6 +8,10 @@ from .views import (
     LoginView,
     LogoutView,
     MeView,
+    MFAConfirmView,
+    MFADisableView,
+    MFAEnableView,
+    MFASendCodeView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
     RegisterView,
@@ -28,4 +32,9 @@ urlpatterns = [
     path("password/reset/confirm/", PasswordResetConfirmView.as_view(), name="password-reset-confirm"),
     path("verify-email/confirm/", EmailVerifyConfirmView.as_view(), name="verify-email-confirm"),
     path("verify-email/resend/", ResendVerificationEmailView.as_view(), name="verify-email-resend"),
+    # MFA (admin/head only)
+    path("mfa/confirm/", MFAConfirmView.as_view(), name="mfa-confirm"),
+    path("mfa/send-code/", MFASendCodeView.as_view(), name="mfa-send-code"),
+    path("mfa/enable/", MFAEnableView.as_view(), name="mfa-enable"),
+    path("mfa/disable/", MFADisableView.as_view(), name="mfa-disable"),
 ]

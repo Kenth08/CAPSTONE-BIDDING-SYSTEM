@@ -4,13 +4,15 @@ import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
   Search, ChevronRight, LogOut, Shield,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
-  CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock, ArrowLeft
+  CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock, ArrowLeft,
+  Lock, ShieldCheck, ShieldOff, Mail
 } from 'lucide-react'
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
   apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision, apiAdminRegisterSupplier,
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
   apiListAwards, apiListDocuments, apiBidRequestRevision,
+  apiMfaSendCode, apiMfaEnable, apiMfaDisable, apiUpdateMfaEmail,
 } from '../api'
 import {
   useProjects, createProject, publishProject, refreshProjects, isExpired, deadlineLabel, deliveryLabel,
@@ -119,6 +121,9 @@ function Header({ title, onMenu }) {
                   </div>
                 </div>
                 <div className="ad-dropdown-divider" />
+                <Link to="/admin/security" className="ad-dropdown-item" onClick={() => setOpen(false)}>
+                  <Lock size={15} /> Security
+                </Link>
                 <button className="ad-dropdown-item ad-dropdown-logout"
                   onClick={() => { apiLogout(); navigate('/login') }}>
                   <LogOut size={15} /> Log out
@@ -2891,6 +2896,180 @@ function ReportsPage() {
   )
 }
 
+// ── Security (MFA setup) ──────────────────────────────────────────────────────
+
+function SecurityPage() {
+  const session = JSON.parse(localStorage.getItem('session') || '{}')
+  const [mfaEnabled, setMfaEnabled] = useState(session.user?.mfa_enabled ?? false)
+  const initialEmail = session.user?.email || ''
+  const [email, setEmail] = useState(initialEmail)
+  const [savedEmail, setSavedEmail] = useState(initialEmail)
+  const [emailSaving, setEmailSaving] = useState(false)
+  const [emailMsg, setEmailMsg] = useState(null)
+
+  // MFA flow: 'idle' | 'loading' | 'code-sent'
+  const [phase, setPhase] = useState('idle')
+  const [code, setCode] = useState('')
+  const [mfaMsg, setMfaMsg] = useState(null)
+  const [action, setAction] = useState(null) // 'enable' | 'disable'
+
+  const saveEmail = async (e) => {
+    e.preventDefault()
+    setEmailMsg(null)
+    setEmailSaving(true)
+    try {
+      const updated = await apiUpdateMfaEmail(email.trim())
+      const s = JSON.parse(localStorage.getItem('session') || '{}')
+      if (s.user) { s.user.email = updated.email; localStorage.setItem('session', JSON.stringify(s)) }
+      setEmail(updated.email)
+      setSavedEmail(updated.email)
+      setEmailMsg({ type: 'success', text: 'Email address saved.' })
+    } catch (err) {
+      setEmailMsg({ type: 'error', text: err.message })
+    } finally {
+      setEmailSaving(false)
+    }
+  }
+
+  const startFlow = async (which) => {
+    setMfaMsg(null); setCode(''); setAction(which); setPhase('loading')
+    try {
+      await apiMfaSendCode()
+      setPhase('code-sent')
+      setMfaMsg({ type: 'info', text: `A 6-digit code was sent to ${email}. It expires in 5 minutes.` })
+    } catch (err) {
+      setPhase('idle')
+      setMfaMsg({ type: 'error', text: err.message })
+    }
+  }
+
+  const submitCode = async (e) => {
+    e.preventDefault(); setMfaMsg(null); setPhase('loading')
+    try {
+      if (action === 'enable') {
+        await apiMfaEnable(code.trim())
+        const s = JSON.parse(localStorage.getItem('session') || '{}')
+        if (s.user) { s.user.mfa_enabled = true; localStorage.setItem('session', JSON.stringify(s)) }
+        setMfaEnabled(true)
+        setMfaMsg({ type: 'success', text: 'Two-factor authentication is now enabled. You will need to enter a code every time you sign in.' })
+      } else {
+        await apiMfaDisable(code.trim())
+        const s = JSON.parse(localStorage.getItem('session') || '{}')
+        if (s.user) { s.user.mfa_enabled = false; localStorage.setItem('session', JSON.stringify(s)) }
+        setMfaEnabled(false)
+        setMfaMsg({ type: 'success', text: 'Two-factor authentication has been disabled.' })
+      }
+      setPhase('idle'); setCode(''); setAction(null)
+    } catch (err) {
+      setPhase('idle')
+      setMfaMsg({ type: 'error', text: err.message })
+    }
+  }
+
+  const cancel = () => { setPhase('idle'); setCode(''); setAction(null); setMfaMsg(null) }
+
+  return (
+    <div className="ad-security-page">
+
+      {/* ── MFA Email ──────────────────────────────── */}
+      <div className="ad-security-card" style={{ marginBottom: 16 }}>
+        <div className="ad-security-header">
+          <Mail size={20} className="ad-security-icon" />
+          <div>
+            <h2 className="ad-security-title">MFA Email Address</h2>
+            <p className="ad-security-desc">
+              Enter the email address where sign-in verification codes will be sent. Required before enabling two-factor authentication.
+            </p>
+          </div>
+        </div>
+        {emailMsg && (
+          <div className={`ad-security-msg ${emailMsg.type}`}>
+            {emailMsg.type === 'success' ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+            <span>{emailMsg.text}</span>
+          </div>
+        )}
+        <form onSubmit={saveEmail} className="ad-mfa-form">
+          <input
+            type="email"
+            placeholder="your@email.com"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="ad-mfa-email-input"
+            required
+          />
+          <div className="ad-mfa-actions">
+            <button type="submit" className="ad-btn-primary" disabled={emailSaving || email.trim() === savedEmail}>
+              {emailSaving ? 'Saving…' : email.trim() === savedEmail ? 'Saved' : 'Save Email'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* ── Two-Factor Authentication ──────────────── */}
+      <div className="ad-security-card">
+        <div className="ad-security-header">
+          <ShieldCheck size={22} className="ad-security-icon" />
+          <div>
+            <h2 className="ad-security-title">Two-Factor Authentication</h2>
+            <p className="ad-security-desc">
+              When enabled, you will receive a one-time code at your MFA email each time you sign in.
+            </p>
+          </div>
+        </div>
+
+        <div className={`ad-mfa-status ${mfaEnabled ? 'enabled' : 'disabled'}`}>
+          {mfaEnabled
+            ? <><ShieldCheck size={16} /> Two-factor authentication is <strong>ON</strong></>
+            : <><ShieldOff size={16} /> Two-factor authentication is <strong>OFF</strong></>
+          }
+        </div>
+
+        {mfaMsg && (
+          <div className={`ad-security-msg ${mfaMsg.type}`}>
+            {mfaMsg.type === 'success' && <CheckCircle2 size={15} />}
+            {mfaMsg.type === 'error' && <AlertTriangle size={15} />}
+            {mfaMsg.type === 'info' && <Mail size={15} />}
+            <span>{mfaMsg.text}</span>
+          </div>
+        )}
+
+        {phase === 'code-sent' ? (
+          <form onSubmit={submitCode} className="ad-mfa-form">
+            <label className="ad-mfa-label">Enter the 6-digit code from your email</label>
+            <input
+              type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
+              placeholder="000000" value={code}
+              onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              className="ad-mfa-code-input" autoFocus required
+            />
+            <div className="ad-mfa-actions">
+              <button type="submit" className="ad-btn-primary" disabled={code.length < 6}>
+                {action === 'enable' ? 'Enable 2FA' : 'Disable 2FA'}
+              </button>
+              <button type="button" className="ad-btn-outline" onClick={cancel}>Cancel</button>
+            </div>
+          </form>
+        ) : (
+          <div className="ad-mfa-actions">
+            {!email.trim() && !mfaEnabled && (
+              <p className="ad-mfa-hint">Save an MFA email address above before enabling 2FA.</p>
+            )}
+            {mfaEnabled
+              ? <button className="ad-btn-danger" onClick={() => startFlow('disable')} disabled={phase === 'loading'}>
+                  {phase === 'loading' ? 'Please wait…' : 'Disable 2FA'}
+                </button>
+              : <button className="ad-btn-primary" onClick={() => startFlow('enable')}
+                  disabled={phase === 'loading' || !email.trim()}>
+                  {phase === 'loading' ? 'Please wait…' : 'Enable 2FA'}
+                </button>
+            }
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Root ──────────────────────────────────────────────────────────────────────
 
 export default function AdminDashboard() {
@@ -2908,6 +3087,7 @@ export default function AdminDashboard() {
     '/admin/bids':      'Bid Evaluation',
     '/admin/awards':    'Awarding',
     '/admin/reports':   'Reports & Analytics',
+    '/admin/security':  'Security',
   }
   const title = PAGE_TITLES[loc.pathname]
     || (loc.pathname.startsWith('/admin/bids/') ? 'Bid Evaluation' : 'Admin Dashboard')
@@ -2929,6 +3109,7 @@ export default function AdminDashboard() {
             <Route path="bids/:id"  element={<BidEvaluationPage />} />
             <Route path="awards"    element={<AwardsPage />} />
             <Route path="reports"   element={<ReportsPage />} />
+            <Route path="security"  element={<SecurityPage />} />
             <Route path="*"         element={<DashboardHome />} />
           </Routes>
         </div>

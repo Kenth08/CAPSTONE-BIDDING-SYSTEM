@@ -24,6 +24,27 @@ class EmailVerificationTokenGenerator(PasswordResetTokenGenerator):
 email_verification_token = EmailVerificationTokenGenerator()
 
 
+def send_mfa_code_email(user, code):
+    """Email a 6-digit one-time sign-in code. Best-effort (mirrors send_verification_email)."""
+    try:
+        send_mail(
+            subject="Your E-Procurement sign-in code",
+            message=(
+                f"Hi {user.full_name or user.username},\n\n"
+                f"Your sign-in verification code is:\n\n"
+                f"    {code}\n\n"
+                "This code expires in 5 minutes and can only be used once.\n\n"
+                "If you did not attempt to sign in, please contact your system "
+                "administrator immediately."
+            ),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=True,
+        )
+    except Exception:
+        logger.exception("Failed to send MFA code email to %s", user.email)
+
+
 def send_verification_email(user):
     """Email a one-time confirmation link to `user`. Best-effort: a failed or
     unconfigured SMTP server must never break registration (mirrors how

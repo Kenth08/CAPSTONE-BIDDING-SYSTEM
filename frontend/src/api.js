@@ -296,3 +296,36 @@ export const apiListDocuments = () => apiFetch('/documents/')
 export const apiListNotifications = () => apiFetch('/notifications/')
 export const apiMarkNotificationsRead = () =>
   apiFetch('/notifications/mark-read/', { method: 'POST', body: '{}' })
+
+// ── MFA (admin/head only) ──────────────────────────────────────────────────────
+// Step 2 of login: exchange mfa_token + OTP code for real JWT tokens.
+// Called before the user has a JWT, so we use raw fetch (not apiFetch).
+export async function apiMfaConfirm(mfa_token, code) {
+  let res
+  try {
+    res = await fetch(`${API_URL}/auth/mfa/confirm/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mfa_token, code }),
+    })
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(readError(body, 'Invalid or expired code.'))
+  }
+  return res.json()
+}
+// Send a fresh OTP to the signed-in user's email (for enable/disable setup).
+export const apiMfaSendCode = () =>
+  apiFetch('/auth/mfa/send-code/', { method: 'POST', body: '{}' })
+// Verify the OTP code and turn MFA on.
+export const apiMfaEnable = (code) =>
+  apiFetch('/auth/mfa/enable/', { method: 'POST', body: JSON.stringify({ code }) })
+// Verify the OTP code and turn MFA off.
+export const apiMfaDisable = (code) =>
+  apiFetch('/auth/mfa/disable/', { method: 'POST', body: JSON.stringify({ code }) })
+// Update the email address used to receive MFA codes (admin/head only).
+export const apiUpdateMfaEmail = (email) =>
+  apiFetch('/auth/me/', { method: 'PATCH', body: JSON.stringify({ email }) })

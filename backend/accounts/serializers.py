@@ -28,7 +28,7 @@ REQUIRED_DOCUMENTS = [
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "username", "email", "role", "full_name"]
+        fields = ["id", "username", "email", "role", "full_name", "mfa_enabled"]
 
 
 class ChangePasswordSerializer(serializers.Serializer):
@@ -307,6 +307,20 @@ class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
             if user_obj.password_changed_at:
                 detail += f" Note: your password was changed {timesince(user_obj.password_changed_at)} ago."
             raise serializers.ValidationError({"detail": detail})
+
+        # MFA gate: admin/head with MFA enabled get a signed challenge instead
+        # of real JWT tokens.  The actual tokens are issued by MFAConfirmView
+        # once the correct code is submitted.
+        if self.user.role in (User.Role.ADMIN, User.Role.HEAD) and self.user.mfa_enabled:
+            from django.core.signing import TimestampSigner
+            from .emails import send_mfa_code_email
+            from .models import MFACode
+            code = MFACode.generate_for(self.user)
+            send_mfa_code_email(self.user, code)
+            return {
+                "mfa_required": True,
+                "mfa_token": TimestampSigner().sign(str(self.user.pk)),
+            }
 
         data["user"] = UserSerializer(self.user).data
         return data

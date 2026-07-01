@@ -4,6 +4,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
+from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework import generics, permissions, status
@@ -16,7 +17,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from procurement.permissions import IsAdminRole
 
-from .emails import send_verification_email
+from .emails import send_mfa_code_email, send_verification_email
+from .models import MFACode
 from .serializers import (
     ChangePasswordSerializer,
     EmailVerifyConfirmSerializer,
@@ -131,10 +133,22 @@ class ResendVerificationEmailView(APIView):
 
 
 class MeView(APIView):
-    """GET the currently authenticated user."""
+    """GET the currently authenticated user.
+    PATCH {email} → update the MFA email address (admin/head only)."""
 
     def get(self, request):
         return Response(UserSerializer(request.user).data)
+
+    def patch(self, request):
+        user = request.user
+        if user.role not in (User.Role.ADMIN, User.Role.HEAD):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        email = (request.data.get("email") or "").strip()
+        if email and "@" not in email:
+            return Response({"detail": "Enter a valid email address."}, status=status.HTTP_400_BAD_REQUEST)
+        user.email = email
+        user.save(update_fields=["email"])
+        return Response(UserSerializer(user).data)
 
 
 class ChangePasswordView(APIView):
@@ -209,6 +223,110 @@ class PasswordResetConfirmView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response({"detail": "Your password has been reset. You can now log in."})
+
+
+class MFAConfirmView(APIView):
+    """POST {mfa_token, code} → verify the one-time code and return real JWT tokens.
+
+    Called as the second step of login when the user has MFA enabled.
+    AllowAny because the caller has no JWT yet (they only passed the password
+    check — the mfa_token is the proof of that)."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [LoginRateThrottle]
+
+    def post(self, request):
+        mfa_token = request.data.get("mfa_token", "")
+        code = str(request.data.get("code", "")).strip()
+
+        try:
+            user_pk = TimestampSigner().unsign(mfa_token, max_age=300)
+        except (BadSignature, SignatureExpired):
+            return Response(
+                {"detail": "Your session has expired. Please log in again."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = User.objects.filter(pk=user_pk).first()
+        if not user:
+            return Response({"detail": "Invalid session."}, status=status.HTTP_400_BAD_REQUEST)
+
+        mfa_code = getattr(user, "mfa_code", None)
+        if not mfa_code or not mfa_code.is_valid(code):
+            return Response(
+                {"detail": "Invalid or expired code. Please try again."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        mfa_code.delete()
+
+        refresh = RefreshToken.for_user(user)
+        refresh["role"] = user.role
+        return Response({
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+            "user": UserSerializer(user).data,
+        })
+
+
+class MFASendCodeView(APIView):
+    """POST (authenticated admin/head) → generate a fresh OTP and email it.
+
+    Used by the Security page for both the enable and disable flows."""
+
+    def post(self, request):
+        user = request.user
+        if user.role not in (User.Role.ADMIN, User.Role.HEAD):
+            return Response(
+                {"detail": "Two-factor authentication is only available for Admin and Head accounts."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        code = MFACode.generate_for(user)
+        send_mfa_code_email(user, code)
+        return Response({"detail": "A verification code has been sent to your email address."})
+
+
+class MFAEnableView(APIView):
+    """POST {code} (authenticated) → verify the code and enable MFA."""
+
+    def post(self, request):
+        user = request.user
+        if user.role not in (User.Role.ADMIN, User.Role.HEAD):
+            return Response(
+                {"detail": "Two-factor authentication is only available for Admin and Head accounts."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if user.mfa_enabled:
+            return Response({"detail": "Two-factor authentication is already enabled."}, status=status.HTTP_400_BAD_REQUEST)
+
+        code = str(request.data.get("code", "")).strip()
+        mfa_code = getattr(user, "mfa_code", None)
+        if not mfa_code or not mfa_code.is_valid(code):
+            return Response({"detail": "Invalid or expired code."}, status=status.HTTP_400_BAD_REQUEST)
+
+        mfa_code.delete()
+        user.mfa_enabled = True
+        user.save(update_fields=["mfa_enabled"])
+        return Response({"detail": "Two-factor authentication has been enabled."})
+
+
+class MFADisableView(APIView):
+    """POST {code} (authenticated) → verify the code and disable MFA."""
+
+    def post(self, request):
+        user = request.user
+        if not user.mfa_enabled:
+            return Response({"detail": "Two-factor authentication is not enabled."}, status=status.HTTP_400_BAD_REQUEST)
+
+        code = str(request.data.get("code", "")).strip()
+        mfa_code = getattr(user, "mfa_code", None)
+        if not mfa_code or not mfa_code.is_valid(code):
+            return Response({"detail": "Invalid or expired code."}, status=status.HTTP_400_BAD_REQUEST)
+
+        mfa_code.delete()
+        user.mfa_enabled = False
+        user.save(update_fields=["mfa_enabled"])
+        return Response({"detail": "Two-factor authentication has been disabled."})
 
 
 class LogoutView(APIView):

@@ -362,6 +362,7 @@
 }
 
 .ad-dropdown-item:hover { background: var(--light-bg); }
+.ad-dropdown-item:is(a) { text-decoration: none; }
 .ad-dropdown-logout { color: #ef4444; }
 .ad-dropdown-logout:hover { background: #fff5f5; }
 
@@ -1826,3 +1827,34 @@
 .ad-decl-badge svg { color: #10b981; flex-shrink: 0; }
 .ad-decl-badge-no { color: #b91c1c; }
 .ad-decl-badge-no svg { color: #ef4444; }
+
+/* ── Security / MFA page ──────────────────────────────── */
+.ad-security-page { max-width: 560px; }
+.ad-security-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 28px; }
+.ad-security-header { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 20px; }
+.ad-security-icon { color: #3b82f6; flex-shrink: 0; margin-top: 2px; }
+.ad-security-title { font-size: 17px; font-weight: 700; color: #1e293b; margin: 0 0 4px; }
+.ad-security-desc { font-size: 13.5px; color: #64748b; margin: 0; line-height: 1.5; }
+.ad-mfa-status { display: flex; align-items: center; gap: 7px; font-size: 13.5px; padding: 10px 14px; border-radius: 8px; margin-bottom: 18px; }
+.ad-mfa-status.enabled { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+.ad-mfa-status.disabled { background: #f8fafc; color: #475569; border: 1px solid #e2e8f0; }
+.ad-mfa-status svg { flex-shrink: 0; }
+.ad-security-msg { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; line-height: 1.5; }
+.ad-security-msg.success { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+.ad-security-msg.error   { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.ad-security-msg.info    { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.ad-security-msg svg { flex-shrink: 0; margin-top: 1px; }
+.ad-mfa-form { display: flex; flex-direction: column; gap: 12px; }
+.ad-mfa-label { font-size: 13px; font-weight: 600; color: #374151; }
+.ad-mfa-email-input { font-size: 14px; padding: 9px 12px; border: 1.5px solid #d1d5db; border-radius: 8px; width: 100%; box-sizing: border-box; }
+.ad-mfa-email-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px #dbeafe; }
+.ad-mfa-code-input { font-size: 22px; letter-spacing: 0.5em; text-align: center; font-weight: 700;
+  padding: 10px 16px; border: 1.5px solid #d1d5db; border-radius: 8px; width: 100%; box-sizing: border-box; }
+.ad-mfa-code-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px #dbeafe; }
+.ad-mfa-hint { font-size: 12.5px; color: #64748b; margin: 0; }
+.ad-mfa-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.ad-btn-danger { background: #ef4444; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.ad-btn-danger:hover:not(:disabled) { background: #dc2626; }
+.ad-btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
+.ad-btn-outline { background: transparent; color: #374151; border: 1.5px solid #d1d5db; border-radius: 8px; padding: 9px 18px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.ad-btn-outline:hover { background: #f9fafb; }
