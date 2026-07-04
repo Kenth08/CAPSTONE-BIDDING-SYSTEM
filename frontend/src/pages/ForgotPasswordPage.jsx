@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Shield, ArrowLeft } from 'lucide-react'
 import { apiRequestPasswordReset } from '../api'
@@ -9,6 +9,16 @@ export default function ForgotPasswordPage() {
   const [error, setError] = useState('')
   const [sent, setSent] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [resending, setResending] = useState(false)
+  const [resendMsg, setResendMsg] = useState('')
+  const [cooldown, setCooldown] = useState(0) // seconds until "Resend" is allowed again
+
+  // Tick the resend cooldown down to zero.
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const t = setTimeout(() => setCooldown(cooldown - 1), 1000)
+    return () => clearTimeout(t)
+  }, [cooldown])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -19,10 +29,27 @@ export default function ForgotPasswordPage() {
       // Always show the same success state — the backend deliberately never
       // reveals whether the email matched an account.
       setSent(true)
+      setCooldown(30) // a link was just sent — block an instant resend
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleResend = async () => {
+    if (resending || cooldown > 0) return
+    setError('')
+    setResendMsg('')
+    setResending(true)
+    try {
+      await apiRequestPasswordReset(email.trim())
+      setResendMsg('Another reset link is on its way. Check your inbox and spam folder.')
+      setCooldown(30)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setResending(false)
     }
   }
 
@@ -42,10 +69,25 @@ export default function ForgotPasswordPage() {
           <p className="login-subtitle">Enter the email on your account and we'll send you a link to reset your password.</p>
 
           {sent ? (
-            <div className="login-success">
-              <p>If an account exists for <b>{email.trim()}</b>, a password reset link has been sent.</p>
-              <p>Check your inbox (and spam folder) — the link expires in 3 days.</p>
-            </div>
+            <>
+              <div className="login-success">
+                <p>If an account exists for <b>{email.trim()}</b>, a password reset link has been sent.</p>
+                <p>Check your inbox (and spam folder) — the link expires in 3 days.</p>
+              </div>
+              {resendMsg && <div className="login-resend-msg" style={{ marginTop: 12 }}>{resendMsg}</div>}
+              {error && <div className="login-error" style={{ marginTop: 12 }}><span>{error}</span></div>}
+              <p className="login-resend">
+                Didn't get the email?{' '}
+                <button
+                  type="button"
+                  className="login-resend-btn"
+                  onClick={handleResend}
+                  disabled={resending || cooldown > 0}
+                >
+                  {resending ? 'Sending…' : cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend link'}
+                </button>
+              </p>
+            </>
           ) : (
             <form onSubmit={handleSubmit} className="login-form">
               <div className="form-group">
