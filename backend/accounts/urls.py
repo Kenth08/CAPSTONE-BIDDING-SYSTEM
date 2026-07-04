@@ -11,6 +11,7 @@ from .views import (
     MFAConfirmView,
     MFADisableView,
     MFAEnableView,
+    MFAResendView,
     MFASendCodeView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
@@ -34,6 +35,7 @@ urlpatterns = [
     path("verify-email/resend/", ResendVerificationEmailView.as_view(), name="verify-email-resend"),
     # MFA (admin/head only)
     path("mfa/confirm/", MFAConfirmView.as_view(), name="mfa-confirm"),
+    path("mfa/resend/", MFAResendView.as_view(), name="mfa-resend"),
     path("mfa/send-code/", MFASendCodeView.as_view(), name="mfa-send-code"),
     path("mfa/enable/", MFAEnableView.as_view(), name="mfa-enable"),
     path("mfa/disable/", MFADisableView.as_view(), name="mfa-disable"),

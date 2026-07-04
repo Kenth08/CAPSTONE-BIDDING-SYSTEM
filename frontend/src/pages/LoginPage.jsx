@@ -1,7 +1,7 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Shield, Eye, EyeOff, ArrowLeft, KeyRound } from 'lucide-react'
-import { apiLogin, apiMfaConfirm, saveSession } from '../api'
+import { apiLogin, apiMfaConfirm, apiMfaResend, saveSession } from '../api'
 import '../style/LoginPage.css'
 
 export default function LoginPage() {
@@ -14,7 +14,17 @@ export default function LoginPage() {
   // MFA second step
   const [mfaToken, setMfaToken] = useState(null)
   const [mfaCode, setMfaCode] = useState('')
+  const [resending, setResending] = useState(false)
+  const [resendMsg, setResendMsg] = useState('')
+  const [cooldown, setCooldown] = useState(0) // seconds until "Resend code" is allowed again
   const mfaInputRef = useRef(null)
+
+  // Tick the resend cooldown down to zero.
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const t = setTimeout(() => setCooldown(cooldown - 1), 1000)
+    return () => clearTimeout(t)
+  }, [cooldown])
 
   const goToDashboard = (userRole) => {
     if (userRole === 'admin') navigate('/admin')
@@ -30,6 +40,8 @@ export default function LoginPage() {
       const result = await apiLogin(form.identifier.trim(), form.password)
       if (result.mfa_required) {
         setMfaToken(result.mfa_token)
+        setCooldown(30) // a code was just emailed — block an instant resend
+        setResendMsg('')
         setTimeout(() => mfaInputRef.current?.focus(), 50)
         return
       }
@@ -58,10 +70,29 @@ export default function LoginPage() {
     }
   }
 
+  const handleResend = async () => {
+    if (resending || cooldown > 0) return
+    setError('')
+    setResendMsg('')
+    setResending(true)
+    try {
+      await apiMfaResend(mfaToken)
+      setResendMsg('A new code is on its way. Check your email (and spam folder).')
+      setCooldown(30)
+      mfaInputRef.current?.focus()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setResending(false)
+    }
+  }
+
   const handleBackToLogin = () => {
     setMfaToken(null)
     setMfaCode('')
     setError('')
+    setResendMsg('')
+    setCooldown(0)
   }
 
   return (
@@ -101,10 +132,22 @@ export default function LoginPage() {
                   />
                 </div>
                 {error && <div className="login-error"><span>{error}</span></div>}
+                {resendMsg && <div className="login-resend-msg">{resendMsg}</div>}
                 <button type="submit" className="login-submit" disabled={loading || mfaCode.length < 6}>
                   {loading ? 'Verifying…' : 'Verify & Sign In'}
                 </button>
               </form>
+              <p className="login-resend">
+                Didn't get the code?{' '}
+                <button
+                  type="button"
+                  className="login-resend-btn"
+                  onClick={handleResend}
+                  disabled={resending || cooldown > 0}
+                >
+                  {resending ? 'Sending…' : cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend code'}
+                </button>
+              </p>
             </>
           ) : (
             <>

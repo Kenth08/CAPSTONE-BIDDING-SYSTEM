@@ -3,8 +3,11 @@ import logging
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
+from django.core.validators import validate_email
+from django.db.models import Q
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework import generics, permissions, status
@@ -144,8 +147,29 @@ class MeView(APIView):
         if user.role not in (User.Role.ADMIN, User.Role.HEAD):
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
         email = (request.data.get("email") or "").strip()
-        if email and "@" not in email:
-            return Response({"detail": "Enter a valid email address."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if email:
+            try:
+                validate_email(email)
+            except DjangoValidationError:
+                return Response({"detail": "Enter a valid email address."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # The email doubles as a login identifier (login accepts username OR
+            # email), so it MUST be unique across accounts. Without this check an
+            # admin could set their MFA email to a supplier's address and hijack
+            # that supplier's login — the account lookup would then match two
+            # users and silently resolve to the wrong one.
+            clash = (
+                User.objects.filter(Q(email__iexact=email) | Q(username__iexact=email))
+                .exclude(pk=user.pk)
+                .exists()
+            )
+            if clash:
+                return Response(
+                    {"detail": "That email is already in use by another account. Please use a different address."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         user.email = email
         user.save(update_fields=["email"])
         return Response(UserSerializer(user).data)
@@ -267,6 +291,35 @@ class MFAConfirmView(APIView):
             "refresh": str(refresh),
             "user": UserSerializer(user).data,
         })
+
+
+class MFAResendView(APIView):
+    """POST {mfa_token} → generate a fresh OTP and email it again.
+
+    Used by the "Resend code" button on the login MFA step, when the first
+    code never arrived or expired. AllowAny + validated by the same signed
+    mfa_token as MFAConfirmView, because the caller has no JWT yet."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [LoginRateThrottle]
+
+    def post(self, request):
+        mfa_token = request.data.get("mfa_token", "")
+        try:
+            user_pk = TimestampSigner().unsign(mfa_token, max_age=300)
+        except (BadSignature, SignatureExpired):
+            return Response(
+                {"detail": "Your session has expired. Please log in again."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = User.objects.filter(pk=user_pk).first()
+        if not user:
+            return Response({"detail": "Invalid session."}, status=status.HTTP_400_BAD_REQUEST)
+
+        code = MFACode.generate_for(user)
+        send_mfa_code_email(user, code)
+        return Response({"detail": "A new verification code has been sent to your email address."})
 
 
 class MFASendCodeView(APIView):

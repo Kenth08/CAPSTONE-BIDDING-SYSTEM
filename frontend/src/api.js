@@ -317,6 +317,25 @@ export async function apiMfaConfirm(mfa_token, code) {
   }
   return res.json()
 }
+// Resend the login OTP using the signed mfa_token (still on the code-entry
+// step, before any JWT exists — so raw fetch, like apiMfaConfirm above).
+export async function apiMfaResend(mfa_token) {
+  let res
+  try {
+    res = await fetch(`${API_URL}/auth/mfa/resend/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mfa_token }),
+    })
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(readError(body, 'Could not resend the code. Please try again.'))
+  }
+  return res.json()
+}
 // Send a fresh OTP to the signed-in user's email (for enable/disable setup).
 export const apiMfaSendCode = () =>
   apiFetch('/auth/mfa/send-code/', { method: 'POST', body: '{}' })
