@@ -186,10 +186,10 @@ export default function LandingPage() {
             <a href="#roles">Roles</a>
           </div>
           <div className="lp-footer-col">
-            <h4>COMPANY</h4>
-            <a href="#">About</a>
-            <a href="#">Documentation</a>
-            <a href="#">Support</a>
+            <h4>EXPLORE</h4>
+            <Link to="/public">Public Results</Link>
+            <a href="#how-it-works">How It Works</a>
+            <Link to="/register">Register as Supplier</Link>
           </div>
           <div className="lp-footer-col">
             <h4>LEGAL</h4>
@@ -200,8 +200,8 @@ export default function LandingPage() {
         <div className="lp-footer-bottom">
           <span>© 2026 E-Procurement Blockchain System. All rights reserved.</span>
           <div className="lp-footer-links">
-            <a href="#">Security</a>
-            <a href="#">Status</a>
+            <Link to="/privacy">Privacy</Link>
+            <Link to="/terms">Terms</Link>
           </div>
         </div>
       </footer>
