@@ -18,13 +18,12 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         # --- Role accounts -------------------------------------------------
-        # Admin and Head log in with a plain username (not an email).
-        # Their email is intentionally blank — they set it themselves on the
-        # Security page before enabling MFA.
+        # Admin and Head can sign in with either their plain username
+        # (admin / head) or their email address below.
         # (username, email, password, role, full_name, is_super)
         accounts = [
-            ("admin", "", "admin123", "admin", "System Administrator", True),
-            ("head", "", "head123", "head", "Department Head", False),
+            ("admin", "admin@gmail.com", "admin123", "admin", "System Administrator", True),
+            ("head", "head@gmail.com", "head123", "head", "Department Head", False),
             ("supplier", "supplier@gmail.com", "password123", "supplier", "Kenthcharles Repollo", False),
         ]
         # Clean up any older demo accounts (email-based or bare-role variants).

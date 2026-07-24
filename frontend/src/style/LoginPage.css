@@ -190,12 +190,7 @@
   color: var(--text-muted);
 }
 
-.mfa-code-input {
-  font-size: 24px;
-  letter-spacing: 0.4em;
-  text-align: center;
-  font-weight: 600;
-}
+/* Resend link/message — used by the password-reset flow. */
 .login-resend {
   text-align: center;
   font-size: 13px;
