@@ -16,6 +16,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from procurement.permissions import IsAdminRole
 
+from .audit import log_action
 from .emails import send_verification_email
 from .serializers import (
     ChangePasswordSerializer,
@@ -46,6 +47,19 @@ class LoginView(TokenObtainPairView):
 
     serializer_class = RoleTokenObtainPairSerializer
     throttle_classes = [LoginRateThrottle]
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        # Only a 200 is a real, successful sign-in worth recording.
+        if response.status_code == 200:
+            info = response.data.get("user") or {}
+            user = User.objects.filter(id=info.get("id")).first()
+            log_action(
+                request, "auth.login", user=user,
+                entity_type="User", entity_id=info.get("id", ""),
+                description=f"{info.get('username', '')} logged in.",
+            )
+        return response
 
 
 class RegisterView(generics.CreateAPIView):
@@ -229,4 +243,10 @@ class LogoutView(APIView):
                 RefreshToken(refresh).blacklist()
             except TokenError:
                 pass
+        if getattr(request.user, "is_authenticated", False):
+            log_action(
+                request, "auth.logout",
+                entity_type="User", entity_id=request.user.id,
+                description=f"{request.user.username} logged out.",
+            )
         return Response(status=status.HTTP_205_RESET_CONTENT)

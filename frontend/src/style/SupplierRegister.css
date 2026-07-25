@@ -1,5 +1,6 @@
 .sr-page {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   display: grid;
   grid-template-columns: 320px 1fr;
 }
@@ -251,7 +252,7 @@
 .sr-success-card p { font-size: 14px; color: var(--text-gray); line-height: 1.6; margin-bottom: 24px; }
 
 @media (max-width: 880px) {
-  .sr-page { grid-template-columns: 1fr; }
+  .sr-page { grid-template-columns: 1fr; height: auto; overflow: visible; }
   .sr-aside { position: static; height: auto; flex-direction: row; flex-wrap: wrap; gap: 16px; }
   .sr-aside-mid h1 { font-size: 24px; }
   .sr-main { padding: 28px 20px; }

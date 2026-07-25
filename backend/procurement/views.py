@@ -11,6 +11,8 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.audit import log_action
+
 from .models import (
     BID_DOCUMENT_FIELDS,
     BID_DOCUMENT_KEYS,
@@ -305,6 +307,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
             f"{supplier.company} {verb} \"{project.name}\" ({project.code}).",
             link="/admin/bids",
         )
+        log_action(
+            request, "bid.submitted" if created else "bid.updated",
+            entity_type="Bid", entity_id=bid.id,
+            description=f"{supplier.company} {verb} {project.code} for {amount}.",
+        )
         return Response(
             BidSerializer(bid, context={"request": request}).data,
             status=http_status.HTTP_201_CREATED,
@@ -322,6 +329,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
             f"New procurement \"{project.name}\" ({project.code}) needs your approval.",
             link="/head/pending",
         )
+        log_action(
+            self.request, "project.created",
+            entity_type="Project", entity_id=project.id,
+            description=f"Created procurement {project.code} - {project.name} (sent for approval).",
+        )
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
@@ -335,6 +347,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
             [project.created_by],
             f"Your procurement \"{project.name}\" ({project.code}) was approved by the Head.",
             link="/admin/projects",
+        )
+        log_action(
+            request, "project.approved",
+            entity_type="Project", entity_id=project.id,
+            description=f"Head approved procurement {project.code}.",
         )
         return Response(self.get_serializer(project).data)
 
@@ -352,6 +369,12 @@ class ProjectViewSet(viewsets.ModelViewSet):
             f"Your procurement \"{project.name}\" ({project.code}) was rejected by the Head."
             + (f" Reason: {reason}" if reason else ""),
             link="/admin/projects",
+        )
+        log_action(
+            request, "project.rejected",
+            entity_type="Project", entity_id=project.id,
+            description=f"Head rejected procurement {project.code}."
+            + (f" Reason: {reason}" if reason else ""),
         )
         return Response(self.get_serializer(project).data)
 
@@ -395,6 +418,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
             f"The Head requested a revision on \"{project.name}\" ({project.code}): {flagged}. "
             "Please re-upload the flagged document(s).",
             link="/admin/planning",
+        )
+        log_action(
+            request, "project.revision_requested",
+            entity_type="Project", entity_id=project.id,
+            description=f"Head requested revision on {project.code}: {flagged}.",
         )
         return Response(self.get_serializer(project).data)
 
@@ -469,6 +497,12 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 f"New procurement open for bidding: \"{project.name}\" ({project.code}).",
                 link="/supplier/projects",
             )
+        log_action(
+            request, "project.published",
+            entity_type="Project", entity_id=project.id,
+            description=f"Published {project.code} for bidding"
+            + (f" (deadline {project.deadline})." if project.deadline else "."),
+        )
         return Response(self.get_serializer(project).data)
 
     @action(detail=False, methods=["get"])
@@ -596,6 +630,11 @@ class SupplierViewSet(viewsets.ModelViewSet):
             link="/supplier/projects",
             email_subject="Your E-Procurement supplier account has been verified",
         )
+        log_action(
+            request, "supplier.verified",
+            entity_type="Supplier", entity_id=supplier.id,
+            description=f"Verified supplier {supplier.company}.",
+        )
         return self._detail_response(supplier)
 
     @action(detail=True, methods=["post"])
@@ -611,6 +650,12 @@ class SupplierViewSet(viewsets.ModelViewSet):
             "Your supplier registration was rejected." + (f" Reason: {reason}" if reason else ""),
             link="/supplier/profile",
             email_subject="Your E-Procurement supplier registration was rejected",
+        )
+        log_action(
+            request, "supplier.rejected",
+            entity_type="Supplier", entity_id=supplier.id,
+            description=f"Rejected supplier {supplier.company}."
+            + (f" Reason: {reason}" if reason else ""),
         )
         return self._detail_response(supplier)
 
@@ -658,6 +703,11 @@ class SupplierViewSet(viewsets.ModelViewSet):
             link="/supplier/profile",
             email_subject="Action needed on your E-Procurement supplier documents",
         )
+        log_action(
+            request, "supplier.revision_requested",
+            entity_type="Supplier", entity_id=supplier.id,
+            description=f"Requested document revision from {supplier.company}: {flagged}.",
+        )
         return self._detail_response(supplier)
 
 
@@ -704,6 +754,11 @@ class BidViewSet(viewsets.ModelViewSet):
             link="/supplier/bids",
             email_subject=f"Your bid on {bid.project.code} qualified for evaluation",
         )
+        log_action(
+            request, "bid.qualified",
+            entity_type="Bid", entity_id=bid.id,
+            description=f"Qualified {bid.supplier.company}'s bid on {bid.project.code}.",
+        )
         return self._set_status(bid, Bid.Status.QUALIFIED)
 
     @action(detail=True, methods=["post"])
@@ -715,6 +770,11 @@ class BidViewSet(viewsets.ModelViewSet):
             f"Your bid on \"{bid.project.name}\" ({bid.project.code}) was disqualified.",
             link="/supplier/bids",
             email_subject=f"Your bid on {bid.project.code} was disqualified",
+        )
+        log_action(
+            request, "bid.disqualified",
+            entity_type="Bid", entity_id=bid.id,
+            description=f"Disqualified {bid.supplier.company}'s bid on {bid.project.code}.",
         )
         return self._set_status(bid, Bid.Status.DISQUALIFIED)
 
@@ -862,6 +922,11 @@ class BidViewSet(viewsets.ModelViewSet):
             Notification.objects.create(user=user, message=msg, link="/supplier/bids")
             email_user(user, subject, msg)
 
+        log_action(
+            request, "project.awarded",
+            entity_type="Project", entity_id=project.id,
+            description=f"Awarded {project.code} to {bid.supplier.company} for {bid.amount}.",
+        )
         return Response(self.get_serializer(bid).data)
 
 
