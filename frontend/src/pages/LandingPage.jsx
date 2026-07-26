@@ -18,9 +18,16 @@ const FEATURES = [
   { icon: Shield, title: 'Blockchain Transparency', desc: 'Every final award is verifiable, traceable, and resistant to hidden edits.' },
   { icon: Lock, title: 'Secure Bid Submission', desc: 'Suppliers submit through a protected channel built for integrity.' },
   { icon: BarChart2, title: 'Real-time Monitoring', desc: 'Admins track live bid activity while the process stays controlled.' },
-  { icon: BarChart2, title: 'Automated Evaluation', desc: 'Bids organized to support faster and consistent decision-making.' },
+  { icon: ClipboardCheck, title: 'Structured Evaluation', desc: 'Bids organized to support faster and consistent decision-making.' },
   { icon: Users, title: 'Supplier Management', desc: 'Manage registered vendors, submissions, and participation with clarity.' },
-  { icon: Link2, title: 'Immutable Audit Trail', desc: 'A permanent chain of records supports accountability and compliance.' },
+  { icon: Link2, title: 'Immutable Audit Trail', desc: 'Every key action is logged, supporting accountability and compliance.' },
+]
+
+const STATS = [
+  { value: '6-Step', label: 'Structured procurement workflow' },
+  { value: '3 Roles', label: 'Admin · Head · Supplier' },
+  { value: '100%', label: 'Key actions logged to audit trail' },
+  { value: 'Immutable', label: 'Verifiable award records' },
 ]
 
 const ROLES = [
@@ -79,7 +86,11 @@ export default function LandingPage() {
       {/* Hero */}
       <section className="lp-hero">
         <div className="lp-hero-grid" />
+        <div className="lp-hero-glow" />
         <div className="lp-hero-content">
+          <div className="lp-hero-badge">
+            <span className="lp-dot" /> Blockchain-Verified Procurement Platform
+          </div>
           <h1>
             Transparent Procurement,{' '}
             <span className="lp-accent">Secured by Blockchain</span>
@@ -96,9 +107,23 @@ export default function LandingPage() {
               Register as Supplier
             </Link>
           </div>
-          <p className="lp-hero-hint">
-            New supplier? <Link to="/register" className="lp-hint-link">Register as Supplier</Link>
-          </p>
+          <ul className="lp-hero-trust">
+            <li><CheckCircle size={14} /> RA 9184-aligned workflow</li>
+            <li><CheckCircle size={14} /> Tamper-proof award records</li>
+            <li><CheckCircle size={14} /> Public result verification</li>
+          </ul>
+        </div>
+      </section>
+
+      {/* Stats band */}
+      <section className="lp-stats">
+        <div className="lp-stats-inner">
+          {STATS.map(({ value, label }) => (
+            <div className="lp-stat" key={label}>
+              <div className="lp-stat-value">{value}</div>
+              <div className="lp-stat-label">{label}</div>
+            </div>
+          ))}
         </div>
       </section>
 

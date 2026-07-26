@@ -88,15 +88,45 @@
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(16, 185, 129, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(16, 185, 129, 0.04) 1px, transparent 1px);
+    linear-gradient(rgba(16, 185, 129, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(16, 185, 129, 0.05) 1px, transparent 1px);
   background-size: 60px 60px;
+  /* Fade the grid toward the edges so it reads as ambient texture, not a table. */
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 40%, transparent 100%);
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 40%, transparent 100%);
+}
+
+/* Soft emerald glow behind the headline for depth. */
+.lp-hero-glow {
+  position: absolute;
+  top: 20%;
+  left: 50%;
+  width: 720px;
+  height: 480px;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, rgba(16, 185, 129, 0.18) 0%, transparent 65%);
+  filter: blur(20px);
+  pointer-events: none;
 }
 
 .lp-hero-content {
   position: relative;
   max-width: 760px;
   padding: 0 24px;
+}
+
+.lp-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  color: var(--primary-light);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 28px;
 }
 .lp-hero-content h1 {
   font-size: clamp(36px, 6vw, 72px);
@@ -120,12 +150,63 @@
   justify-content: center;
   margin-bottom: 16px;
 }
-.lp-hero-hint {
+.lp-hero-trust {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px 24px;
+  margin-top: 28px;
+}
+.lp-hero-trust li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13.5px;
+  color: var(--text-light);
+}
+.lp-hero-trust svg { color: var(--primary); flex-shrink: 0; }
+
+/* STATS BAND */
+.lp-stats {
+  background: var(--dark-bg-2);
+  border-top: 1px solid var(--dark-border);
+  border-bottom: 1px solid var(--dark-border);
+  padding: 40px;
+}
+.lp-stats-inner {
+  max-width: 1000px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 24px;
+}
+.lp-stat {
+  text-align: center;
+  position: relative;
+}
+.lp-stat + .lp-stat::before {
+  content: '';
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 40px;
+  width: 1px;
+  background: var(--dark-border);
+}
+.lp-stat-value {
+  font-size: clamp(24px, 3vw, 34px);
+  font-weight: 800;
+  color: var(--primary);
+  line-height: 1.1;
+  margin-bottom: 6px;
+}
+.lp-stat-label {
   font-size: 13px;
   color: var(--text-muted);
+  line-height: 1.5;
 }
-.lp-hint-link { color: var(--primary); font-weight: 600; }
-.lp-hint-link:hover { text-decoration: underline; }
 
 /* SECTIONS */
 .lp-section {
@@ -168,6 +249,18 @@
   gap: 24px;
   max-width: 1100px;
   margin: 0 auto;
+  position: relative;
+}
+/* Connector line running behind the step icons to show the flow. */
+.lp-steps::before {
+  content: '';
+  position: absolute;
+  top: 28px;
+  left: 8%;
+  right: 8%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--light-border) 12%, var(--light-border) 88%, transparent);
+  z-index: 0;
 }
 .lp-step {
   text-align: center;
@@ -175,17 +268,26 @@
   flex-direction: column;
   align-items: center;
   gap: 8px;
+  position: relative;
+  z-index: 1;
 }
 .lp-step-icon {
   width: 56px;
   height: 56px;
-  background: #1e293b;
+  background: var(--dark-bg);
+  border: 2px solid #1e293b;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--primary);
   margin-bottom: 4px;
+  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+.lp-step:hover .lp-step-icon {
+  transform: translateY(-3px);
+  border-color: var(--primary);
+  box-shadow: 0 8px 20px rgba(16, 185, 129, 0.25);
 }
 .lp-step-num {
   font-size: 11px;
@@ -205,7 +307,7 @@
 }
 
 /* KEY FEATURES */
-.lp-features-sec { background: #f8fafc; max-width: 100%; padding: 80px 40px; }
+.lp-features-sec { background: #ffffff; max-width: 100%; padding: 80px 40px; }
 .lp-features-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -218,11 +320,12 @@
   border: 1px solid var(--light-border);
   border-radius: 14px;
   padding: 32px 28px;
-  transition: box-shadow 0.2s, transform 0.2s;
+  transition: box-shadow 0.2s, transform 0.2s, border-color 0.2s;
 }
 .lp-feature-card:hover {
-  box-shadow: 0 8px 32px rgba(0,0,0,0.08);
-  transform: translateY(-2px);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.1);
+  transform: translateY(-3px);
+  border-color: rgba(16, 185, 129, 0.4);
 }
 .lp-feature-icon {
   width: 44px;
@@ -235,6 +338,12 @@
   justify-content: center;
   color: var(--text-gray);
   margin-bottom: 16px;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.lp-feature-card:hover .lp-feature-icon {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: var(--primary);
 }
 .lp-feature-card h3 {
   font-size: 16px;
@@ -443,10 +552,13 @@
 .lp-footer-links a:hover { color: white; }
 
 @media (max-width: 1024px) {
-  .lp-steps { grid-template-columns: repeat(3, 1fr); }
+  .lp-steps { grid-template-columns: repeat(3, 1fr); row-gap: 36px; }
+  .lp-steps::before { display: none; }
   .lp-features-grid { grid-template-columns: repeat(2, 1fr); }
   .lp-roles-grid { grid-template-columns: repeat(1, 1fr); }
   .lp-footer-top { grid-template-columns: 1fr 1fr; gap: 32px; }
+  .lp-stats-inner { grid-template-columns: repeat(2, 1fr); gap: 32px 24px; }
+  .lp-stat + .lp-stat::before { display: none; }
 }
 @media (max-width: 640px) {
   .lp-nav { padding: 0 20px; }
