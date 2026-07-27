@@ -39,6 +39,25 @@ BID_DOCUMENT_FIELDS = [
 BID_DOCUMENT_KEYS = [key for key, _, _ in BID_DOCUMENT_FIELDS]
 
 
+# Post-award documents in the order real procurement issues them: the BAC
+# resolves to award, the winner is formally notified (NOA), then authorised to
+# start work (NTP). Each is (model field, human label, blockchain stage).
+#
+# These are the documents a dispute actually turns on — an NTP fixes when the
+# delivery clock started, so backdating one is a classic way to hide a late
+# delivery. Every upload is hashed and anchored, which makes that impossible to
+# do quietly.
+# (model field, human label, blockchain stage, "issued at" field)
+AWARD_DOCUMENT_FIELDS = [
+    ("award_resolution", "BAC Resolution", "RESOLUTION_ISSUED", "resolution_issued_at"),
+    ("notice_of_award", "Notice of Award (NOA)", "NOA_ISSUED", "noa_issued_at"),
+    ("notice_to_proceed", "Notice to Proceed (NTP)", "NTP_ISSUED", "ntp_issued_at"),
+]
+AWARD_DOCUMENT_KEYS = [key for key, _, _, _ in AWARD_DOCUMENT_FIELDS]
+AWARD_DOCUMENT_STAGES = {key: stage for key, _, stage, _ in AWARD_DOCUMENT_FIELDS}
+AWARD_DOCUMENT_ISSUED_FIELDS = {key: issued for key, _, _, issued in AWARD_DOCUMENT_FIELDS}
+
+
 # Single source of truth for procurement/business categories — used BOTH for
 # supplier registration (a supplier may pick several) and for the procurement
 # category on a project (exactly one). Supplier eligibility = the project's
@@ -80,6 +99,16 @@ def procurement_image_path(instance, filename):
     ext = ext.lower()[:10]
     unique = uuid.uuid4().hex[:8]
     return f"procurement_images/{base}_{unique}{ext}"
+
+
+def award_doc_path(instance, filename):
+    """Store each post-award document under a per-award folder with a short,
+    sanitized, unique name (same convention as procurement_doc_path)."""
+    base, ext = os.path.splitext(filename)
+    base = get_valid_filename(base)[:40] or "doc"
+    ext = ext.lower()[:10]
+    unique = uuid.uuid4().hex[:8]
+    return f"award_docs/{instance.pk or 'new'}/{base}_{unique}{ext}"
 
 
 def supplier_doc_path(instance, filename):
@@ -382,6 +411,25 @@ class Award(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.WON)
     awarded_at = models.DateField(auto_now_add=True)
 
+    # ── Post-award documents (see AWARD_DOCUMENT_FIELDS) ──────────────────────
+    # Uploaded by the Admin as signed PDFs, never generated: a Notice of Award is
+    # a signed instrument in the real world, and only a real stored file has a
+    # stable hash worth anchoring. Each `*_issued_at` is set when its document is
+    # uploaded, so "when was the NTP issued" is answerable from the record and is
+    # part of what gets hashed on-chain.
+    award_resolution = models.FileField(
+        upload_to=award_doc_path, validators=[validate_upload],
+        max_length=255, blank=True, null=True)
+    notice_of_award = models.FileField(
+        upload_to=award_doc_path, validators=[validate_upload],
+        max_length=255, blank=True, null=True)
+    notice_to_proceed = models.FileField(
+        upload_to=award_doc_path, validators=[validate_upload],
+        max_length=255, blank=True, null=True)
+    resolution_issued_at = models.DateTimeField(null=True, blank=True)
+    noa_issued_at = models.DateTimeField(null=True, blank=True)
+    ntp_issued_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-awarded_at"]
 
@@ -438,6 +486,11 @@ class BlockchainAnchor(models.Model):
         BID_QUALIFIED = "BID_QUALIFIED", "Bid qualified"
         BID_DISQUALIFIED = "BID_DISQUALIFIED", "Bid disqualified"
         AWARDED = "AWARDED", "Contract awarded"
+        # Post-award documents — the lifecycle doesn't end at the award; these
+        # are the instruments a later dispute turns on (see AWARD_DOCUMENT_FIELDS).
+        RESOLUTION_ISSUED = "RESOLUTION_ISSUED", "BAC Resolution issued"
+        NOA_ISSUED = "NOA_ISSUED", "Notice of Award issued"
+        NTP_ISSUED = "NTP_ISSUED", "Notice to Proceed issued"
 
     entity_type = models.CharField(max_length=10, choices=EntityType.choices)
     # The procurement code (e.g. "P-2026-001") for EVERY anchor — project, bid

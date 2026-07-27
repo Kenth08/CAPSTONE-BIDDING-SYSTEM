@@ -50,7 +50,7 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit} className="login-form">
             <div className="form-group">
               <label>Username or Email</label>
-              <input type="text" placeholder="you@example.com" value={form.identifier} onChange={e => setForm({ ...form, identifier: e.target.value })} required />
+              <input type="text" placeholder="Email" value={form.identifier} onChange={e => setForm({ ...form, identifier: e.target.value })} required />
             </div>
             <div className="form-group">
               <label>Password</label>

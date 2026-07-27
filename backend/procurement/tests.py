@@ -9,7 +9,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .blockchain import hash_file, hash_payload, record_anchor
+from .blockchain import hash_file, hash_payload, record_anchor, verify_anchor
 from .models import Award, Bid, BlockchainAnchor, Project, Supplier
 
 User = get_user_model()
@@ -498,6 +498,279 @@ class BlockchainAnchorTests(APITestCase):
         self.assertEqual(len(res.data["anchors"]), 1)
         # Hashes only — never the payload, bid amounts, or supplier identities.
         self.assertNotIn("payload", res.data["anchors"][0])
+
+    def test_award_document_upload_anchors_with_its_issue_date(self):
+        # The NOA/NTP/Resolution are the instruments a later dispute turns on,
+        # so each upload is anchored with BOTH the file hash and the issue date.
+        project = make_project(status=Project.Status.AWARDED)
+        supplier = make_supplier(verified=True)
+        award = Award.objects.create(project=project, supplier=supplier, amount=1000)
+
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f"/api/awards/{award.pk}/documents/",
+            {"key": "notice_to_proceed", "file": dummy_pdf("ntp.pdf")},
+            format="multipart",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        award.refresh_from_db()
+        self.assertTrue(award.notice_to_proceed)
+        self.assertIsNotNone(award.ntp_issued_at)
+
+        anchor = BlockchainAnchor.objects.get(stage=BlockchainAnchor.Stage.NTP_ISSUED)
+        self.assertEqual(anchor.entity_ref, project.code)
+        self.assertTrue(anchor.document_hash.startswith("0x"))
+        # The issue date is inside the hashed payload — that's what makes a
+        # backdated notice detectable.
+        self.assertTrue(anchor.payload["issued_at"])
+        self.assertEqual(res.data["anchor"]["stage"], "NTP_ISSUED")
+
+    def test_replacing_an_award_document_appends_a_new_anchor(self):
+        # A replacement must never overwrite the original entry — the trail has
+        # to show that a document was swapped.
+        project = make_project(status=Project.Status.AWARDED)
+        award = Award.objects.create(
+            project=project, supplier=make_supplier(verified=True), amount=1000)
+
+        self.client.force_authenticate(user=self.admin)
+        for name in ("noa-v1.pdf", "noa-v2.pdf"):
+            self.client.post(
+                f"/api/awards/{award.pk}/documents/",
+                {"key": "notice_of_award", "file": dummy_pdf(name)},
+                format="multipart",
+            )
+        anchors = BlockchainAnchor.objects.filter(stage=BlockchainAnchor.Stage.NOA_ISSUED)
+        self.assertEqual(anchors.count(), 2)
+        self.assertNotEqual(anchors[0].data_hash, anchors[1].data_hash)
+
+    def test_award_document_upload_rejects_an_unknown_key(self):
+        project = make_project(status=Project.Status.AWARDED)
+        award = Award.objects.create(
+            project=project, supplier=make_supplier(verified=True), amount=1000)
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f"/api/awards/{award.pk}/documents/",
+            {"key": "contract", "file": dummy_pdf()},
+            format="multipart",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_generated_document_is_stored_once_and_anchored(self):
+        # Generating fills the notice in from the award record, stores the PDF,
+        # and anchors the hash of the STORED file.
+        project = make_project(status=Project.Status.AWARDED)
+        supplier = make_supplier(verified=True)
+        award = Award.objects.create(project=project, supplier=supplier, amount=100000)
+
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f"/api/awards/{award.pk}/documents/generate/",
+            {"key": "notice_of_award"}, format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        award.refresh_from_db()
+        self.assertTrue(award.notice_of_award.name.endswith(".pdf"))
+        self.assertIsNotNone(award.noa_issued_at)
+
+        anchor = BlockchainAnchor.objects.get(stage=BlockchainAnchor.Stage.NOA_ISSUED)
+        # The anchored hash must be the hash of the file actually on disk —
+        # that's the only way a downloader can ever reproduce it.
+        self.assertEqual(anchor.document_hash, hash_file(award.notice_of_award))
+
+    def test_stored_document_hash_is_stable_across_reads(self):
+        # The whole verification story depends on this: the file is generated
+        # ONCE, so hashing it again later gives the same digest. (Regenerating
+        # per download would embed a new PDF timestamp and break verification.)
+        project = make_project(status=Project.Status.AWARDED)
+        award = Award.objects.create(
+            project=project, supplier=make_supplier(verified=True), amount=100000)
+
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(
+            f"/api/awards/{award.pk}/documents/generate/",
+            {"key": "notice_to_proceed"}, format="json",
+        )
+        award.refresh_from_db()
+        self.assertEqual(hash_file(award.notice_to_proceed), hash_file(award.notice_to_proceed))
+
+    def test_generated_documents_carry_the_award_details(self):
+        from .documents import build_bac_resolution, build_notice_of_award
+
+        project = make_project(status=Project.Status.AWARDED)
+        award = Award.objects.create(
+            project=project, supplier=make_supplier(verified=True), amount=100000)
+        for build in (build_notice_of_award, build_bac_resolution):
+            pdf = build(award)
+            self.assertTrue(pdf.startswith(b"%PDF"))
+            self.assertGreater(len(pdf), 800)
+
+    def test_generate_rejects_an_unknown_document_key(self):
+        award = Award.objects.create(
+            project=make_project(status=Project.Status.AWARDED),
+            supplier=make_supplier(verified=True), amount=1000)
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f"/api/awards/{award.pk}/documents/generate/", {"key": "contract"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_supplier_cannot_generate_award_documents(self):
+        supplier = make_supplier(verified=True)
+        award = Award.objects.create(
+            project=make_project(status=Project.Status.AWARDED), supplier=supplier, amount=1000)
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.post(
+            f"/api/awards/{award.pk}/documents/generate/",
+            {"key": "notice_of_award"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_winner_can_read_their_own_award_documents(self):
+        # The Notice of Award is addressed to the supplier — receiving it starts
+        # the clock for posting their performance security — so the winner must
+        # be able to collect it.
+        project = make_project(status=Project.Status.AWARDED)
+        supplier = make_supplier(verified=True)
+        award = Award.objects.create(project=project, supplier=supplier, amount=1000)
+
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(
+            f"/api/awards/{award.pk}/documents/",
+            {"key": "notice_of_award", "file": dummy_pdf("noa.pdf")},
+            format="multipart",
+        )
+
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.get("/api/awards/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+        noa = next(d for d in res.data[0]["documents"] if d["key"] == "notice_of_award")
+        self.assertTrue(noa["url"])
+        self.assertTrue(noa["issued_at"])
+
+    def test_supplier_cannot_see_another_suppliers_award(self):
+        winner = make_supplier(verified=True)
+        rival = make_supplier(verified=True)
+        Award.objects.create(
+            project=make_project(status=Project.Status.AWARDED), supplier=winner, amount=1000)
+
+        self.client.force_authenticate(user=rival.user)
+        res = self.client.get("/api/awards/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data, [])
+
+    def test_supplier_cannot_modify_an_award(self):
+        supplier = make_supplier(verified=True)
+        award = Award.objects.create(
+            project=make_project(status=Project.Status.AWARDED), supplier=supplier, amount=1000)
+        self.client.force_authenticate(user=supplier.user)
+        # Read is allowed, writing is not — the supplier receives documents,
+        # never issues or alters them.
+        self.assertEqual(
+            self.client.patch(f"/api/awards/{award.pk}/", {"amount": "999999"}, format="json").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.delete(f"/api/awards/{award.pk}/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_only_admin_can_issue_award_documents(self):
+        project = make_project(status=Project.Status.AWARDED)
+        supplier = make_supplier(verified=True)
+        award = Award.objects.create(project=project, supplier=supplier, amount=1000)
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.post(
+            f"/api/awards/{award.pk}/documents/",
+            {"key": "notice_of_award", "file": dummy_pdf()},
+            format="multipart",
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_integrity_check_passes_for_an_untouched_record(self):
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        anchor = BlockchainAnchor.objects.get(stage=BlockchainAnchor.Stage.HEAD_APPROVED)
+
+        result = verify_anchor(anchor)
+        self.assertEqual(result["status"], "match")
+        self.assertEqual(result["record"], "match")
+
+    def test_integrity_check_detects_an_edited_record(self):
+        # THE point of the whole feature: comparing the stored hash with the
+        # chain only proves the anchor row is intact. This proves the record
+        # behind it is — an amount changed straight in the database no longer
+        # hashes to what was published, and can't be hidden.
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        anchor = BlockchainAnchor.objects.get(stage=BlockchainAnchor.Stage.HEAD_APPROVED)
+        self.assertEqual(verify_anchor(anchor)["status"], "match")
+
+        Project.objects.filter(pk=self.project.pk).update(budget=999999)
+
+        result = verify_anchor(anchor)
+        self.assertEqual(result["status"], "mismatch")
+        self.assertEqual(result["record"], "mismatch")
+        self.assertIn("altered", result["detail"].lower())
+
+    def test_deep_check_detects_a_swapped_document(self):
+        # A record can be left untouched while the DOCUMENT it points at is
+        # quietly replaced — caught only by re-hashing the file itself.
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        project.approved_budget_document = dummy_pdf("budget.pdf")
+        project.save()
+
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{project.pk}/approve/")
+        anchor = BlockchainAnchor.objects.get(
+            entity_ref=project.code, stage=BlockchainAnchor.Stage.HEAD_APPROVED)
+        self.assertEqual(verify_anchor(anchor, deep=True)["status"], "match")
+
+        project.refresh_from_db()
+        project.approved_budget_document = SimpleUploadedFile(
+            "budget.pdf", b"%PDF-1.4 TAMPERED", content_type="application/pdf")
+        project.save()
+
+        result = verify_anchor(anchor, deep=True)
+        self.assertEqual(result["document"], "mismatch")
+        self.assertEqual(result["status"], "mismatch")
+        # The cheap record-only check can't see a file swap — that's exactly why
+        # the deep check exists.
+        self.assertEqual(verify_anchor(anchor, deep=False)["record"], "match")
+
+    def test_integrity_check_reports_a_deleted_record_honestly(self):
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        anchor = BlockchainAnchor.objects.get(stage=BlockchainAnchor.Stage.HEAD_APPROVED)
+        Project.objects.filter(pk=self.project.pk).delete()
+
+        result = verify_anchor(anchor)
+        # "unavailable", never a false accusation of tampering.
+        self.assertEqual(result["status"], "unavailable")
+        self.assertNotEqual(result["status"], "mismatch")
+
+    def test_public_trail_reports_tampering_to_anyone(self):
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        Project.objects.filter(pk=self.project.pk).update(budget=999999)
+
+        self.client.force_authenticate(user=None)   # a member of the public
+        res = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["altered_count"], 1)
+        self.assertEqual(res.data["anchors"][0]["integrity"]["status"], "mismatch")
+
+    def test_public_trail_skips_document_hashing_unless_asked(self):
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        self.client.force_authenticate(user=None)
+
+        shallow = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/")
+        self.assertFalse(shallow.data["deep_checked"])
+        self.assertEqual(shallow.data["anchors"][0]["integrity"]["document"], "skipped")
+
+        deep = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/?deep=1")
+        self.assertTrue(deep.data["deep_checked"])
 
     def test_public_anchor_trail_404s_on_an_unknown_code(self):
         res = self.client.get("/api/public/procurement/P-9999-999/anchors/")

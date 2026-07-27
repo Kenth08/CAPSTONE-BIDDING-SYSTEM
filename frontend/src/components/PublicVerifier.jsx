@@ -24,6 +24,9 @@ const STAGE_LABEL = {
   BID_QUALIFIED: 'Bid qualified after evaluation',
   BID_DISQUALIFIED: 'Bid disqualified after evaluation',
   AWARDED: 'Contract awarded',
+  RESOLUTION_ISSUED: 'BAC Resolution issued',
+  NOA_ISSUED: 'Notice of Award issued',
+  NTP_ISSUED: 'Notice to Proceed issued',
 }
 
 /**
@@ -54,10 +57,17 @@ function mergeTrail(dbAnchors, chainAnchors) {
       recordedAt: a.recorded_at,
       chainTime: onChain?.timestamp || null,
       actor: onChain?.actor || a.actor_address || '',
+      integrity: a.integrity || null,
+      // 'altered'   — the live record no longer hashes to what was published.
+      //               Checked first: it outranks everything else.
       // 'verified'  — the hash is on the public ledger, matching exactly.
       // 'pending'   — recorded here, never anchored (no wallet/gas at the time).
       // 'unmatched' — anchored per our DB, but not found on the ledger.
-      state: onChain ? 'verified' : a.anchored ? 'unmatched' : 'pending',
+      state:
+        a.integrity?.status === 'mismatch' ? 'altered'
+        : onChain ? 'verified'
+        : a.anchored ? 'unmatched'
+        : 'pending',
     }
   })
 
@@ -80,6 +90,7 @@ function mergeTrail(dbAnchors, chainAnchors) {
 
 const STATE_UI = {
   verified: { cls: 'pv-ok', icon: ShieldCheck, text: 'Verified on-chain' },
+  altered: { cls: 'pv-bad', icon: ShieldX, text: 'Record altered since it was recorded' },
   pending: { cls: 'pv-pending', icon: AlertCircle, text: 'Recorded, not yet anchored' },
   unmatched: { cls: 'pv-bad', icon: ShieldX, text: 'Not found on the ledger' },
   extra: { cls: 'pv-extra', icon: AlertCircle, text: 'On-chain only (not in this system)' },
@@ -105,13 +116,13 @@ export default function PublicVerifier() {
   const [fileHash, setFileHash] = useState('')
   const [hashing, setHashing] = useState(false)
 
-  const lookup = async (e) => {
+  const lookup = async (e, { deep = false } = {}) => {
     e?.preventDefault()
     const ref = code.trim().toUpperCase()
     if (!ref) return
     setLoading(true); setError(''); setResult(null); setFileHash(''); setFileName('')
     try {
-      const data = await apiPublicAnchors(ref)
+      const data = await apiPublicAnchors(ref, { deep })
       // Read the contract independently. A failure here (no address configured,
       // RPC rate-limited, offline) must not hide the system's own record — it
       // just means the "verified" column can't be filled in right now.
@@ -159,6 +170,7 @@ export default function PublicVerifier() {
     : null
 
   const verifiedCount = (result?.rows || []).filter((r) => r.state === 'verified').length
+  const alteredCount = result?.project?.altered_count || 0
 
   return (
     <section className="pv">
@@ -211,8 +223,43 @@ export default function PublicVerifier() {
               <span className={verifiedCount > 0 ? 'pv-chip pv-ok' : 'pv-chip pv-pending'}>
                 {verifiedCount} of {result.rows.filter((r) => r.state !== 'extra').length} steps verified on-chain
               </span>
+              {/* Re-reads every anchored file and re-hashes it, catching a
+                  document swapped after the fact. On demand because it costs a
+                  full storage read per step. */}
+              <button
+                className="pv-deep-btn"
+                onClick={() => lookup(null, { deep: true })}
+                disabled={loading || result.project.deep_checked}
+                title="Re-read every anchored document and re-hash it"
+              >
+                {result.project.deep_checked ? (
+                  <><CheckCircle2 size={12} /> Documents checked</>
+                ) : (
+                  <><FileSearch size={12} /> Re-check documents</>
+                )}
+              </button>
             </div>
           </div>
+
+          {/* The headline finding. A single altered record matters more than
+              every step that is still intact, so it goes above the trail. */}
+          {alteredCount > 0 && (
+            <div className="pv-tamper">
+              <ShieldX size={20} />
+              <div>
+                <strong>
+                  {alteredCount} record{alteredCount === 1 ? ' has' : 's have'} been altered since
+                  being recorded on the blockchain.
+                </strong>
+                <p>
+                  The details now stored for the step{alteredCount === 1 ? '' : 's'} marked below no
+                  longer produce the hash that was published on Sepolia. The blockchain entry itself
+                  cannot be changed — so whatever was altered, it was altered afterwards, and this
+                  procurement's record can no longer be trusted as issued.
+                </p>
+              </div>
+            </div>
+          )}
 
           {result.chainError && (
             <div className="pv-note">
@@ -246,6 +293,11 @@ export default function PublicVerifier() {
                         {r.blockNumber ? ` · block ${r.blockNumber}` : ''}
                         {r.actor ? ` · signed by ${r.actor.slice(0, 8)}…${r.actor.slice(-4)}` : ''}
                       </div>
+                      {r.integrity?.detail && (
+                        <div className={`pv-step-detail ${r.state === 'altered' ? 'pv-bad' : ''}`}>
+                          {r.integrity.detail}
+                        </div>
+                      )}
                       <div className="pv-step-hashes">
                         <span className="pv-hash" title={r.dataHash}>record {shortHash(r.dataHash)}</span>
                         {r.documentHash && (

@@ -100,6 +100,22 @@ to Etherscan.
 | 4 | **Supplier** | Bid Opportunities → **Submit bid** (with quotation) | `BID / BID_SUBMITTED` |
 | 5 | **Admin** | Bids → open a bid → **Qualify** / **Disqualify** | `BID / BID_QUALIFIED` · `BID_DISQUALIFIED` |
 | 6 | **Admin** | **Select winner** | `AWARD / AWARDED` |
+| 7 | **Admin** | Awards → upload the signed **BAC Resolution** | `AWARD / RESOLUTION_ISSUED` |
+| 8 | **Admin** | Awards → upload the signed **Notice of Award** | `AWARD / NOA_ISSUED` |
+| 9 | **Admin** | Awards → upload the signed **Notice to Proceed** | `AWARD / NTP_ISSUED` |
+
+Steps 7–9 are the post-award instruments. They are **uploaded, never generated**:
+a Notice of Award is a signed document in the real world, and only a stored file
+has a stable hash worth anchoring (a PDF generated on the fly embeds a creation
+timestamp, so it would hash differently every time and could never be verified
+again). Each is anchored with its file hash **and its issue date** — the two
+things a backdated notice would have to change.
+
+The NTP matters most: it fixes when the supplier may legally start work, which
+sets the delivery clock. Backdating an NTP to hide a late delivery is a classic
+procurement fraud, and anchoring it makes that impossible to do quietly.
+Re-uploading a document appends a *new* anchor rather than replacing the old
+one, so a swap is visible in the trail instead of silently rewriting history.
 
 Where to see it in the UI:
 

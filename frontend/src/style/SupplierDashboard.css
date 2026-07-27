@@ -1037,6 +1037,15 @@
   margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
   font-size: 12px; font-weight: 700; color: #3b82f6; flex-shrink: 0;
 }
+/* "Verified" marker on an award document the supplier received — its hash is
+   anchored on-chain, so they can prove the notice wasn't altered or backdated. */
+.sd-award-doc-chain {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
+  color: #047857; background: #ecfdf5; border: 1px solid #a7f3d0;
+  border-radius: 999px; padding: 2px 8px; flex-shrink: 0;
+}
+
 .sd-doc-expiry { font-size: 11.5px; font-weight: 600; color: var(--text-gray); flex-shrink: 0; }
 .sd-doc-expiry-warn { color: #dc2626; }
 .sd-decl-badges { display: flex; flex-direction: column; gap: 8px; }

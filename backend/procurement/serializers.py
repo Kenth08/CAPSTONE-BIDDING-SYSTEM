@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from .blockchain import anchor_summary, anchors_for
 from .models import (
+    AWARD_DOCUMENT_FIELDS,
     BID_DOCUMENT_FIELDS,
     PROCUREMENT_CATEGORIES,
     PROCUREMENT_DOCUMENT_FIELDS,
@@ -114,7 +115,9 @@ class AnchorTrailMixin:
     anchor_entity_type = None   # None = the whole procurement trail
     anchor_id_attr = None
 
-    def get_anchors(self, obj):
+    def anchor_objects(self, obj):
+        """This record's anchors — the bulk-loaded ones when the view provided
+        them, otherwise queried for this object alone."""
         cached = getattr(obj, "_anchors", None)
         if cached is None:
             cached = anchors_for(
@@ -122,7 +125,11 @@ class AnchorTrailMixin:
                 entity_type=self.anchor_entity_type,
                 entity_id=getattr(obj, self.anchor_id_attr) if self.anchor_id_attr else None,
             )
-        return [anchor_summary(a) for a in cached]
+            obj._anchors = cached   # reuse across fields on the same object
+        return cached
+
+    def get_anchors(self, obj):
+        return [anchor_summary(a) for a in self.anchor_objects(obj)]
 
     def anchor_ref(self, obj):
         return obj.code
@@ -359,16 +366,51 @@ class AwardSerializer(AnchorTrailMixin, serializers.ModelSerializer):
     project_code = serializers.CharField(source="project.code", read_only=True)
     supplier_name = serializers.CharField(source="supplier.company", read_only=True)
     anchors = serializers.SerializerMethodField()
+    documents = serializers.SerializerMethodField()
 
     class Meta:
         model = Award
         fields = [
             "id", "project", "project_name", "project_code", "supplier", "supplier_name",
-            "bid", "amount", "status", "awarded_at", "anchors",
+            "bid", "amount", "status", "awarded_at", "anchors", "documents",
         ]
 
     def anchor_ref(self, obj):
         return obj.project.code
+
+    def get_documents(self, obj):
+        """The three post-award instruments: {key, label, stage, url, issued_at,
+        anchored, anchor}. The blockchain state is resolved from the award's own
+        anchors, so the Awards table shows every document's status without an
+        extra request per row.
+
+        `anchor` is the LATEST anchor for that stage — re-issuing a document
+        appends a new one, and it's the newest that reflects the file currently
+        on record. It carries the data_hash, so a document left un-anchored can
+        be signed later without re-uploading anything."""
+        request = self.context.get("request")
+        by_stage = {}
+        for a in self.anchor_objects(obj):
+            current = by_stage.get(a.stage)
+            if current is None or (a.created_at, a.id) > (current.created_at, current.id):
+                by_stage[a.stage] = a
+
+        out = []
+        for key, label, stage, issued_field in AWARD_DOCUMENT_FIELDS:
+            f = getattr(obj, key, None)
+            anchor = anchor_summary(by_stage.get(stage))
+            out.append({
+                "key": key,
+                "label": label,
+                "stage": stage,
+                "url": (request.build_absolute_uri(f.url) if request else f.url) if f else None,
+                "issued_at": getattr(obj, issued_field, None),
+                "anchored": bool(anchor and anchor["tx_hash"]),
+                "tx_hash": anchor["tx_hash"] if anchor else "",
+                "explorer_url": anchor["explorer_url"] if anchor else "",
+                "anchor": anchor,
+            })
+        return out
 
 
 class DocumentSerializer(serializers.ModelSerializer):

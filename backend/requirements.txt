@@ -12,6 +12,9 @@ gunicorn==23.0.0
 whitenoise==6.8.2
 django-storages==1.14.6
 boto3==1.43.36
+# Generates the official post-award documents (BAC Resolution, NOA, NTP) from
+# the award record — see procurement/documents.py.
+fpdf2==2.8.7
 
 # Optional — only needed for the server-side blockchain signing path
 # (BLOCKCHAIN_SERVER_SIGNING=True). The default MetaMask demo path needs nothing

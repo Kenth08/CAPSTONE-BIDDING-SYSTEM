@@ -1,16 +1,18 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
   Search, ChevronRight, LogOut, Shield,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
   CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock, ArrowLeft,
+  Upload, ShieldCheck, Link2,
 } from 'lucide-react'
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
   apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision, apiAdminRegisterSupplier,
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
   apiListAwards, apiListDocuments, apiBidRequestRevision,
+  apiUploadAwardDocument, apiGenerateAwardDocument,
 } from '../api'
 import {
   useProjects, createProject, publishProject, refreshProjects, isExpired, deadlineLabel, deliveryLabel,
@@ -2597,17 +2599,147 @@ function BidEvaluationPage() {
 
 // ── Awards Page ───────────────────────────────────────────────────────────────
 
+// One post-award document cell: upload it if it hasn't been issued, or open it
+// (with its blockchain state) once it has. Re-uploading is allowed and appends a
+// NEW anchor rather than rewriting the old one, so a replacement is visible in
+// the trail instead of silently overwriting history.
+function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
+  const inputRef = useRef(null)
+  const issued = !!doc.url
+  const shortLabel = doc.label.replace(/ \(.*\)/, '')
+
+  const pick = (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''   // let the same file be re-picked after an error
+    if (file) onUpload(award, doc, file)
+  }
+
+  return (
+    <div className="ad-award-doc">
+      {/* Must match validate_upload on the backend (PDF/JPG/PNG, 5 MB) — an
+          accept list that offers more than the server takes just invites an
+          error at the end of the upload. */}
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".pdf,.jpg,.jpeg,.png"
+        style={{ display: 'none' }}
+        onChange={pick}
+      />
+      {issued ? (
+        <>
+          <div className="ad-award-doc-row">
+            <a className="ad-doc-btn is-issued" href={doc.url} target="_blank" rel="noreferrer" title={`Issued ${fmtDate(doc.issued_at)} — click to open`}>
+              <FileText size={12} /> {shortLabel}
+            </a>
+            {/* Replace the generated notice with the signed scan once it comes
+                back. Appends a new anchor, so both versions stay in the trail. */}
+            <button
+              className="ad-doc-icon-btn"
+              disabled={busy}
+              onClick={() => inputRef.current?.click()}
+              title="Replace with the signed copy"
+            >
+              <Upload size={11} />
+            </button>
+          </div>
+          {doc.anchored ? (
+            <a
+              className="ad-award-doc-chain is-anchored"
+              href={doc.explorer_url}
+              target="_blank"
+              rel="noreferrer"
+              title={`Anchored on-chain (tx ${doc.tx_hash})`}
+            >
+              <ShieldCheck size={11} /> On-chain
+            </a>
+          ) : (
+            // The document is saved either way — this only completes the
+            // optional on-chain step, re-signing the SAME hash. Declining
+            // MetaMask earlier is never a dead end.
+            <button
+              className="ad-award-doc-chain is-retry"
+              onClick={() => onAnchor(award, doc)}
+              disabled={!doc.anchor}
+              title={doc.anchor ? 'Record this document on the blockchain' : 'No anchor was recorded for this document'}
+            >
+              <Link2 size={11} /> {doc.anchor ? 'Anchor now' : 'Not anchored'}
+            </button>
+          )}
+        </>
+      ) : (
+        // Not issued yet: generate it from the award record (the normal path —
+        // nothing to retype, and the notice can't disagree with the award), or
+        // upload an already-signed copy.
+        <div className="ad-award-doc-row">
+          <button className="ad-doc-btn" disabled={busy} onClick={() => onGenerate(award, doc)}>
+            <FileText size={12} /> {busy ? 'Working…' : `Generate ${shortLabel}`}
+          </button>
+          <button
+            className="ad-doc-icon-btn"
+            disabled={busy}
+            onClick={() => inputRef.current?.click()}
+            title="Upload a signed copy instead"
+          >
+            <Upload size={11} />
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AwardsPage() {
   const [awards, setAwards] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [busyDoc, setBusyDoc] = useState(null)   // `${awardId}:${key}` while uploading
+  const [toast, setToast] = useState(null)
+
+  const load = () => apiListAwards().then(setAwards).catch(() => {})
 
   useEffect(() => {
-    apiListAwards()
-      .then(setAwards)
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    load().finally(() => setLoading(false))
   }, [])
+
+  // Upload the signed document, then anchor it. The upload is what matters —
+  // anchoring is the optional on-chain witness and is deliberately not awaited,
+  // so a declined MetaMask prompt never looks like a failed upload.
+  const issueDoc = async (award, doc, run, verb) => {
+    setBusyDoc(`${award.id}:${doc.key}`)
+    try {
+      const updated = await run()
+      setAwards(prev => prev.map(a => (a.id === updated.id ? updated : a)))
+      setToast({ type: 'success', message: `${doc.label} issued for ${award.project_name}.` })
+      if (updated.anchor) {
+        runAnchor(updated.anchor, { label: `${updated.project_code} · ${doc.label}` })
+      }
+    } catch (e) {
+      setToast({ type: 'error', message: e.message || `Could not ${verb} the ${doc.label}.` })
+    } finally {
+      setBusyDoc(null)
+    }
+  }
+
+  // Built server-side from the award record, stored once, then hashed and
+  // anchored. Every later download serves those same bytes, so the hash on the
+  // blockchain stays reproducible.
+  const generateDoc = (award, doc) =>
+    issueDoc(award, doc, () => apiGenerateAwardDocument(award.id, doc.key), 'generate')
+
+  // The signed scan, once the printed notice comes back.
+  const uploadDoc = (award, doc, file) =>
+    issueDoc(award, doc, () => apiUploadAwardDocument(award.id, doc.key, file), 'upload')
+
+  // Complete the on-chain step for a document that was uploaded but never
+  // anchored (MetaMask declined, no wallet at the time). It re-signs the hash
+  // recorded at upload — the document itself is untouched — then refreshes so
+  // the badge flips to "On-chain".
+  const anchorDoc = async (award, doc) => {
+    if (!doc.anchor) return
+    const ok = await runAnchor(doc.anchor, { label: `${award.project_code} · ${doc.label}` })
+    if (ok) load()
+  }
 
   const filtered = awards.filter(a => {
     const q = search.toLowerCase()
@@ -2615,9 +2747,14 @@ function AwardsPage() {
   })
 
   const totalAmount = awards.reduce((sum, a) => sum + Number(a.amount || 0), 0)
+  // Real count of issued documents — not awards × 3, which claimed documents
+  // that had never been uploaded.
+  const documentsIssued = awards.reduce(
+    (sum, a) => sum + (a.documents || []).filter(d => d.url).length, 0)
 
   return (
     <div className="ad-content">
+      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
       <div className="ad-stats">
         <div className="ad-stat-card">
           <div className="ad-stat-label">TOTAL AWARDS</div>
@@ -2628,8 +2765,8 @@ function AwardsPage() {
           <div className="ad-stat-value ad-val-blue">{peso(totalAmount)}</div>
         </div>
         <div className="ad-stat-card">
-          <div className="ad-stat-label">DOCUMENTS AVAILABLE</div>
-          <div className="ad-stat-value ad-val-purple">{awards.length * 3}</div>
+          <div className="ad-stat-label">DOCUMENTS ISSUED</div>
+          <div className="ad-stat-value ad-val-purple">{documentsIssued}<span className="ad-stat-of">/{awards.length * 3}</span></div>
         </div>
         <div className="ad-stat-card">
           <div className="ad-stat-label">LATEST AWARD DATE</div>
@@ -2669,9 +2806,17 @@ function AwardsPage() {
                 <td><span className={`badge ${a.status === 'won' ? 'badge-green' : 'badge-gray'}`}>• {a.status === 'won' ? 'WON' : 'CANCELLED'}</span></td>
                 <td>
                   <div className="ad-doc-btns">
-                    <button className="ad-doc-btn"><FileText size={12} /> NOA</button>
-                    <button className="ad-doc-btn"><FileText size={12} /> NTP</button>
-                    <button className="ad-doc-btn"><FileText size={12} /> Resolution</button>
+                    {(a.documents || []).map(d => (
+                      <AwardDocButton
+                        key={d.key}
+                        award={a}
+                        doc={d}
+                        busy={busyDoc === `${a.id}:${d.key}`}
+                        onUpload={uploadDoc}
+                        onGenerate={generateDoc}
+                        onAnchor={anchorDoc}
+                      />
+                    ))}
                   </div>
                 </td>
               </tr>
@@ -2684,12 +2829,22 @@ function AwardsPage() {
         <Info size={18} className="ad-award-info-icon" />
         <div>
           <div className="ad-bold" style={{ marginBottom: 6 }}>About Award Documents</div>
-          <p className="ad-muted ad-small" style={{ marginBottom: 8 }}>Once a winning bid is selected, three official documents are available:</p>
+          <p className="ad-muted ad-small" style={{ marginBottom: 8 }}>
+            Once a winning bid is selected, upload each signed document below. They are issued in this order:
+          </p>
           <ul className="ad-award-info-list">
+            <li><strong>BAC Resolution:</strong> Official resolution documenting the award decision</li>
             <li><strong>NOA:</strong> Official notification to the winning supplier</li>
             <li><strong>NTP:</strong> Authorization for the supplier to begin work</li>
-            <li><strong>Resolution:</strong> Official resolution documenting the award decision</li>
           </ul>
+          <p className="ad-muted ad-small" style={{ marginTop: 8 }}>
+            Each upload is hashed together with its issue date and recorded on the blockchain, so a
+            notice can never be swapped or backdated afterwards. Replacing a document adds a new
+            entry to the trail rather than overwriting the original.
+          </p>
+          <p className="ad-muted ad-small" style={{ marginTop: 6 }}>
+            Accepted formats: PDF, JPG or PNG, up to 5 MB. Scan or export the signed document.
+          </p>
         </div>
       </div>
     </div>

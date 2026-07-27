@@ -18,7 +18,8 @@ A full-stack procurement management web application built as a capstone project.
 ### Blockchain Audit Trail (Sepolia)
 Every status transition is hashed (record + its key document) and anchored on an Ethereum smart contract, giving the procurement lifecycle a tamper-evident, independently verifiable history. Hashes only — no documents and no personal data ever go on-chain.
 
-- **Anchored stages** — `SUBMITTED` → `HEAD_APPROVED` / `HEAD_REJECTED` / `REVISION_REQUESTED` → `BIDDING_OPEN` → `BID_SUBMITTED` → `BID_QUALIFIED` / `BID_DISQUALIFIED` → `AWARDED`
+- **Anchored stages** — `SUBMITTED` → `HEAD_APPROVED` / `HEAD_REJECTED` / `REVISION_REQUESTED` → `BIDDING_OPEN` → `BID_SUBMITTED` → `BID_QUALIFIED` / `BID_DISQUALIFIED` → `AWARDED` → `RESOLUTION_ISSUED` → `NOA_ISSUED` → `NTP_ISSUED`
+- **Post-award documents** — the signed BAC Resolution, Notice of Award and Notice to Proceed are uploaded and anchored with their file hash *and* issue date, so a notice can't be swapped or backdated after the fact
 - **MetaMask signing** for the demo, with an optional server-side signing path (`web3.py`) for production
 - **Public verification** — `/public` → *Verify on the Blockchain*: replay any procurement's trail straight from the contract with no account, no wallet and no gas, and check a document you hold against its anchored hash (hashed locally in the browser — the file is never uploaded)
 - **Never blocks the business flow** — a declined signature, wrong network or empty gas tank leaves the record valid and simply "not yet anchored", retryable from the record itself
@@ -226,7 +227,7 @@ Base URL: `http://127.0.0.1:8000/api/`
 | `/projects/` | Project CRUD + `publish`, `approve`, `reject`, `request-revision`, `resubmit-documents`, `bid` actions |
 | `/suppliers/` | Supplier list/detail + `approve`, `reject`, `request-revision`, `resubmit` actions |
 | `/bids/` | Bid list/detail + `qualify`, `disqualify`, `select-winner`, `request-revision`, `resubmit-documents` actions |
-| `/awards/` | Award records |
+| `/awards/` | Award records + `documents` action (upload a signed BAC Resolution / NOA / NTP, each anchored on-chain) |
 | `/documents/` | Supplier compliance document records |
 | `/notifications/` | In-app notifications + `mark-read` action |
 | `/public/procurement/` | Public procurement results (no auth required) |

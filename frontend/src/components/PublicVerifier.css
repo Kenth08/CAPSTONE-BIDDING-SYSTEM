@@ -195,6 +195,41 @@
 }
 .pv-step-label { font-size: 14px; font-weight: 600; }
 .pv-step-meta { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; }
+.pv-step-detail { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+.pv-step-detail.pv-bad { color: #fca5a5; font-weight: 600; }
+
+/* Tamper banner — a single altered record outranks every intact one, so this
+   sits above the trail rather than inside it. */
+.pv-tamper {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 11px;
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+.pv-tamper svg { color: #ef4444; flex-shrink: 0; margin-top: 1px; }
+.pv-tamper strong { font-size: 13.5px; display: block; }
+.pv-tamper p { font-size: 12.5px; line-height: 1.6; margin-top: 5px; }
+
+.pv-deep-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 4px 11px;
+  color: var(--text-muted);
+  background: var(--dark-card);
+  border: 1px solid var(--dark-border);
+  cursor: pointer;
+}
+.pv-deep-btn:hover:not(:disabled) { color: var(--primary); border-color: var(--primary); }
+.pv-deep-btn:disabled { opacity: 0.7; cursor: default; }
 .pv-step-hashes {
   display: flex;
   flex-wrap: wrap;

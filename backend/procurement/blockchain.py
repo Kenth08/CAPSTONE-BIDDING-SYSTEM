@@ -25,7 +25,7 @@ import os
 
 from django.utils import timezone
 
-from .models import BlockchainAnchor
+from .models import AWARD_DOCUMENT_ISSUED_FIELDS, BlockchainAnchor
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,18 @@ STAGE_DOCUMENT_FIELD = {
     BlockchainAnchor.Stage.BID_QUALIFIED: "quotation_document",
     BlockchainAnchor.Stage.BID_DISQUALIFIED: "quotation_document",
     BlockchainAnchor.Stage.AWARDED: "quotation_document",
+    # Post-award documents live on the Award itself, not on the winning bid.
+    BlockchainAnchor.Stage.RESOLUTION_ISSUED: "award_resolution",
+    BlockchainAnchor.Stage.NOA_ISSUED: "notice_of_award",
+    BlockchainAnchor.Stage.NTP_ISSUED: "notice_to_proceed",
+}
+
+# Stages whose evidence document is a field on the Award row rather than on the
+# winning bid — anchor_award() reads the file from `award` for these.
+AWARD_OWN_DOCUMENT_STAGES = {
+    BlockchainAnchor.Stage.RESOLUTION_ISSUED,
+    BlockchainAnchor.Stage.NOA_ISSUED,
+    BlockchainAnchor.Stage.NTP_ISSUED,
 }
 
 
@@ -151,7 +163,7 @@ def bid_payload(bid, stage, document_hash=""):
     }
 
 
-def award_payload(award, stage, document_hash=""):
+def award_payload(award, stage, document_hash="", issued_at=""):
     return {
         "v": PAYLOAD_VERSION,
         "entity": "AWARD",
@@ -163,6 +175,10 @@ def award_payload(award, stage, document_hash=""):
         "amount": f"{award.amount:.2f}",
         "status": award.status,
         "awarded_at": _iso(award.awarded_at),
+        # When this document was issued. Inside the hash on purpose: it is the
+        # single field a backdated Notice to Proceed would have to change, and
+        # changing it breaks the anchor.
+        "issued_at": issued_at,
         "document_hash": document_hash,
     }
 
@@ -197,11 +213,53 @@ def record_anchor(entity_type, entity_ref, stage, payload, *, entity_id="", docu
     return anchor
 
 
+# ── Payload builders, shared by anchoring AND verification ───────────────────
+# Both paths MUST go through these. If verification rebuilt the payload with its
+# own copy of this logic, the two would eventually drift and honest records would
+# start reporting as tampered — the worst possible failure for this feature.
+#
+# `document_hash=None` means "read the file and hash it"; passing a hash instead
+# reuses the one already recorded, which is how the cheap record-only check
+# avoids touching storage.
+
+def project_parts(project, stage, document_hash=None, document_field=None):
+    field = document_field or STAGE_DOCUMENT_FIELD.get(stage, "")
+    doc_hash = (
+        document_hash if document_hash is not None
+        else (hash_file(getattr(project, field, None)) if field else "")
+    )
+    return project_payload(project, stage, doc_hash), doc_hash
+
+
+def bid_parts(bid, stage, document_hash=None, document_field=None):
+    field = document_field or STAGE_DOCUMENT_FIELD.get(stage, "")
+    doc_hash = (
+        document_hash if document_hash is not None
+        else (hash_file(getattr(bid, field, None)) if field else "")
+    )
+    return bid_payload(bid, stage, doc_hash), doc_hash
+
+
+def award_parts(award, stage, document_hash=None):
+    """AWARDED binds the winning bid's quotation (what was actually promised);
+    the post-award stages each bind their own signed instrument on the Award,
+    together with the date it was issued."""
+    issued_at = ""
+    if stage in AWARD_OWN_DOCUMENT_STAGES:
+        field = STAGE_DOCUMENT_FIELD.get(stage, "")
+        source = getattr(award, field, None) if field else None
+        issued_field = AWARD_DOCUMENT_ISSUED_FIELDS.get(field)
+        issued_at = _iso(getattr(award, issued_field, None)) if issued_field else ""
+    else:
+        source = getattr(award.bid, "quotation_document", None) if award.bid else None
+
+    doc_hash = document_hash if document_hash is not None else hash_file(source)
+    return award_payload(award, stage, doc_hash, issued_at), doc_hash
+
+
 def anchor_project(project, stage, *, document_field=None):
     """Hash a project at `stage` (with its key document) and record the anchor."""
-    field = document_field or STAGE_DOCUMENT_FIELD.get(stage, "")
-    doc_hash = hash_file(getattr(project, field, None)) if field else ""
-    payload = project_payload(project, stage, doc_hash)
+    payload, doc_hash = project_parts(project, stage, document_field=document_field)
     return record_anchor(
         BlockchainAnchor.EntityType.PROJECT, project.code, stage, payload,
         entity_id=project.id, document_hash=doc_hash,
@@ -213,9 +271,7 @@ def anchor_bid(bid, stage, *, document_field=None):
 
     entity_ref is the PROJECT code, not the bid id — the contract indexes by
     procurement code so one lookup returns the whole lifecycle."""
-    field = document_field or STAGE_DOCUMENT_FIELD.get(stage, "")
-    doc_hash = hash_file(getattr(bid, field, None)) if field else ""
-    payload = bid_payload(bid, stage, doc_hash)
+    payload, doc_hash = bid_parts(bid, stage, document_field=document_field)
     return record_anchor(
         BlockchainAnchor.EntityType.BID, bid.project.code, stage, payload,
         entity_id=bid.id, document_hash=doc_hash,
@@ -223,13 +279,105 @@ def anchor_bid(bid, stage, *, document_field=None):
 
 
 def anchor_award(award, stage=BlockchainAnchor.Stage.AWARDED):
-    """Hash the award (with the winning bid's quotation) and record the anchor."""
-    doc_hash = hash_file(getattr(award.bid, "quotation_document", None)) if award.bid else ""
-    payload = award_payload(award, stage, doc_hash)
+    """Hash the award at `stage` together with the document that governs it, and
+    record the anchor."""
+    payload, doc_hash = award_parts(award, stage)
     return record_anchor(
         BlockchainAnchor.EntityType.AWARD, award.project.code, stage, payload,
         entity_id=award.id, document_hash=doc_hash,
     )
+
+
+# ── Integrity re-check: does the LIVE record still match what was anchored? ──
+#
+# Comparing a stored data_hash with the one on-chain only proves the anchor row
+# wasn't touched. It says nothing about the record the hash was taken FROM. This
+# is what closes that gap: rebuild the payload from the record as it stands right
+# now and see whether it still hashes to the value published on the blockchain.
+#
+# Two separate checks, because they cost very different amounts:
+#   RECORD   — rebuild the payload reusing the recorded document_hash. Catches an
+#              edited budget, amount, status or date. No file I/O.
+#   DOCUMENT — re-read the file from storage and hash it. Catches a document
+#              swapped after the fact. Costs a full read per anchor, so it's
+#              opt-in ("deep") rather than run on every page load.
+
+MATCH = "match"
+MISMATCH = "mismatch"
+UNAVAILABLE = "unavailable"   # record or file is gone — reported, never guessed at
+SKIPPED = "skipped"
+
+
+def live_record(anchor):
+    """The row this anchor was taken from, as it stands now (None if deleted)."""
+    from .models import Award, Bid, Project  # noqa: PLC0415 — kept local; only verification needs these
+
+    if not anchor.entity_id:
+        return None
+    model = {
+        BlockchainAnchor.EntityType.PROJECT: Project,
+        BlockchainAnchor.EntityType.BID: Bid,
+        BlockchainAnchor.EntityType.AWARD: Award,
+    }.get(anchor.entity_type)
+    if model is None:
+        return None
+    return model.objects.filter(pk=anchor.entity_id).first()
+
+
+def rebuild_payload(anchor, record, document_hash=None):
+    """Re-derive this anchor's payload from `record`, through the SAME builders
+    the anchoring path uses."""
+    if anchor.entity_type == BlockchainAnchor.EntityType.PROJECT:
+        return project_parts(record, anchor.stage, document_hash)
+    if anchor.entity_type == BlockchainAnchor.EntityType.BID:
+        return bid_parts(record, anchor.stage, document_hash)
+    return award_parts(record, anchor.stage, document_hash)
+
+
+def verify_anchor(anchor, deep=False):
+    """Check the live record against what was anchored.
+
+    Returns {status, record, document, detail}. `status` is the worst of the two
+    checks, so a caller can act on one field. Never raises — a verifier that
+    crashes on odd data is worse than one that reports "unavailable"."""
+    result = {"status": UNAVAILABLE, "record": UNAVAILABLE, "document": SKIPPED, "detail": ""}
+    try:
+        record = live_record(anchor)
+        if record is None:
+            result["detail"] = "The record this anchor was taken from no longer exists."
+            return result
+
+        # ── Record check ──────────────────────────────────────────────────
+        payload, _ = rebuild_payload(anchor, record, document_hash=anchor.document_hash)
+        record_ok = hash_payload(payload) == anchor.data_hash
+        result["record"] = MATCH if record_ok else MISMATCH
+        if not record_ok:
+            result["detail"] = "This record has been altered since it was recorded on-chain."
+
+        # ── Document check (opt-in) ───────────────────────────────────────
+        if deep and anchor.document_hash:
+            _, current_doc_hash = rebuild_payload(anchor, record, document_hash=None)
+            if not current_doc_hash:
+                result["document"] = UNAVAILABLE
+                result["detail"] = result["detail"] or "The anchored document is missing from storage."
+            elif current_doc_hash == anchor.document_hash:
+                result["document"] = MATCH
+            else:
+                result["document"] = MISMATCH
+                result["detail"] = "The attached document has been replaced since it was recorded."
+
+        checks = [result["record"]] + ([result["document"]] if result["document"] != SKIPPED else [])
+        if MISMATCH in checks:
+            result["status"] = MISMATCH
+        elif UNAVAILABLE in checks:
+            result["status"] = UNAVAILABLE
+        else:
+            result["status"] = MATCH
+        return result
+    except Exception:  # pragma: no cover — a verifier must never 500 a page
+        logger.exception("Integrity check failed for anchor %s", getattr(anchor, "id", "?"))
+        result["detail"] = "This record could not be checked."
+        return result
 
 
 def attach_transaction(anchor, tx_hash, block_number=None, actor_address=""):

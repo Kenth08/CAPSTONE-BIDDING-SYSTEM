@@ -166,10 +166,14 @@ export async function apiPublicProcurement() {
 // The public blockchain trail for one procurement code: the hash recorded at
 // each lifecycle step plus the Sepolia transaction that witnesses it. No token —
 // verification is open to anyone, with no account and no wallet.
-export async function apiPublicAnchors(code) {
+// `deep` additionally re-reads every anchored document and re-hashes it, which
+// catches a file swapped after the fact. Off by default — that's one storage
+// read per anchor, too slow for every page load.
+export async function apiPublicAnchors(code, { deep = false } = {}) {
   let res
   try {
-    res = await fetch(`${API_URL}/public/procurement/${encodeURIComponent(code)}/anchors/`)
+    res = await fetch(
+      `${API_URL}/public/procurement/${encodeURIComponent(code)}/anchors/${deep ? '?deep=1' : ''}`)
   } catch {
     throw new Error('Cannot reach the server. Please check your connection and try again.')
   }
@@ -301,8 +305,30 @@ export const apiBidRequestRevision = (bidId, { note, documents }) =>
 export const apiResubmitBidDocuments = (bidId, formData) =>
   apiUpload(`/bids/${bidId}/resubmit-documents/`, formData)
 
-// ── Awards (admin) ───────────────────────────────────────────────────────────────
+// ── Awards ───────────────────────────────────────────────────────────────────────
+// Admin/Head see every award; a supplier sees ONLY their own (scoped server-side
+// in AwardViewSet.get_queryset), which is how the winner reaches the Notice of
+// Award addressed to them.
 export const apiListAwards = () => apiFetch('/awards/')
+// Generate one official post-award document from the award record itself. The
+// server builds the PDF ONCE and stores it — every later download serves those
+// exact bytes, which is what keeps the anchored hash reproducible.
+export const apiGenerateAwardDocument = (awardId, key) =>
+  apiFetch(`/awards/${awardId}/documents/generate/`, {
+    method: 'POST',
+    body: JSON.stringify({ key }),
+  })
+
+// Upload a SIGNED post-award document instead (e.g. the scan that comes back
+// after signing). Each is hashed with its issue date and anchored on-chain, so
+// the response carries an `anchor` for the browser to sign — see
+// blockchain/anchor.js.
+export const apiUploadAwardDocument = (awardId, key, file) => {
+  const fd = new FormData()
+  fd.append('key', key)
+  fd.append('file', file)
+  return apiUpload(`/awards/${awardId}/documents/`, fd)
+}
 
 // ── Documents (admin) ────────────────────────────────────────────────────────────
 export const apiListDocuments = () => apiFetch('/documents/')

@@ -1410,7 +1410,67 @@
   transition: all 0.15s;
 }
 
-.ad-doc-btn:hover { background: #3b82f6; color: white; }
+.ad-doc-btn:hover:not(:disabled) { background: #3b82f6; color: white; }
+.ad-doc-btn:disabled { opacity: 0.55; cursor: default; }
+
+/* Post-award document cell: the document link/upload button plus its
+   blockchain state stacked underneath. */
+.ad-award-doc {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.ad-award-doc-row { display: flex; align-items: center; gap: 4px; }
+
+/* Secondary action next to a document: upload a signed copy. */
+.ad-doc-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: rgba(100,116,139,0.08);
+  color: #64748b;
+  border: 1px solid rgba(100,116,139,0.18);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.ad-doc-icon-btn:hover:not(:disabled) { background: #64748b; color: #fff; }
+.ad-doc-icon-btn:disabled { opacity: 0.5; cursor: default; }
+/* An issued document is a link, not an action — green to distinguish it from
+   the blue "upload this" state. */
+.ad-doc-btn.is-issued {
+  background: rgba(22,163,74,0.08);
+  color: #16a34a;
+  border-color: rgba(22,163,74,0.22);
+  text-decoration: none;
+}
+.ad-doc-btn.is-issued:hover { background: #16a34a; color: #fff; }
+
+.ad-award-doc-chain {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #94a3b8;
+  padding-left: 2px;
+  background: none;
+  border: none;
+  text-decoration: none;
+}
+.ad-award-doc-chain.is-anchored { color: #16a34a; }
+.ad-award-doc-chain.is-anchored:hover { text-decoration: underline; }
+/* Un-anchored documents offer a one-click retry rather than a dead label. */
+.ad-award-doc-chain.is-retry { color: #2563eb; cursor: pointer; }
+.ad-award-doc-chain.is-retry:hover:not(:disabled) { text-decoration: underline; }
+.ad-award-doc-chain.is-retry:disabled { color: #94a3b8; cursor: default; }
+
+/* "3/6" — issued out of possible, so the number can't overstate again. */
+.ad-stat-of { font-size: 15px; font-weight: 600; color: #94a3b8; }
 
 .ad-award-info {
   display: flex;

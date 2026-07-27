@@ -9,7 +9,7 @@ import {
 import {
   apiLogout, apiGetMySupplier, apiResubmitDocuments,
   apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid, apiResubmitBidDocuments,
-  apiListNotifications, apiMarkNotificationsRead,
+  apiListNotifications, apiMarkNotificationsRead, apiListAwards,
   apiUpdateMySupplier, apiChangePassword, apiResendVerification,
 } from '../api'
 import { CATEGORIES } from '../constants/categories'
@@ -589,7 +589,7 @@ function BidDocRevisionRow({ doc, file, onFile, onRemove }) {
   )
 }
 
-function BidDetailModal({ bid, onClose, onWithdraw, onResubmitted, setToast }) {
+function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToast }) {
   const canWithdraw = bid.status === 'submitted' || bid.status === 'under_review'
   const flaggedDocs = (bid.documents || []).filter(d => d.review_status === 'needs_revision')
   const [files, setFiles] = useState({})  // { key: File }
@@ -712,6 +712,43 @@ function BidDetailModal({ bid, onClose, onWithdraw, onResubmitted, setToast }) {
                 ))}
               </div>
             </div>
+
+            {/* Won: the official documents issued to this supplier. The Notice
+                of Award is addressed to them and starts the clock for posting a
+                performance security, so they collect it here — and each one can
+                be checked against the blockchain, so nobody can hand them an
+                altered or backdated notice. */}
+            {award && (award.documents || []).some(d => d.url) && (
+              <div className="sd-bid-section">
+                <h4 className="sd-bid-section-label">
+                  <Trophy size={13} style={{ verticalAlign: -1, marginRight: 5 }} />
+                  Award Documents
+                </h4>
+                <p className="sd-bid-section-hint">
+                  Official documents issued to you for this contract. Each is recorded on the
+                  blockchain — you can verify any of them on the public results page.
+                </p>
+                <div className="sd-doc-list">
+                  {(award.documents || []).filter(d => d.url).map(d => (
+                    <a key={d.key} className="sd-doc-row" href={d.url} target="_blank" rel="noreferrer">
+                      <span className="sd-file-check"><Check size={12} /></span>
+                      <span className="sd-file-rowname">
+                        {d.label}
+                        <span className="sd-muted sd-small" style={{ marginLeft: 8 }}>
+                          Issued {fmtDate(d.issued_at)}
+                        </span>
+                      </span>
+                      {d.anchored && (
+                        <span className="sd-award-doc-chain" title={`Anchored on-chain (tx ${d.tx_hash})`}>
+                          <Shield size={11} /> Verified
+                        </span>
+                      )}
+                      <span className="sd-doc-view"><Eye size={13} /> Download</span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Proof of submission: the hash of this bid + its quotation, and
                 the Sepolia transaction that witnesses it. If a step was never
@@ -1244,7 +1281,7 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
   )
 }
 
-function SupplierBids({ bids, onWithdraw, loading, onResubmitted, setToast }) {
+function SupplierBids({ bids, awards = [], onWithdraw, loading, onResubmitted, setToast }) {
   const [detail, setDetail] = useState(null)
   const [search, setSearch] = useState('')
 
@@ -1253,11 +1290,17 @@ function SupplierBids({ bids, onWithdraw, loading, onResubmitted, setToast }) {
     return !q || b.project.toLowerCase().includes(q)
   })
 
+  // The award for the open bid, if it won — matched on the bid itself, falling
+  // back to the procurement code for awards created before the bid link existed.
+  const awardFor = (bid) =>
+    bid && awards.find(a => a.bid === bid.id || a.project_code === bid.projectId)
+
   return (
     <div className="sd-content">
       {detail && (
         <BidDetailModal
           bid={detail}
+          award={awardFor(detail)}
           onClose={() => setDetail(null)}
           onWithdraw={() => { onWithdraw(detail.id); setDetail(null) }}
           onResubmitted={onResubmitted}
@@ -1831,6 +1874,7 @@ export default function SupplierDashboard() {
   const [profile, setProfile] = useState(myProfileCache)
   const [projects, setProjects] = useState([])   // eligible (published + category match)
   const [bids, setBids] = useState([])
+  const [awards, setAwards] = useState([])       // this supplier's own awards only
   const [loadingProjects, setLoadingProjects] = useState(true)
   const [loadingBids, setLoadingBids] = useState(true)
   const [toast, setToast] = useState(null)
@@ -1852,7 +1896,14 @@ export default function SupplierDashboard() {
     setLoadingBids(true)
     apiListMyBids().then(d => setBids(d.map(mapBid))).catch(() => {}).finally(() => setLoadingBids(false))
   }
-  useEffect(() => { loadProfile(); loadProjects(); loadBids() }, [])
+  // The supplier's OWN awards (scoped server-side) — this is how the winner
+  // receives the Notice of Award addressed to them, along with the BAC
+  // Resolution and Notice to Proceed. Silently ignored on failure: a supplier
+  // who has never won simply has none.
+  const loadAwards = () => {
+    apiListAwards().then(setAwards).catch(() => setAwards([]))
+  }
+  useEffect(() => { loadProfile(); loadProjects(); loadBids(); loadAwards() }, [])
 
   // The email-verify link opens in its own tab, so this dashboard's `profile`
   // state never hears about it. Refetch just the profile when the user comes
@@ -1920,7 +1971,7 @@ export default function SupplierDashboard() {
           <Routes>
             <Route index element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
             <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} loading={loadingProjects} profile={profile} />} />
-            <Route path="bids"     element={<SupplierBids bids={bids} onWithdraw={withdrawBid} loading={loadingBids} onResubmitted={loadBids} setToast={setToast} />} />
+            <Route path="bids"     element={<SupplierBids bids={bids} awards={awards} onWithdraw={withdrawBid} loading={loadingBids} onResubmitted={loadBids} setToast={setToast} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="reports"  element={<SupplierReportsPage bids={bids} profile={profile} />} />
             <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} />} />

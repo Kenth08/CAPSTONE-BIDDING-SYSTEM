@@ -1,7 +1,9 @@
+import logging
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.files.base import ContentFile
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import status as http_status
@@ -23,8 +25,14 @@ from .blockchain import (
     anchor_summary,
     attach_anchors,
     attach_transaction,
+    verify_anchor,
 )
+from .documents import DOCUMENT_BUILDERS
 from .models import (
+    AWARD_DOCUMENT_FIELDS,
+    AWARD_DOCUMENT_ISSUED_FIELDS,
+    AWARD_DOCUMENT_KEYS,
+    AWARD_DOCUMENT_STAGES,
     BID_DOCUMENT_FIELDS,
     BID_DOCUMENT_KEYS,
     PROCUREMENT_DOCUMENT_FIELDS,
@@ -60,6 +68,8 @@ from .validators import validate_bid_upload, validate_upload
 # manual check in the `bid` action in sync with that column limit so an
 # oversized amount is rejected cleanly instead of failing at the DB.
 MAX_BID_AMOUNT = Decimal("999999999999.99")
+
+logger = logging.getLogger(__name__)
 
 # Application-level caps for free-text bid fields that are written straight
 # from request.data (bypassing the serializer, so the model's max_length
@@ -172,7 +182,14 @@ class PublicAnchorTrailView(APIView):
             return Response({"detail": "Unknown procurement code."},
                             status=http_status.HTTP_404_NOT_FOUND)
 
+        # ?deep=1 additionally re-reads every anchored document and re-hashes it.
+        # Off by default: that's one storage read per anchor, too slow to run on
+        # every page load, and the cheap record check already catches an edited
+        # amount, status or date.
+        deep = request.query_params.get("deep") in {"1", "true", "yes"}
+
         anchors = BlockchainAnchor.objects.filter(entity_ref=code)
+        integrity = {a.id: verify_anchor(a, deep=deep) for a in anchors}
         trail = [
             {
                 "entity_type": a.entity_type,
@@ -192,9 +209,14 @@ class PublicAnchorTrailView(APIView):
                 "explorer_url": (ETHERSCAN_TX_URL + a.tx_hash) if a.tx_hash else "",
                 "recorded_at": a.created_at,
                 "anchored_at": a.anchored_at,
+                # Does the record STILL hash to what was published? Comparing the
+                # stored hash with the chain only proves the anchor row is
+                # intact; this proves the data behind it is.
+                "integrity": integrity[a.id],
             }
             for a in anchors
         ]
+        altered = [t for t in trail if t["integrity"]["status"] == "mismatch"]
         return Response({
             "code": project.code,
             "name": project.name,
@@ -203,6 +225,8 @@ class PublicAnchorTrailView(APIView):
             "contract_address": LEDGER_CONTRACT_ADDRESS,
             "chain": "sepolia",
             "chain_id": SEPOLIA_CHAIN_ID,
+            "deep_checked": deep,
+            "altered_count": len(altered),
             "anchors": trail,
         })
 
@@ -310,11 +334,20 @@ class ProjectViewSet(viewsets.ModelViewSet):
         project = self.get_object()
         rows = BlockchainAnchor.objects.filter(entity_ref=project.code)
         include_payload = getattr(request.user, "role", None) == "admin"
+        deep = request.query_params.get("deep") in {"1", "true", "yes"}
+
+        anchors = []
+        for a in rows:
+            data = anchor_summary(a, include_payload=include_payload)
+            data["integrity"] = verify_anchor(a, deep=deep)
+            anchors.append(data)
         return Response({
             "code": project.code,
             "contract_address": LEDGER_CONTRACT_ADDRESS,
             "chain_id": SEPOLIA_CHAIN_ID,
-            "anchors": [anchor_summary(a, include_payload=include_payload) for a in rows],
+            "deep_checked": deep,
+            "altered_count": sum(1 for a in anchors if a["integrity"]["status"] == "mismatch"),
+            "anchors": anchors,
         })
 
     def get_queryset(self):
@@ -1163,7 +1196,121 @@ class AwardViewSet(viewsets.ModelViewSet):
 
     queryset = Award.objects.select_related("project", "supplier").all()
     serializer_class = AwardSerializer
-    permission_classes = [IsAdminRole]
+    # Post-award documents are uploaded as signed PDFs (multipart).
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_permissions(self):
+        # The winning supplier may READ their own award — the Notice of Award is
+        # addressed to them, and receiving it starts the clock for posting their
+        # performance security. Everything that changes an award (issuing
+        # documents, anchoring, CRUD) stays with the Admin.
+        if self.action in {"list", "retrieve"}:
+            return [permissions.IsAuthenticated()]
+        return [IsAdminRole()]
+
+    def get_queryset(self):
+        qs = Award.objects.select_related("project", "supplier", "supplier__user", "bid")
+        role = getattr(self.request.user, "role", None)
+        if role == "supplier":
+            # Scoped to their OWN award: a supplier must never see another
+            # supplier's contract value or award documents.
+            return qs.filter(supplier__user=self.request.user)
+        if role in {"admin", "head"}:
+            return qs
+        return qs.none()
+
+    def _issue_document(self, request, award, key, django_file, *, generated):
+        """Save one post-award document, stamp its issue date, notify the winner
+        and anchor it. Shared by the generate and upload paths so both produce an
+        identical record — the only difference is where the bytes came from."""
+        label = next(lbl for k, lbl, _, _ in AWARD_DOCUMENT_FIELDS if k == key)
+        issued_field = AWARD_DOCUMENT_ISSUED_FIELDS[key]
+        replacing = bool(getattr(award, key, None))
+
+        setattr(award, key, django_file)
+        setattr(award, issued_field, timezone.now())
+        award.save(update_fields=[key, issued_field])
+
+        notify_supplier(
+            award.supplier,
+            f"{label} issued for \"{award.project.name}\" ({award.project.code}).",
+            link="/supplier/bids",
+            email_subject=f"{label} for {award.project.code}",
+        )
+        log_action(
+            request, "award.document_issued",
+            entity_type="Award", entity_id=award.id,
+            description=f"{'Replaced' if replacing else 'Issued'} {label} for {award.project.code}"
+                        f" ({'generated' if generated else 'uploaded'}).",
+        )
+        # Anchored with the STORED file's hash and its issue date — the two
+        # things a backdated or swapped notice would have to change. Re-issuing
+        # appends a NEW anchor rather than editing the old one, so a replacement
+        # is visible in the trail instead of silently overwriting history.
+        anchor = anchor_award(award, AWARD_DOCUMENT_STAGES[key])
+        return anchored_response(self.get_serializer(award).data, anchor)
+
+    @action(detail=True, methods=["post"], url_path="documents/generate")
+    def generate_document(self, request, pk=None):
+        """Generate one official document from the award record — body: { key }.
+
+        Filled in from what the system already knows (supplier, procurement,
+        amount, delivery period), so the Admin never retypes it and the notice
+        can't disagree with the award it refers to.
+
+        Generated ONCE and stored: a PDF embeds a creation timestamp, so
+        regenerating it on every download would change the hash and make the
+        on-chain record unverifiable. Every later download serves these exact
+        bytes."""
+        award = self.get_object()
+
+        key = (request.data.get("key") or "").strip()
+        if key not in AWARD_DOCUMENT_KEYS:
+            return Response({"detail": f"Unknown award document '{key}'."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+
+        try:
+            pdf_bytes = DOCUMENT_BUILDERS[key](award)
+        except Exception:
+            logger.exception("Could not generate %s for award %s", key, award.id)
+            return Response(
+                {"detail": "Could not generate the document. Please try again or upload a signed copy."},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        filename = f"{key}_{award.project.code}.pdf"
+        return self._issue_document(
+            request, award, key, ContentFile(pdf_bytes, name=filename), generated=True)
+
+    @action(detail=True, methods=["post"], url_path="documents")
+    def upload_document(self, request, pk=None):
+        """Admin uploads a SIGNED post-award document — body: { key, file }.
+
+        The alternative to generating one: once the printed notice comes back
+        signed, the scan replaces the generated draft and is anchored in its own
+        right, so the trail shows both the draft and the executed copy.
+
+        One document per request, so each produces exactly one anchor the browser
+        can sign — mirroring how each is issued as a separate act."""
+        award = self.get_object()
+
+        key = (request.data.get("key") or "").strip()
+        if key not in AWARD_DOCUMENT_KEYS:
+            return Response(
+                {"detail": f"Unknown award document '{key}'."},
+                status=http_status.HTTP_400_BAD_REQUEST)
+
+        uploaded = request.FILES.get("file")
+        if uploaded is None:
+            return Response({"detail": "Attach the signed document to upload."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+        # setattr()/save() never calls full_clean(), so the field's validators
+        # would never run — check explicitly, same as the other upload paths.
+        try:
+            validate_upload(uploaded)
+        except DjangoValidationError as exc:
+            return Response({key: exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        return self._issue_document(request, award, key, uploaded, generated=False)
 
     def list(self, request, *args, **kwargs):
         """Default list with each award's anchors bulk-loaded (one extra query)."""
