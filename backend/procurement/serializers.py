@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from .blockchain import anchor_summary, anchors_for
 from .models import (
     BID_DOCUMENT_FIELDS,
     PROCUREMENT_CATEGORIES,
@@ -102,10 +103,50 @@ class SupplierMeUpdateSerializer(serializers.ModelSerializer):
         return value
 
 
-class ProjectSerializer(serializers.ModelSerializer):
+class AnchorTrailMixin:
+    """Serializes a record's blockchain anchor trail as `anchors`.
+
+    The view bulk-loads the anchors onto each record as `_anchors`
+    (blockchain.attach_anchors) so a list of N records costs ONE anchor query,
+    not N. When that hasn't happened — e.g. a single object returned straight
+    from a transition endpoint — it falls back to querying for just that one."""
+
+    anchor_entity_type = None   # None = the whole procurement trail
+    anchor_id_attr = None
+
+    def get_anchors(self, obj):
+        cached = getattr(obj, "_anchors", None)
+        if cached is None:
+            cached = anchors_for(
+                self.anchor_ref(obj),
+                entity_type=self.anchor_entity_type,
+                entity_id=getattr(obj, self.anchor_id_attr) if self.anchor_id_attr else None,
+            )
+        return [anchor_summary(a) for a in cached]
+
+    def anchor_ref(self, obj):
+        return obj.code
+
+
+class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
     bid_count = serializers.SerializerMethodField()
     documents = serializers.SerializerMethodField()
     reference_image_url = serializers.SerializerMethodField()
+    # Full blockchain trail for this procurement — its own anchors plus those of
+    # its bids and its award, since the contract indexes everything by the
+    # procurement code.
+    anchors = serializers.SerializerMethodField()
+
+    def get_anchors(self, obj):
+        rows = super().get_anchors(obj)
+        # Suppliers browse published procurements, so they'd otherwise see every
+        # rival's BID_SUBMITTED / BID_QUALIFIED anchor — including the hash of a
+        # competitor's quotation. Their own bid's trail is served by BidSerializer
+        # (scoped to their own bids), so drop bid anchors here.
+        user = getattr(self.context.get("request"), "user", None)
+        if getattr(user, "role", None) == "supplier":
+            return [r for r in rows if r["entity_type"] != "BID"]
+        return rows
 
     def get_reference_image_url(self, obj):
         """Absolute URL of the optional reference image, or None when there
@@ -181,6 +222,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "type", "category", "delivery_location", "expected_delivery_date", "delivery_period_days",
             "eligible_types", "status", "bid_count", "created_at",
             "reviewed_at", "reject_reason", "document_reviews", "published_at", "awarded_at", "documents",
+            "anchors",
             # write-only file inputs (read side is exposed via `documents`)
             "purchase_request", "technical_specifications", "terms_of_reference",
             "approved_budget_document", "bid_evaluation_criteria",
@@ -221,7 +263,12 @@ class BidAttachmentSerializer(serializers.ModelSerializer):
         return request.build_absolute_uri(obj.file.url) if request else obj.file.url
 
 
-class BidSerializer(serializers.ModelSerializer):
+class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
+    # Only THIS bid's anchors (submitted / qualified / disqualified), not the
+    # whole procurement's — a supplier must not see other bidders' activity.
+    anchor_entity_type = "BID"
+    anchor_id_attr = "id"
+
     project_name = serializers.CharField(source="project.name", read_only=True)
     project_code = serializers.CharField(source="project.code", read_only=True)
     project_category = serializers.CharField(source="project.category", read_only=True)
@@ -239,6 +286,7 @@ class BidSerializer(serializers.ModelSerializer):
     # review_note} shape as SupplierDetailSerializer.documents, so the Admin
     # can flag a single document on a bid without disqualifying the whole bid.
     documents = serializers.SerializerMethodField()
+    anchors = serializers.SerializerMethodField()
 
     class Meta:
         model = Bid
@@ -254,6 +302,8 @@ class BidSerializer(serializers.ModelSerializer):
             "supplier_compliance_doc_url", "attachments",
             # per-document review state
             "document_reviews", "documents",
+            # blockchain anchor trail for this bid
+            "anchors",
             # declarations
             "terms_accepted", "interest_declared", "scm_declared",
             "accuracy_confirmed", "specification_confirmed",
@@ -280,6 +330,11 @@ class BidSerializer(serializers.ModelSerializer):
     def get_supplier_compliance_doc_url(self, obj):
         return self._abs_url(obj.supplier_compliance_doc)
 
+    def anchor_ref(self, obj):
+        # Anchors are indexed by the PROCUREMENT code (that's how the contract
+        # groups a lifecycle), so a bid's anchors live under its project's code.
+        return obj.project.code
+
     def get_documents(self, obj):
         reviews = obj.document_reviews or {}
         result = []
@@ -296,16 +351,24 @@ class BidSerializer(serializers.ModelSerializer):
         return result
 
 
-class AwardSerializer(serializers.ModelSerializer):
+class AwardSerializer(AnchorTrailMixin, serializers.ModelSerializer):
+    anchor_entity_type = "AWARD"
+    anchor_id_attr = "id"
+
     project_name = serializers.CharField(source="project.name", read_only=True)
+    project_code = serializers.CharField(source="project.code", read_only=True)
     supplier_name = serializers.CharField(source="supplier.company", read_only=True)
+    anchors = serializers.SerializerMethodField()
 
     class Meta:
         model = Award
         fields = [
-            "id", "project", "project_name", "supplier", "supplier_name",
-            "bid", "amount", "status", "awarded_at",
+            "id", "project", "project_name", "project_code", "supplier", "supplier_name",
+            "bid", "amount", "status", "awarded_at", "anchors",
         ]
+
+    def anchor_ref(self, obj):
+        return obj.project.code
 
 
 class DocumentSerializer(serializers.ModelSerializer):

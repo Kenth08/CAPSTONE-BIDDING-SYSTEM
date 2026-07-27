@@ -7,6 +7,7 @@ from .views import (
     DocumentViewSet,
     NotificationViewSet,
     ProjectViewSet,
+    PublicAnchorTrailView,
     PublicProcurementView,
     SupplierViewSet,
 )
@@ -23,4 +24,10 @@ router.register(r"notifications", NotificationViewSet, basename="notification")
 # shadowed by an authenticated route).
 urlpatterns = [
     path("public/procurement/", PublicProcurementView.as_view(), name="public-procurement"),
+    # Public blockchain trail for one procurement code — no login, no wallet.
+    path(
+        "public/procurement/<str:code>/anchors/",
+        PublicAnchorTrailView.as_view(),
+        name="public-procurement-anchors",
+    ),
 ] + router.urls

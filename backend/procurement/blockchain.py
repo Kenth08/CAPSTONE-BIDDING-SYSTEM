@@ -1,0 +1,453 @@
+"""Blockchain anchoring layer.
+
+Turns each procurement status transition into a deterministic SHA-256 hash of
+the record + its key document, stores that hash locally as a BlockchainAnchor,
+and (in the browser, via MetaMask) writes it to the ProcurementLedger contract on
+the Sepolia testnet.
+
+Design rules this module exists to enforce:
+
+1. **Hashes only.** Nothing but a SHA-256 digest and minimal event metadata ever
+   reaches the chain — no documents, no PII, no bid amounts.
+2. **Never break the business flow.** Every public helper here swallows its own
+   exceptions, exactly like accounts.audit.log_action. Anchoring is a side
+   effect: if hashing a file on remote storage fails, the approval still stands
+   and the anchor is simply missing (and retryable).
+3. **Deterministic.** The same record must hash to the same value on any machine,
+   any Python version, forever — so payloads are built from explicit primitive
+   fields (never Django objects, floats, or dict ordering) and serialized with
+   json.dumps(sort_keys=True, separators=(",", ":")).
+"""
+import hashlib
+import json
+import logging
+import os
+
+from django.utils import timezone
+
+from .models import BlockchainAnchor
+
+logger = logging.getLogger(__name__)
+
+# Anchoring can be turned off entirely (e.g. in CI) without touching any view.
+ANCHORING_ENABLED = os.environ.get("BLOCKCHAIN_ANCHORING_ENABLED", "True").lower() == "true"
+
+# Server-side signing (stretch goal): when true, the backend submits the
+# transaction itself with web3.py instead of waiting for a MetaMask signature.
+# Off by default — MetaMask is the demo path.
+SERVER_SIGNING_ENABLED = os.environ.get("BLOCKCHAIN_SERVER_SIGNING", "False").lower() == "true"
+
+LEDGER_CONTRACT_ADDRESS = os.environ.get("LEDGER_CONTRACT_ADDRESS", "")
+SEPOLIA_RPC_URL = os.environ.get("SEPOLIA_RPC_URL", "https://ethereum-sepolia-rpc.publicnode.com")
+SEPOLIA_CHAIN_ID = int(os.environ.get("SEPOLIA_CHAIN_ID", "11155111"))
+# Only read when SERVER_SIGNING_ENABLED is on. Never hardcode this, never commit it.
+BLOCKCHAIN_PRIVATE_KEY = os.environ.get("BLOCKCHAIN_PRIVATE_KEY", "")
+
+ETHERSCAN_TX_URL = "https://sepolia.etherscan.io/tx/"
+
+# Which document is the "evidence" for each stage. The whole point of hashing a
+# document alongside the record is that swapping the file after the fact breaks
+# the hash — so each stage names the file that mattered at that moment.
+STAGE_DOCUMENT_FIELD = {
+    BlockchainAnchor.Stage.SUBMITTED: "purchase_request",
+    BlockchainAnchor.Stage.HEAD_APPROVED: "approved_budget_document",
+    BlockchainAnchor.Stage.HEAD_REJECTED: "purchase_request",
+    BlockchainAnchor.Stage.REVISION_REQUESTED: "purchase_request",
+    BlockchainAnchor.Stage.BIDDING_OPEN: "bid_evaluation_criteria",
+    BlockchainAnchor.Stage.BID_SUBMITTED: "quotation_document",
+    BlockchainAnchor.Stage.BID_QUALIFIED: "quotation_document",
+    BlockchainAnchor.Stage.BID_DISQUALIFIED: "quotation_document",
+    BlockchainAnchor.Stage.AWARDED: "quotation_document",
+}
+
+
+# ── Hashing ──────────────────────────────────────────────────────────────────
+def hash_payload(payload):
+    """Deterministic SHA-256 of a dict, "0x"-prefixed.
+
+    sort_keys makes it independent of insertion order and the compact separators
+    remove any whitespace ambiguity, so the frontend / an external auditor can
+    reproduce this byte-for-byte from the same JSON."""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return "0x" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def hash_file(file_field):
+    """SHA-256 of an uploaded file's contents, "0x"-prefixed, or "" when there is
+    no file. Streams via .chunks() so a large document is never fully loaded into
+    memory. Returns "" (not an error) if the file is missing from storage — a
+    document that has been lost simply can't be attested to."""
+    if not file_field:
+        return ""
+    digest = hashlib.sha256()
+    try:
+        file_field.open("rb")
+        try:
+            for chunk in file_field.chunks():
+                digest.update(chunk)
+        finally:
+            file_field.close()
+    except Exception:
+        logger.warning("Could not hash file %r for anchoring", getattr(file_field, "name", "?"))
+        return ""
+    return "0x" + digest.hexdigest()
+
+
+def _iso(value):
+    """Stable ISO-8601 text for dates/datetimes (or "" for None), so a payload
+    never depends on the local timezone rendering of a repr()."""
+    if value is None:
+        return ""
+    try:
+        return value.isoformat()
+    except AttributeError:
+        return str(value)
+
+
+# ── Canonical payloads (one per entity) ──────────────────────────────────────
+# Only stable, business-meaningful fields go in. Adding a field here changes
+# every future hash, so treat these as a versioned schema: `v` is bumped if the
+# shape ever has to change, and old anchors stay verifiable against v1.
+PAYLOAD_VERSION = 1
+
+
+def project_payload(project, stage, document_hash=""):
+    return {
+        "v": PAYLOAD_VERSION,
+        "entity": "PROJECT",
+        "stage": str(stage),
+        "code": project.code,
+        "name": project.name,
+        "category": project.category or "",
+        "type": project.type or "",
+        "budget": f"{project.budget:.2f}",
+        "status": project.status,
+        "bidding_period_days": project.bidding_period_days or 0,
+        "delivery_period_days": project.delivery_period_days or 0,
+        "deadline": _iso(project.deadline),
+        "created_at": _iso(project.created_at),
+        "reviewed_at": _iso(project.reviewed_at),
+        "published_at": _iso(project.published_at),
+        "document_hash": document_hash,
+    }
+
+
+def bid_payload(bid, stage, document_hash=""):
+    return {
+        "v": PAYLOAD_VERSION,
+        "entity": "BID",
+        "stage": str(stage),
+        "project_code": bid.project.code,
+        "bid_id": bid.id,
+        # The supplier is referenced by id only — the company name is personal /
+        # commercial data and is not needed to prove the record is unaltered.
+        "supplier_id": bid.supplier_id,
+        "amount": f"{bid.amount:.2f}",
+        "status": bid.status,
+        "delivery_timeline": bid.delivery_timeline or "",
+        "submitted_at": _iso(bid.submitted_at),
+        "reviewed_at": _iso(bid.reviewed_at),
+        "document_hash": document_hash,
+    }
+
+
+def award_payload(award, stage, document_hash=""):
+    return {
+        "v": PAYLOAD_VERSION,
+        "entity": "AWARD",
+        "stage": str(stage),
+        "project_code": award.project.code,
+        "award_id": award.id,
+        "bid_id": award.bid_id or 0,
+        "supplier_id": award.supplier_id,
+        "amount": f"{award.amount:.2f}",
+        "status": award.status,
+        "awarded_at": _iso(award.awarded_at),
+        "document_hash": document_hash,
+    }
+
+
+# ── Recording ────────────────────────────────────────────────────────────────
+def record_anchor(entity_type, entity_ref, stage, payload, *, entity_id="", document_hash=""):
+    """Create one BlockchainAnchor (tx_hash blank) and return it, or None.
+
+    Never raises: a failure here must not turn a successful approval into an
+    error, same contract as accounts.audit.log_action."""
+    if not ANCHORING_ENABLED:
+        return None
+    try:
+        anchor = BlockchainAnchor.objects.create(
+            entity_type=entity_type,
+            entity_ref=entity_ref,
+            entity_id=str(entity_id or ""),
+            stage=stage,
+            data_hash=hash_payload(payload),
+            document_hash=document_hash or "",
+            payload=payload,
+        )
+    except Exception:  # pragma: no cover — anchoring must never break the request
+        logger.exception("Failed to record blockchain anchor for %s/%s", entity_ref, stage)
+        return None
+
+    if SERVER_SIGNING_ENABLED:
+        # Optional production path: sign and submit right here, so no wallet is
+        # involved. Best-effort — a failure leaves the anchor un-anchored and
+        # the frontend/retry path still works.
+        submit_anchor_server_side(anchor)
+    return anchor
+
+
+def anchor_project(project, stage, *, document_field=None):
+    """Hash a project at `stage` (with its key document) and record the anchor."""
+    field = document_field or STAGE_DOCUMENT_FIELD.get(stage, "")
+    doc_hash = hash_file(getattr(project, field, None)) if field else ""
+    payload = project_payload(project, stage, doc_hash)
+    return record_anchor(
+        BlockchainAnchor.EntityType.PROJECT, project.code, stage, payload,
+        entity_id=project.id, document_hash=doc_hash,
+    )
+
+
+def anchor_bid(bid, stage, *, document_field=None):
+    """Hash a bid at `stage` (with its quotation document) and record the anchor.
+
+    entity_ref is the PROJECT code, not the bid id — the contract indexes by
+    procurement code so one lookup returns the whole lifecycle."""
+    field = document_field or STAGE_DOCUMENT_FIELD.get(stage, "")
+    doc_hash = hash_file(getattr(bid, field, None)) if field else ""
+    payload = bid_payload(bid, stage, doc_hash)
+    return record_anchor(
+        BlockchainAnchor.EntityType.BID, bid.project.code, stage, payload,
+        entity_id=bid.id, document_hash=doc_hash,
+    )
+
+
+def anchor_award(award, stage=BlockchainAnchor.Stage.AWARDED):
+    """Hash the award (with the winning bid's quotation) and record the anchor."""
+    doc_hash = hash_file(getattr(award.bid, "quotation_document", None)) if award.bid else ""
+    payload = award_payload(award, stage, doc_hash)
+    return record_anchor(
+        BlockchainAnchor.EntityType.AWARD, award.project.code, stage, payload,
+        entity_id=award.id, document_hash=doc_hash,
+    )
+
+
+def attach_transaction(anchor, tx_hash, block_number=None, actor_address=""):
+    """Record the confirmed on-chain transaction for an anchor.
+
+    Returns the updated anchor. Raises ValueError on a malformed tx hash — this
+    one DOES raise, because it runs from an explicit "here is my transaction"
+    request whose caller wants to know it was rejected."""
+    tx_hash = (tx_hash or "").strip()
+    if not _is_hex32(tx_hash):
+        raise ValueError("tx_hash must be a 0x-prefixed 32-byte hex string.")
+    anchor.tx_hash = tx_hash
+    anchor.block_number = int(block_number) if str(block_number or "").strip().isdigit() else None
+    anchor.actor_address = (actor_address or "").strip()[:42]
+    anchor.anchored_at = timezone.now()
+    anchor.save(update_fields=["tx_hash", "block_number", "actor_address", "anchored_at"])
+    return anchor
+
+
+def _is_hex32(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 66
+        and value.startswith("0x")
+        and all(c in "0123456789abcdefABCDEF" for c in value[2:])
+    )
+
+
+def anchor_summary(anchor, *, include_payload=False):
+    """API shape for one anchor. `attach_url` lets the frontend post its tx hash
+    back without having to know which entity kind it is holding."""
+    if anchor is None:
+        return None
+    data = {
+        "id": anchor.id,
+        "entity_type": anchor.entity_type,
+        "entity_ref": anchor.entity_ref,
+        "entity_id": anchor.entity_id,
+        "stage": anchor.stage,
+        "stage_label": anchor.get_stage_display(),
+        "data_hash": anchor.data_hash,
+        "document_hash": anchor.document_hash,
+        "tx_hash": anchor.tx_hash,
+        "block_number": anchor.block_number,
+        "actor_address": anchor.actor_address,
+        "anchored": anchor.anchored,
+        "explorer_url": (ETHERSCAN_TX_URL + anchor.tx_hash) if anchor.tx_hash else "",
+        "created_at": anchor.created_at,
+        "attach_url": attach_url_for(anchor),
+    }
+    if include_payload:
+        data["payload"] = anchor.payload
+    return data
+
+
+def _resolve(record, path):
+    """getattr() along a dotted path ("project.code"), None if anything is unset."""
+    value = record
+    for part in path.split("."):
+        value = getattr(value, part, None)
+        if value is None:
+            return None
+    return value
+
+
+def attach_anchors(records, ref_attr="code", entity_type=None, id_attr=None):
+    """Bulk-load anchors onto a list of records as `_anchors`, in ONE query.
+
+    Called from the list endpoints so serializing 50 projects doesn't fire 50
+    anchor queries. Without it the serializer falls back to querying per object.
+
+    With no entity_type, a project gets its FULL trail (its own anchors plus its
+    bids' and its award's) — which is exactly what the "3 of 5 anchored" badge on
+    a procurement should count."""
+    records = list(records)
+    if not records:
+        return records
+    refs = {ref for ref in (_resolve(r, ref_attr) for r in records) if ref}
+    qs = BlockchainAnchor.objects.filter(entity_ref__in=refs)
+    if entity_type:
+        qs = qs.filter(entity_type=entity_type)
+
+    grouped = {}
+    for anchor in qs:
+        key = (anchor.entity_ref, anchor.entity_id) if id_attr else anchor.entity_ref
+        grouped.setdefault(key, []).append(anchor)
+
+    for record in records:
+        ref = _resolve(record, ref_attr)
+        key = (ref, str(_resolve(record, id_attr))) if id_attr else ref
+        record._anchors = grouped.get(key, [])
+    return records
+
+
+def anchors_for(entity_ref, entity_type=None, entity_id=None):
+    """Query one record's anchors (fallback when attach_anchors wasn't used)."""
+    qs = BlockchainAnchor.objects.filter(entity_ref=entity_ref)
+    if entity_type:
+        qs = qs.filter(entity_type=entity_type)
+    if entity_id is not None:
+        qs = qs.filter(entity_id=str(entity_id))
+    return list(qs)
+
+
+def attach_url_for(anchor):
+    """Endpoint the frontend posts the confirmed tx hash to. Bid and award
+    anchors both hang off endpoints the acting role already has access to."""
+    if anchor.entity_type == BlockchainAnchor.EntityType.PROJECT and anchor.entity_id:
+        return f"/projects/{anchor.entity_id}/anchor/"
+    if anchor.entity_type == BlockchainAnchor.EntityType.BID and anchor.entity_id:
+        return f"/bids/{anchor.entity_id}/anchor/"
+    if anchor.entity_type == BlockchainAnchor.EntityType.AWARD and anchor.entity_id:
+        return f"/awards/{anchor.entity_id}/anchor/"
+    return ""
+
+
+# ── Stretch goal: server-side signing with web3.py ───────────────────────────
+def _load_web3():
+    """Import web3 lazily so it stays an optional dependency: the MetaMask demo
+    path must work on a machine where web3.py was never installed."""
+    try:
+        from web3 import Web3  # noqa: PLC0415 — optional dependency, imported on demand
+    except ImportError:
+        logger.warning(
+            "BLOCKCHAIN_SERVER_SIGNING is on but web3.py is not installed "
+            "(pip install web3). Anchors will stay un-anchored."
+        )
+        return None
+    return Web3
+
+
+def _ledger_abi():
+    """The contract ABI, read from contracts/ProcurementLedger.abi.json at the
+    repo root — one copy, shared with the frontend, never duplicated here."""
+    from django.conf import settings  # noqa: PLC0415 — avoid an import cycle at module load
+
+    path = os.path.join(os.path.dirname(settings.BASE_DIR), "contracts", "ProcurementLedger.abi.json")
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def submit_anchor_server_side(anchor):
+    """Sign and submit `anchor` from the server with web3.py (no wallet).
+
+    Enabled with BLOCKCHAIN_SERVER_SIGNING=True plus BLOCKCHAIN_PRIVATE_KEY and
+    LEDGER_CONTRACT_ADDRESS in the environment. Best-effort by design: any
+    failure (no funds, RPC down, package missing) just leaves the anchor
+    un-anchored and retryable, exactly like a declined MetaMask prompt.
+
+    Returns the updated anchor, or None if nothing was submitted."""
+    if not (SERVER_SIGNING_ENABLED and BLOCKCHAIN_PRIVATE_KEY and LEDGER_CONTRACT_ADDRESS):
+        if SERVER_SIGNING_ENABLED:
+            logger.warning(
+                "Server-side anchoring is on but BLOCKCHAIN_PRIVATE_KEY / "
+                "LEDGER_CONTRACT_ADDRESS are not both set."
+            )
+        return None
+
+    Web3 = _load_web3()
+    if Web3 is None:
+        return None
+
+    try:
+        w3 = Web3(Web3.HTTPProvider(SEPOLIA_RPC_URL))
+        account = w3.eth.account.from_key(BLOCKCHAIN_PRIVATE_KEY)
+        ledger = w3.eth.contract(
+            address=Web3.to_checksum_address(LEDGER_CONTRACT_ADDRESS), abi=_ledger_abi(),
+        )
+        tx = ledger.functions.recordEvent(
+            anchor.entity_type, anchor.entity_ref, anchor.stage, anchor.data_hash,
+        ).build_transaction({
+            "from": account.address,
+            "nonce": w3.eth.get_transaction_count(account.address),
+            "chainId": SEPOLIA_CHAIN_ID,
+            # A tx this small is ~200k gas at most; leave price to the node.
+            "gas": 400_000,
+            "maxFeePerGas": w3.eth.gas_price * 2,
+            "maxPriorityFeePerGas": w3.to_wei(1.5, "gwei"),
+        })
+        signed = account.sign_transaction(tx)
+        # web3.py v6 exposes .rawTransaction, v7 renamed it to .raw_transaction.
+        raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
+        tx_hash = w3.eth.send_raw_transaction(raw)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+        return attach_transaction(
+            anchor, receipt["transactionHash"].hex() if hasattr(receipt["transactionHash"], "hex")
+            else str(receipt["transactionHash"]),
+            receipt.get("blockNumber"),
+            actor_address=account.address,
+        )
+    except Exception:  # pragma: no cover — never break the request
+        logger.exception("Server-side anchoring failed for anchor %s", anchor.id)
+        return None
+
+
+def read_chain_anchors(entity_ref):
+    """Read a procurement's trail straight from the contract (server-side, no
+    wallet). Used by the public verification endpoint as a fallback for browsers
+    that can't reach an RPC endpoint. Returns [] when unavailable rather than
+    raising — the DB view of the trail is always shown regardless."""
+    if not LEDGER_CONTRACT_ADDRESS:
+        return []
+    Web3 = _load_web3()
+    if Web3 is None:
+        return []
+    try:
+        w3 = Web3(Web3.HTTPProvider(SEPOLIA_RPC_URL))
+        ledger = w3.eth.contract(
+            address=Web3.to_checksum_address(LEDGER_CONTRACT_ADDRESS), abi=_ledger_abi(),
+        )
+        rows = ledger.functions.getAnchorsByRef(entity_ref).call()
+        return [
+            {
+                "entity_type": r[0], "entity_ref": r[1], "stage": r[2],
+                "data_hash": r[3], "actor": r[4], "timestamp": r[5],
+            }
+            for r in rows
+        ]
+    except Exception:
+        logger.warning("Could not read on-chain anchors for %s", entity_ref, exc_info=True)
+        return []

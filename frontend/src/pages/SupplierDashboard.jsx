@@ -14,6 +14,9 @@ import {
 } from '../api'
 import { CATEGORIES } from '../constants/categories'
 import { TableSkeleton, ListSkeleton } from '../components/Skeleton'
+import AnchorActivity from '../components/AnchorActivity'
+import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
+import { runAnchor } from '../blockchain/anchorStore'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import '../style/SupplierDashboard.css'
 
@@ -64,6 +67,9 @@ const mapBid = (b) => ({
   additionalComments: b.additional_comments || '',
   files: collectBidFiles(b),
   documents: b.documents || [],  // per-document review state (flag/approve/resubmit)
+  // Blockchain anchors for THIS bid (submitted / qualified / disqualified) — the
+  // supplier's own tamper-evident proof of what they submitted and when.
+  anchors: b.anchors || [],
   declarations: BID_DECLARATIONS.map(([key, label]) => ({ label, ok: !!b[key] })),
 })
 
@@ -627,6 +633,7 @@ function BidDetailModal({ bid, onClose, onWithdraw, onResubmitted, setToast }) {
             <div><span>Amount</span><strong>{bid.amount}</strong></div>
             <div><span>Submitted</span><strong>{bid.submitted}</strong></div>
             <div><span>Status</span><strong><span className={`badge ${BID_STATUS[bid.status] || 'badge-yellow'}`}>{bid.status.replace('_', ' ')}</span></strong></div>
+            <div><span>Blockchain</span><strong><BlockchainBadge anchors={bid.anchors} /></strong></div>
           </div>
           <div className="sd-bid-body">
             <div className="sd-bid-section">
@@ -704,6 +711,18 @@ function BidDetailModal({ bid, onClose, onWithdraw, onResubmitted, setToast }) {
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* Proof of submission: the hash of this bid + its quotation, and
+                the Sepolia transaction that witnesses it. If a step was never
+                anchored (MetaMask declined, no wallet at the time), it can be
+                anchored from here — the hash is unchanged. */}
+            <div className="sd-bid-section">
+              <BlockchainTrail
+                anchors={bid.anchors}
+                title="Blockchain Proof of Submission"
+                entityRef={bid.projectId}
+              />
             </div>
           </div>
         </div>
@@ -1852,9 +1871,16 @@ export default function SupplierDashboard() {
   // error toast on failure). `formData` is the multipart payload built in BidModal.
   const submitBid = async (project, formData) => {
     try {
-      await apiSubmitBid(project.pk, formData)
+      const created = await apiSubmitBid(project.pk, formData)
       loadBids()
       setToast({ type: 'success', message: 'Bid submitted successfully.' })
+      // The bid is saved at this point. Anchoring it on Sepolia is the optional
+      // follow-up: it hashes the bid + the quotation document, so the supplier
+      // gets tamper-evident proof of what they submitted and when. Not awaited —
+      // declining the MetaMask prompt must not look like a failed submission.
+      if (created?.anchor) {
+        runAnchor(created.anchor, { label: `${project.id} · Bid submitted` })
+      }
       return true
     } catch (err) {
       setToast({ type: 'error', message: err.message || 'Could not submit your bid.' })
@@ -1903,6 +1929,9 @@ export default function SupplierDashboard() {
           </Routes>
         </div>
       </div>
+      {/* Anchoring feedback for the supplier's own bid submissions. At the
+          layout root so it survives navigation while MetaMask is open. */}
+      <AnchorActivity />
     </div>
   )
 }

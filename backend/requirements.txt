@@ -12,3 +12,9 @@ gunicorn==23.0.0
 whitenoise==6.8.2
 django-storages==1.14.6
 boto3==1.43.36
+
+# Optional — only needed for the server-side blockchain signing path
+# (BLOCKCHAIN_SERVER_SIGNING=True). The default MetaMask demo path needs nothing
+# extra: procurement/blockchain.py imports web3 lazily and degrades gracefully
+# when it isn't installed. Uncomment to enable server-side anchoring.
+# web3==7.6.0

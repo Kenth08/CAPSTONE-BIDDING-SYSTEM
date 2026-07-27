@@ -14,6 +14,8 @@ import {
 } from '../store/projectsStore'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import NotificationBell from '../components/NotificationBell'
+import AnchorActivity from '../components/AnchorActivity'
+import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
 import '../style/HeadDashboard.css'
 
 const NAV = [
@@ -175,6 +177,7 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision }) {
         <div className="hd-pending-meta">
           <span className="hd-bold" style={{ fontSize: 16 }}>{project.budget}</span>
           <span className="hd-muted" style={{ fontSize: 12 }}>{deadlineLabel(project)}</span>
+          <BlockchainBadge anchors={project.anchors} onClick={() => setExpanded(true)} />
         </div>
         <div className="hd-pending-actions">
           <button className="hd-btn-expand" onClick={() => setExpanded(e => !e)}>
@@ -261,6 +264,13 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision }) {
               </button>
             </div>
           )}
+
+          {/* What has already been written to the blockchain for this
+              procurement — the Head can see the Admin's submission was anchored
+              before deciding, and anchor anything still pending. */}
+          <div style={{ marginTop: 14 }}>
+            <BlockchainTrail anchors={project.anchors} entityRef={project.code} />
+          </div>
         </div>
       )}
 
@@ -555,6 +565,10 @@ export default function HeadDashboard() {
           </Routes>
         </div>
       </div>
+      {/* Reports the blockchain anchoring of the Head's approve/reject/revision
+          decisions. Mounted at the layout root so it survives route changes
+          while a MetaMask prompt is open. */}
+      <AnchorActivity />
     </div>
   )
 }

@@ -15,6 +15,16 @@ A full-stack procurement management web application built as a capstone project.
 - **Contract Awarding** — Selecting a winner creates an Award record; expected delivery date is computed at award time (award date + delivery period)
 - **Public Transparency Portal** — `/public` — anyone (no login required) can view open biddings and awarded contracts/winners
 
+### Blockchain Audit Trail (Sepolia)
+Every status transition is hashed (record + its key document) and anchored on an Ethereum smart contract, giving the procurement lifecycle a tamper-evident, independently verifiable history. Hashes only — no documents and no personal data ever go on-chain.
+
+- **Anchored stages** — `SUBMITTED` → `HEAD_APPROVED` / `HEAD_REJECTED` / `REVISION_REQUESTED` → `BIDDING_OPEN` → `BID_SUBMITTED` → `BID_QUALIFIED` / `BID_DISQUALIFIED` → `AWARDED`
+- **MetaMask signing** for the demo, with an optional server-side signing path (`web3.py`) for production
+- **Public verification** — `/public` → *Verify on the Blockchain*: replay any procurement's trail straight from the contract with no account, no wallet and no gas, and check a document you hold against its anchored hash (hashed locally in the browser — the file is never uploaded)
+- **Never blocks the business flow** — a declined signature, wrong network or empty gas tank leaves the record valid and simply "not yet anchored", retryable from the record itself
+
+📘 **Setup, demo script and design notes: [BLOCKCHAIN.md](BLOCKCHAIN.md)** · contract deploy steps: [contracts/README.md](contracts/README.md)
+
 ### Supplier Management
 - Multi-step supplier registration with document uploads (SEC/DTI, Mayor's Permit, PhilGEPS Certificate, Tax Clearance, etc.)
 - Email verification on registration
@@ -43,8 +53,9 @@ A full-stack procurement management web application built as a capstone project.
 
 | Layer       | Technology |
 |-------------|-----------|
-| Frontend    | React 19, Vite, React Router 7, Lucide React, jsPDF |
+| Frontend    | React 19, Vite, React Router 7, Lucide React, jsPDF, ethers v6 |
 | Backend     | Django 6, Django REST Framework, SimpleJWT |
+| Blockchain  | Solidity 0.8 contract on the Ethereum Sepolia testnet, MetaMask (demo) / web3.py (optional server signing) |
 | Database    | PostgreSQL via Supabase (SQLite for local dev) |
 | File Storage | S3-compatible (Supabase Storage / AWS S3) |
 | Deployment  | Render (backend API), Vercel (frontend) |
@@ -56,22 +67,31 @@ A full-stack procurement management web application built as a capstone project.
 
 ```
 Capstone-project/
+├── contracts/              # Solidity ledger + ABI + Remix deploy notes
+│   ├── ProcurementLedger.sol
+│   ├── ProcurementLedger.abi.json
+│   └── README.md
 ├── frontend/               # React + Vite SPA
 │   └── src/
 │       ├── pages/          # AdminDashboard, HeadDashboard, SupplierDashboard, LoginPage, ...
-│       ├── components/     # Shared components (Skeleton, NotificationBell, LegalPageLayout)
+│       ├── components/     # Shared components (Skeleton, NotificationBell, LegalPageLayout,
+│       │                   #   AnchorActivity, BlockchainTrail, PublicVerifier)
+│       ├── blockchain/     # contract.js (address + ABI), anchor.js (MetaMask + chain reads),
+│       │                   #   anchorStore.js (anchoring progress + retry)
 │       ├── store/          # projectsStore.js — API-backed shared project state
 │       ├── style/          # Per-dashboard CSS files
 │       ├── constants/      # categories.js
 │       └── api.js          # All fetch wrappers
 ├── backend/
-│   ├── accounts/           # Custom User model, auth, MFA, password reset, throttling
+│   ├── accounts/           # Custom User model, auth, password reset, audit log, throttling
 │   └── procurement/        # Supplier, Project, Bid, Award, Document, Notification models + REST API
+│       ├── blockchain.py   # Hashing, canonical payloads, anchor recording, optional web3 signing
 │       └── management/
 │           └── commands/
 │               ├── seed.py       # Demo data + role accounts
 │               └── backup_db.py  # Manual DB export
 ├── render.yaml             # Render deployment blueprint
+├── BLOCKCHAIN.md           # Blockchain setup + end-to-end demo guide
 └── README.md
 ```
 
@@ -131,6 +151,14 @@ npm install
 npm run dev                  # http://localhost:3000
 ```
 
+### 4. Blockchain setup (optional)
+
+The app runs fine without this — transitions are still hashed and stored, records
+just show "not anchored". To enable on-chain anchoring, deploy
+`contracts/ProcurementLedger.sol` to Sepolia via Remix + MetaMask and put the
+address in `frontend/.env` (`VITE_LEDGER_ADDRESS`). Full walkthrough:
+**[BLOCKCHAIN.md](BLOCKCHAIN.md)**.
+
 ---
 
 ## Demo Accounts
@@ -159,12 +187,17 @@ Passwords are set when running `python manage.py seed`. Check the seed command o
 | `FRONTEND_URL` | Frontend origin for CORS and password reset links (e.g. `https://your-app.vercel.app`) |
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` | SMTP settings for email delivery (password reset, MFA codes, email verification). Unset = console backend |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_ENDPOINT_URL` | S3-compatible file storage (Supabase Storage or AWS S3). Unset = local media/ folder |
+| `LEDGER_CONTRACT_ADDRESS`, `SEPOLIA_RPC_URL` | Deployed ProcurementLedger address + Sepolia RPC. Optional — see [BLOCKCHAIN.md](BLOCKCHAIN.md) |
+| `BLOCKCHAIN_ANCHORING_ENABLED` | `False` disables anchoring entirely (default `True`) |
+| `BLOCKCHAIN_SERVER_SIGNING`, `BLOCKCHAIN_PRIVATE_KEY` | Optional server-side signing with web3.py instead of MetaMask. Off by default |
 
 ### Frontend (`frontend/.env`)
 
 | Variable | Description |
 |----------|-------------|
 | `VITE_API_URL` | Backend API base URL (e.g. `https://your-api.onrender.com/api`). Defaults to `http://127.0.0.1:8000/api` |
+| `VITE_LEDGER_ADDRESS` | Deployed ProcurementLedger contract address on Sepolia. Unset = records stay "not anchored" |
+| `VITE_SEPOLIA_RPC_URL` | Read-only Sepolia RPC for the public verification page. Defaults to a public endpoint |
 
 ---
 
@@ -197,6 +230,17 @@ Base URL: `http://127.0.0.1:8000/api/`
 | `/documents/` | Supplier compliance document records |
 | `/notifications/` | In-app notifications + `mark-read` action |
 | `/public/procurement/` | Public procurement results (no auth required) |
+
+### Blockchain anchoring
+Every transition endpoint above additionally returns an `anchor` object (`{ id, stage, data_hash, attach_url, … }`) — the hash to write on-chain and where to post the confirmed transaction back.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/projects/{id}/anchor/` | Record a confirmed Sepolia tx for a project anchor (Admin or Head) |
+| `POST` | `/bids/{id}/anchor/` | Record a confirmed tx for a bid anchor (scoped to your own bids) |
+| `POST` | `/awards/{id}/anchor/` | Record a confirmed tx for an award anchor (Admin) |
+| `GET` | `/projects/{id}/anchors/` | A procurement's full anchor trail |
+| `GET` | `/public/procurement/{code}/anchors/` | Public trail for one procurement code — hashes only, **no auth required** |
 
 ---
 
@@ -249,6 +293,10 @@ Admin selects winner → Award created, delivery date computed
         ▼
 Public Results Portal shows awarded contract
 ```
+
+Each arrow above also writes one hash to the blockchain ledger, so the finished
+trail can be replayed and verified by anyone from the public portal — see
+[BLOCKCHAIN.md](BLOCKCHAIN.md).
 
 ---
 

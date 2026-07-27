@@ -403,6 +403,84 @@ class Document(models.Model):
         return f"{self.supplier.company} - {self.doc_type}"
 
 
+class BlockchainAnchor(models.Model):
+    """One procurement lifecycle event, hashed and (optionally) anchored on-chain.
+
+    Written by procurement.blockchain.record_anchor() right after a status
+    transition succeeds — alongside the AuditLog entry, never instead of it. The
+    row is created with an EMPTY tx_hash: the DB is always the source of truth
+    for the business record, and the blockchain is an independent, tamper-evident
+    witness that gets attached afterwards. A row with no tx_hash simply reads as
+    "not yet anchored" and can be retried later, so a rejected MetaMask prompt,
+    a wrong network, or an empty gas tank never rolls back an approval.
+
+    Only `data_hash` + entity_type/entity_ref/stage ever leave the server for the
+    chain. `payload` and `document_hash` stay here so an auditor can be shown
+    exactly what was hashed and recompute it; the public endpoint deliberately
+    exposes the hashes only, never the payload (bid amounts and supplier details
+    stay private, same as PublicProcurementView).
+    """
+
+    class EntityType(models.TextChoices):
+        PROJECT = "PROJECT", "Project"
+        BID = "BID", "Bid"
+        AWARD = "AWARD", "Award"
+
+    # Lifecycle stages, one anchor per status transition. These exact strings go
+    # on-chain, so treat them as an append-only vocabulary — never rename one.
+    class Stage(models.TextChoices):
+        SUBMITTED = "SUBMITTED", "Submitted for approval"
+        HEAD_APPROVED = "HEAD_APPROVED", "Approved by Head"
+        HEAD_REJECTED = "HEAD_REJECTED", "Rejected by Head"
+        REVISION_REQUESTED = "REVISION_REQUESTED", "Revision requested"
+        BIDDING_OPEN = "BIDDING_OPEN", "Published for bidding"
+        BID_SUBMITTED = "BID_SUBMITTED", "Bid submitted"
+        BID_QUALIFIED = "BID_QUALIFIED", "Bid qualified"
+        BID_DISQUALIFIED = "BID_DISQUALIFIED", "Bid disqualified"
+        AWARDED = "AWARDED", "Contract awarded"
+
+    entity_type = models.CharField(max_length=10, choices=EntityType.choices)
+    # The procurement code (e.g. "P-2026-001") for EVERY anchor — project, bid
+    # and award alike — because that's how the contract indexes anchors, so one
+    # on-chain lookup returns a procurement's whole trail.
+    entity_ref = models.CharField(max_length=64)
+    # Local PK of the anchored row (project/bid/award id). Off-chain only:
+    # needed to tell two suppliers' BID_SUBMITTED anchors apart when attaching a
+    # tx hash. Never part of the hashed payload's identity on its own.
+    entity_id = models.CharField(max_length=32, blank=True)
+    stage = models.CharField(max_length=32, choices=Stage.choices)
+    # "0x" + 64 hex chars = 66. SHA-256 of the canonical payload below.
+    data_hash = models.CharField(max_length=66)
+    # SHA-256 of the key document for this stage ("" when the stage has none).
+    # Published to the public verifier so an uploaded file can be checked
+    # against it; it is also an input to data_hash, so the chain binds it.
+    document_hash = models.CharField(max_length=66, blank=True)
+    # Exactly what was hashed, kept for auditability (admin-only reads).
+    payload = models.JSONField(default=dict, blank=True)
+    # Filled in once the transaction confirms; blank = not yet anchored.
+    tx_hash = models.CharField(max_length=66, blank=True)
+    block_number = models.PositiveBigIntegerField(null=True, blank=True)
+    # Wallet/signer that submitted the transaction, when known.
+    actor_address = models.CharField(max_length=42, blank=True)
+    anchored_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["entity_ref", "created_at"]),
+            models.Index(fields=["entity_type", "entity_id"]),
+        ]
+
+    @property
+    def anchored(self):
+        return bool(self.tx_hash)
+
+    def __str__(self):
+        state = self.tx_hash[:12] + "…" if self.tx_hash else "not anchored"
+        return f"{self.entity_ref} {self.stage} ({state})"
+
+
 class Notification(models.Model):
     """A simple in-app notification (e.g. bid evaluation result / award)."""
 

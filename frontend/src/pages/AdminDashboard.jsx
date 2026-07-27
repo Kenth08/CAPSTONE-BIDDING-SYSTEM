@@ -19,6 +19,9 @@ import {
 import { CATEGORIES } from '../constants/categories'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import NotificationBell from '../components/NotificationBell'
+import AnchorActivity from '../components/AnchorActivity'
+import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
+import { runAnchor } from '../blockchain/anchorStore'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import '../style/AdminDashboard.css'
 
@@ -2148,6 +2151,7 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
             <span className={`badge ${QUAL_BID_CLS[bid.status] || 'badge-gray'}`}>
               {bid.status === 'winner' ? '• Winning Bidder' : (QUAL_BID_LABEL[bid.status] || bid.status)}
             </span>
+            <BlockchainBadge anchors={bid.anchors} />
           </div>
 
           <div className="ad-info-grid">
@@ -2187,6 +2191,16 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
                 ))}
               </div>
             )}
+          </div>
+
+          {/* This bid's own on-chain record: submission and evaluation result,
+              each bound to the quotation document that was on file at the time. */}
+          <div className="ad-bid-details-sec">
+            <BlockchainTrail
+              anchors={bid.anchors}
+              title="Blockchain Record for this Bid"
+              entityRef={bid.project_code}
+            />
           </div>
 
           <div className="ad-bid-details-sec">
@@ -2395,10 +2409,18 @@ function BidEvaluationPage() {
   const awarded = project?.status === 'awarded'
 
   // Qualify/disqualify only change the bid's own status — refetch just the
-  // bids table, not the project header too.
-  const act = async (bid, fn, errMsg) => {
+  // bids table, not the project header too. The evaluation decision is anchored
+  // afterwards (not awaited: the decision is already saved, and the on-chain
+  // write is an optional witness that can be retried from the bid's trail).
+  const act = async (bid, fn, errMsg, stageLabel) => {
     setBusyId(bid.id)
-    try { await fn(bid.id); loadBidsList() }
+    try {
+      const updated = await fn(bid.id)
+      loadBidsList()
+      if (updated?.anchor) {
+        runAnchor(updated.anchor, { label: `${project?.code || ''} · ${stageLabel}` })
+      }
+    }
     catch (e) { setToast({ type: 'error', message: e.message || errMsg }) }
     finally { setBusyId(null) }
   }
@@ -2425,10 +2447,15 @@ function BidEvaluationPage() {
     const bid = confirm.bid
     setBusyId(bid.id); setConfirm(null)
     try {
-      await apiSelectWinner(bid.id)
+      const result = await apiSelectWinner(bid.id)
       await load()
       refreshProjects()  // the project is now Awarded — refresh the shared store
       setToast({ type: 'success', message: `${bid.supplier_name} selected as the winning bidder.` })
+      // Final link in the chain: the award itself. Anchored as AWARD, so the
+      // public trail ends with an unambiguous "this contract went to this bid".
+      if (result?.anchor) {
+        runAnchor(result.anchor, { label: `${project?.code || ''} · Contract awarded` })
+      }
     } catch (e) {
       setToast({ type: 'error', message: e.message || 'Could not select winner.' })
     } finally {
@@ -2469,9 +2496,12 @@ function BidEvaluationPage() {
                   {project.code} · {project.category || '—'} · ABC {peso(project.budget)}
                 </p>
               </div>
-              <button className="ad-btn-timeline" onClick={() => setShowTimeline(true)}>
-                <Clock size={14} /> View Timeline
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <BlockchainBadge anchors={project.anchors} />
+                <button className="ad-btn-timeline" onClick={() => setShowTimeline(true)}>
+                  <Clock size={14} /> View Timeline
+                </button>
+              </div>
             </div>
             {project.reference_image_url && (
               <div className="ad-eval-refimg">
@@ -2531,6 +2561,13 @@ function BidEvaluationPage() {
               </tbody>
             </table>
           </div>
+
+          {/* The whole procurement's on-chain trail: submission, Head decision,
+              publication, every bid, and the award. Anything not yet anchored
+              can be signed from here. */}
+          <div className="ad-card" style={{ padding: 0, overflow: 'hidden' }}>
+            <BlockchainTrail anchors={project.anchors} entityRef={project.code} />
+          </div>
         </>
       )}
 
@@ -2540,8 +2577,8 @@ function BidEvaluationPage() {
           awarded={awarded}
           busyId={busyId}
           projectName={project.name}
-          onQualify={(b) => act(b, apiQualifyBid, 'Could not qualify.')}
-          onDisqualify={(b) => act(b, apiDisqualifyBid, 'Could not disqualify.')}
+          onQualify={(b) => act(b, apiQualifyBid, 'Could not qualify.', 'Bid qualified')}
+          onDisqualify={(b) => act(b, apiDisqualifyBid, 'Could not disqualify.', 'Bid disqualified')}
           onMarkWinner={(b) => setConfirm({ bid: b })}
           onRequestRevision={requestRevision}
           confirm={confirm}
@@ -2933,6 +2970,10 @@ export default function AdminDashboard() {
           </Routes>
         </div>
       </div>
+      {/* Blockchain anchoring feedback for every Admin transition (create,
+          publish, qualify/disqualify, award). At the layout root so it survives
+          route changes while a MetaMask prompt is open. */}
+      <AnchorActivity />
     </div>
   )
 }

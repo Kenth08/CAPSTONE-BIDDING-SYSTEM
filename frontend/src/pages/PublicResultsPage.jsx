@@ -5,6 +5,7 @@ import {
   Tag, Users, Inbox, AlertCircle,
 } from 'lucide-react'
 import { apiPublicProcurement } from '../api'
+import PublicVerifier from '../components/PublicVerifier'
 import '../style/PublicResultsPage.css'
 
 const peso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
@@ -171,6 +172,11 @@ export default function PublicResultsPage() {
             </div>
           )}
         </section>
+
+        {/* Independent verification: replay any procurement's history straight
+            from the Sepolia ledger, and check a document against its anchored
+            hash. Read-only — no account, no wallet, no gas. */}
+        <PublicVerifier />
 
         {/* CTA */}
         <section className="pub-cta">

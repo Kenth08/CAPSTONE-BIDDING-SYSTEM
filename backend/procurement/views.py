@@ -13,6 +13,17 @@ from rest_framework.views import APIView
 
 from accounts.audit import log_action
 
+from .blockchain import (
+    ETHERSCAN_TX_URL,
+    LEDGER_CONTRACT_ADDRESS,
+    SEPOLIA_CHAIN_ID,
+    anchor_award,
+    anchor_bid,
+    anchor_project,
+    anchor_summary,
+    attach_anchors,
+    attach_transaction,
+)
 from .models import (
     BID_DOCUMENT_FIELDS,
     BID_DOCUMENT_KEYS,
@@ -23,6 +34,7 @@ from .models import (
     Award,
     Bid,
     BidAttachment,
+    BlockchainAnchor,
     Document,
     Notification,
     Project,
@@ -31,7 +43,7 @@ from .models import (
 from rest_framework import permissions
 
 from .notifications import email_user, notify_admins, notify_heads, notify_supplier, notify_users
-from .permissions import IsAdminRole, IsHeadRole, IsSupplierRole
+from .permissions import IsAdminOrHeadRole, IsAdminRole, IsHeadRole, IsSupplierRole
 from .serializers import (
     AwardSerializer,
     BidSerializer,
@@ -72,6 +84,127 @@ def close_expired_published_projects():
     Project.objects.filter(
         status=Project.Status.PUBLISHED, deadline__lt=timezone.localdate(),
     ).update(status=Project.Status.CLOSED)
+
+
+def anchored_response(serializer_data, anchor, status_code=http_status.HTTP_200_OK):
+    """Return a transition's normal response body with the freshly computed
+    `anchor` (data_hash + where to post the tx hash back) added.
+
+    This is how the frontend learns what to sign: the DB change has already
+    happened and is final, and `anchor` is the optional blockchain follow-up.
+    `anchor` is null when anchoring is disabled or failed — the caller just skips
+    the on-chain step and the record shows as "not yet anchored"."""
+    data = dict(serializer_data)
+    data["anchor"] = anchor_summary(anchor)
+    return Response(data, status=status_code)
+
+
+def attach_anchor_transaction(request, *, entity_ref, entity_type, entity_id):
+    """Shared body of the three /anchor/ endpoints.
+
+    Accepts { anchor_id?, stage?, tx_hash, block_number?, actor_address? } and
+    records the confirmed transaction on the matching anchor. `anchor_id` (which
+    the transition response hands the frontend) is the precise path; `stage` is
+    the fallback so a retry can find the newest un-anchored anchor for a stage.
+
+    Idempotent: posting a tx hash for an already-anchored row is a no-op 200, so
+    a double-click or a retry after a flaky response can't corrupt the trail."""
+    scoped = BlockchainAnchor.objects.filter(
+        entity_ref=entity_ref, entity_type=entity_type, entity_id=str(entity_id),
+    )
+
+    anchor_id = request.data.get("anchor_id")
+    stage = (request.data.get("stage") or "").strip()
+    if anchor_id:
+        anchor = scoped.filter(id=anchor_id).first()
+    elif stage:
+        anchor = scoped.filter(stage=stage, tx_hash="").order_by("-created_at", "-id").first()
+    else:
+        return Response(
+            {"detail": "Provide anchor_id or stage."}, status=http_status.HTTP_400_BAD_REQUEST)
+
+    if anchor is None:
+        return Response(
+            {"detail": "No matching blockchain anchor for this record."},
+            status=http_status.HTTP_404_NOT_FOUND)
+
+    if anchor.anchored:
+        return Response(anchor_summary(anchor))
+
+    try:
+        attach_transaction(
+            anchor,
+            request.data.get("tx_hash"),
+            request.data.get("block_number"),
+            actor_address=request.data.get("actor_address", ""),
+        )
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
+
+    log_action(
+        request, "blockchain.anchored",
+        entity_type=anchor.entity_type, entity_id=anchor.entity_id,
+        description=f"Anchored {anchor.entity_ref} {anchor.stage} on-chain (tx {anchor.tx_hash}).",
+    )
+    return Response(anchor_summary(anchor))
+
+
+class PublicAnchorTrailView(APIView):
+    """Unauthenticated blockchain trail for one procurement code.
+
+    Anyone can verify a procurement without an account, a wallet, or gas: this
+    returns the hashes the system recorded at each lifecycle step plus the
+    Sepolia transaction that witnesses each one. The public verification page
+    cross-checks these against the contract itself, so a hash silently edited in
+    this database would no longer match the chain.
+
+    Deliberately hash-only: no payloads, no bid amounts, no supplier identities —
+    same privacy posture as PublicProcurementView. `document_hash` is included so
+    a citizen holding a copy of a published document can hash their file and
+    prove it is the one that was attested to."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, code):
+        project = Project.objects.filter(code=code).first()
+        if project is None:
+            return Response({"detail": "Unknown procurement code."},
+                            status=http_status.HTTP_404_NOT_FOUND)
+
+        anchors = BlockchainAnchor.objects.filter(entity_ref=code)
+        trail = [
+            {
+                "entity_type": a.entity_type,
+                "stage": a.stage,
+                "stage_label": a.get_stage_display(),
+                "data_hash": a.data_hash,
+                # Published to let a citizen hash a document they hold and prove
+                # it is the one attested to — but only for documents that are
+                # actually public. A losing bidder's quotation is not, so its
+                # hash is withheld (the AWARD anchor covers the winning bid,
+                # which a procurement award does make disclosable).
+                "document_hash": "" if a.entity_type == BlockchainAnchor.EntityType.BID else a.document_hash,
+                "tx_hash": a.tx_hash,
+                "block_number": a.block_number,
+                "actor_address": a.actor_address,
+                "anchored": a.anchored,
+                "explorer_url": (ETHERSCAN_TX_URL + a.tx_hash) if a.tx_hash else "",
+                "recorded_at": a.created_at,
+                "anchored_at": a.anchored_at,
+            }
+            for a in anchors
+        ]
+        return Response({
+            "code": project.code,
+            "name": project.name,
+            "status": project.status,
+            "category": project.category,
+            "contract_address": LEDGER_CONTRACT_ADDRESS,
+            "chain": "sepolia",
+            "chain_id": SEPOLIA_CHAIN_ID,
+            "anchors": trail,
+        })
 
 
 class PublicProcurementView(APIView):
@@ -141,9 +274,48 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return [IsHeadRole()]
         if self.action == "bid":
             return [IsSupplierRole()]
-        if self.action in {"list", "retrieve", "stats"}:
+        if self.action in {"list", "retrieve", "stats", "anchors"}:
             return [permissions.IsAuthenticated()]
+        # Both Admin and Head cause project transitions, so both may attach the
+        # resulting transaction hash.
+        if self.action == "anchor":
+            return [IsAdminOrHeadRole()]
         return [IsAdminRole()]
+
+    def list(self, request, *args, **kwargs):
+        """Same as the default list, with every project's blockchain trail
+        bulk-loaded in one extra query instead of one query per row."""
+        projects = attach_anchors(self.filter_queryset(self.get_queryset()))
+        return Response(self.get_serializer(projects, many=True).data)
+
+    @action(detail=True, methods=["post"])
+    def anchor(self, request, pk=None):
+        """Record the confirmed Sepolia transaction for one of this project's
+        anchors: { anchor_id | stage, tx_hash, block_number }.
+
+        Separate from the transition endpoints on purpose — the status change is
+        already committed by the time the wallet is even asked to sign, so a
+        rejected signature, a wrong network or an empty gas tank leaves a valid
+        record that is merely "not yet anchored" and can be retried."""
+        project = self.get_object()
+        return attach_anchor_transaction(
+            request, entity_ref=project.code,
+            entity_type=BlockchainAnchor.EntityType.PROJECT, entity_id=project.id,
+        )
+
+    @action(detail=True, methods=["get"])
+    def anchors(self, request, pk=None):
+        """This procurement's full anchor trail (its own, its bids', its award's)
+        — powers the blockchain status badge and the "retry anchoring" button."""
+        project = self.get_object()
+        rows = BlockchainAnchor.objects.filter(entity_ref=project.code)
+        include_payload = getattr(request.user, "role", None) == "admin"
+        return Response({
+            "code": project.code,
+            "contract_address": LEDGER_CONTRACT_ADDRESS,
+            "chain_id": SEPOLIA_CHAIN_ID,
+            "anchors": [anchor_summary(a, include_payload=include_payload) for a in rows],
+        })
 
     def get_queryset(self):
         close_expired_published_projects()
@@ -312,10 +484,23 @@ class ProjectViewSet(viewsets.ModelViewSet):
             entity_type="Bid", entity_id=bid.id,
             description=f"{supplier.company} {verb} {project.code} for {amount}.",
         )
-        return Response(
+        # Anchor the bid as submitted — hashes the bid record + the quotation
+        # document, so neither the amount nor the file can be changed afterwards
+        # without breaking the on-chain hash. A re-submission is a new anchor
+        # (append-only), never an overwrite of the old one.
+        anchor = anchor_bid(bid, BlockchainAnchor.Stage.BID_SUBMITTED)
+        return anchored_response(
             BidSerializer(bid, context={"request": request}).data,
-            status=http_status.HTTP_201_CREATED,
+            anchor,
+            status_code=http_status.HTTP_201_CREATED,
         )
+
+    def create(self, request, *args, **kwargs):
+        """Default create, plus the SUBMITTED anchor in the response body so the
+        Admin's browser can sign it right after the procurement is filed."""
+        response = super().create(request, *args, **kwargs)
+        response.data["anchor"] = anchor_summary(getattr(self, "_create_anchor", None))
+        return response
 
     def perform_create(self, serializer):
         # Auto-generate a code like P-2026-001
@@ -334,6 +519,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
             entity_type="Project", entity_id=project.id,
             description=f"Created procurement {project.code} - {project.name} (sent for approval).",
         )
+        # First link in the chain: the procurement as filed, hashed together with
+        # its Purchase Request document. Picked up by create() above.
+        self._create_anchor = anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
@@ -353,7 +541,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
             entity_type="Project", entity_id=project.id,
             description=f"Head approved procurement {project.code}.",
         )
-        return Response(self.get_serializer(project).data)
+        anchor = anchor_project(project, BlockchainAnchor.Stage.HEAD_APPROVED)
+        return anchored_response(self.get_serializer(project).data, anchor)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
@@ -376,7 +565,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
             description=f"Head rejected procurement {project.code}."
             + (f" Reason: {reason}" if reason else ""),
         )
-        return Response(self.get_serializer(project).data)
+        anchor = anchor_project(project, BlockchainAnchor.Stage.HEAD_REJECTED)
+        return anchored_response(self.get_serializer(project).data, anchor)
 
     @action(detail=True, methods=["post"], url_path="request-revision")
     def request_revision(self, request, pk=None):
@@ -424,7 +614,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
             entity_type="Project", entity_id=project.id,
             description=f"Head requested revision on {project.code}: {flagged}.",
         )
-        return Response(self.get_serializer(project).data)
+        anchor = anchor_project(project, BlockchainAnchor.Stage.REVISION_REQUESTED)
+        return anchored_response(self.get_serializer(project).data, anchor)
 
     @action(detail=True, methods=["post"], url_path="resubmit-documents")
     def resubmit_documents(self, request, pk=None):
@@ -503,7 +694,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
             description=f"Published {project.code} for bidding"
             + (f" (deadline {project.deadline})." if project.deadline else "."),
         )
-        return Response(self.get_serializer(project).data)
+        # Anchored with the bid evaluation criteria document: this is the moment
+        # the rules of the competition become public, so pinning them here is
+        # what stops the criteria being quietly rewritten after bids are in.
+        anchor = anchor_project(project, BlockchainAnchor.Stage.BIDDING_OPEN)
+        return anchored_response(self.get_serializer(project).data, anchor)
 
     @action(detail=False, methods=["get"])
     def stats(self, request):
@@ -720,9 +915,30 @@ class BidViewSet(viewsets.ModelViewSet):
         # resubmit flagged documents; Admin lists all + runs evaluation actions.
         if self.action == "resubmit_documents":
             return [IsSupplierRole()]
-        if self.action in {"list", "retrieve", "destroy"}:
+        # A supplier anchors their own bid submission, the Admin anchors the
+        # qualify/disqualify steps — both go through get_queryset, which already
+        # scopes suppliers to their own bids, so this can't touch anyone else's.
+        if self.action in {"list", "retrieve", "destroy", "anchor"}:
             return [permissions.IsAuthenticated()]
         return [IsAdminRole()]
+
+    def list(self, request, *args, **kwargs):
+        """Default list with each bid's anchors bulk-loaded (one extra query)."""
+        bids = attach_anchors(
+            self.filter_queryset(self.get_queryset()),
+            ref_attr="project.code", entity_type=BlockchainAnchor.EntityType.BID, id_attr="id",
+        )
+        return Response(self.get_serializer(bids, many=True).data)
+
+    @action(detail=True, methods=["post"])
+    def anchor(self, request, pk=None):
+        """Record the confirmed Sepolia transaction for one of this bid's anchors:
+        { anchor_id | stage, tx_hash, block_number }."""
+        bid = self.get_object()
+        return attach_anchor_transaction(
+            request, entity_ref=bid.project.code,
+            entity_type=BlockchainAnchor.EntityType.BID, entity_id=bid.id,
+        )
 
     def get_queryset(self):
         qs = Bid.objects.select_related(
@@ -738,11 +954,14 @@ class BidViewSet(viewsets.ModelViewSet):
             qs = qs.filter(project_id=project_id)
         return qs
 
-    def _set_status(self, bid, status):
+    def _set_status(self, bid, status, stage=None):
         bid.status = status
         bid.reviewed_at = timezone.now()
         bid.save(update_fields=["status", "reviewed_at"])
-        return Response(self.get_serializer(bid).data)
+        # Anchor AFTER the save so the hashed payload is the state that was
+        # actually committed, never a state that a later failure rolled back.
+        anchor = anchor_bid(bid, stage) if stage else None
+        return anchored_response(self.get_serializer(bid).data, anchor)
 
     @action(detail=True, methods=["post"])
     def qualify(self, request, pk=None):
@@ -759,7 +978,8 @@ class BidViewSet(viewsets.ModelViewSet):
             entity_type="Bid", entity_id=bid.id,
             description=f"Qualified {bid.supplier.company}'s bid on {bid.project.code}.",
         )
-        return self._set_status(bid, Bid.Status.QUALIFIED)
+        return self._set_status(
+            bid, Bid.Status.QUALIFIED, BlockchainAnchor.Stage.BID_QUALIFIED)
 
     @action(detail=True, methods=["post"])
     def disqualify(self, request, pk=None):
@@ -776,7 +996,8 @@ class BidViewSet(viewsets.ModelViewSet):
             entity_type="Bid", entity_id=bid.id,
             description=f"Disqualified {bid.supplier.company}'s bid on {bid.project.code}.",
         )
-        return self._set_status(bid, Bid.Status.DISQUALIFIED)
+        return self._set_status(
+            bid, Bid.Status.DISQUALIFIED, BlockchainAnchor.Stage.BID_DISQUALIFIED)
 
     @action(detail=True, methods=["post"], url_path="request-revision")
     def request_revision(self, request, pk=None):
@@ -892,7 +1113,7 @@ class BidViewSet(viewsets.ModelViewSet):
         bid.status = Bid.Status.WINNER
         bid.save(update_fields=["status"])
 
-        Award.objects.get_or_create(
+        award, _ = Award.objects.get_or_create(
             project=project, supplier=bid.supplier,
             defaults={"bid": bid, "amount": bid.amount},
         )
@@ -927,7 +1148,11 @@ class BidViewSet(viewsets.ModelViewSet):
             entity_type="Project", entity_id=project.id,
             description=f"Awarded {project.code} to {bid.supplier.company} for {bid.amount}.",
         )
-        return Response(self.get_serializer(bid).data)
+        # Final link in the chain: the award itself, hashed with the winning
+        # quotation. Anchored as AWARD (not BID) so the public trail ends with an
+        # unambiguous "this contract went to this bid at this amount".
+        anchor = anchor_award(award)
+        return anchored_response(self.get_serializer(bid).data, anchor)
 
 
 class AwardViewSet(viewsets.ModelViewSet):
@@ -939,6 +1164,25 @@ class AwardViewSet(viewsets.ModelViewSet):
     queryset = Award.objects.select_related("project", "supplier").all()
     serializer_class = AwardSerializer
     permission_classes = [IsAdminRole]
+
+    def list(self, request, *args, **kwargs):
+        """Default list with each award's anchors bulk-loaded (one extra query)."""
+        awards = attach_anchors(
+            self.filter_queryset(self.get_queryset()),
+            ref_attr="project.code", entity_type=BlockchainAnchor.EntityType.AWARD, id_attr="id",
+        )
+        return Response(self.get_serializer(awards, many=True).data)
+
+    @action(detail=True, methods=["post"])
+    def anchor(self, request, pk=None):
+        """Record the confirmed Sepolia transaction for this award's anchor —
+        the endpoint the Admin's browser posts to after signing the AWARDED
+        anchor returned by /bids/{id}/select-winner/."""
+        award = self.get_object()
+        return attach_anchor_transaction(
+            request, entity_ref=award.project.code,
+            entity_type=BlockchainAnchor.EntityType.AWARD, entity_id=award.id,
+        )
 
 
 class DocumentViewSet(viewsets.ModelViewSet):

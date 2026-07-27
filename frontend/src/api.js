@@ -163,6 +163,21 @@ export async function apiPublicProcurement() {
   return res.json() // { biddings: [...], winners: [...] }
 }
 
+// The public blockchain trail for one procurement code: the hash recorded at
+// each lifecycle step plus the Sepolia transaction that witnesses it. No token —
+// verification is open to anyone, with no account and no wallet.
+export async function apiPublicAnchors(code) {
+  let res
+  try {
+    res = await fetch(`${API_URL}/public/procurement/${encodeURIComponent(code)}/anchors/`)
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (res.status === 404) throw new Error(`No procurement found with reference "${code}".`)
+  if (!res.ok) throw new Error('Unable to load the blockchain trail right now. Please try again later.')
+  return res.json() // { code, name, status, contract_address, anchors: [...] }
+}
+
 // ── Authenticated requests (for wiring dashboard data later) ───────────────────
 export async function apiFetch(path, options = {}) {
   const token = getToken()
@@ -291,6 +306,31 @@ export const apiListAwards = () => apiFetch('/awards/')
 
 // ── Documents (admin) ────────────────────────────────────────────────────────────
 export const apiListDocuments = () => apiFetch('/documents/')
+
+// ── Blockchain anchoring ───────────────────────────────────────────────────────
+// Every status-transition endpoint above now returns an extra `anchor` object:
+//   { id, entity_type, entity_ref, stage, data_hash, attach_url, ... }
+// `data_hash` is what gets signed into the ProcurementLedger contract, and
+// `attach_url` is where the confirmed transaction is posted back — so the
+// frontend never has to know which entity kind it's holding (see
+// blockchain/anchor.js, which posts to attach_url via apiFetch).
+//
+// A record with no transaction yet simply reads as "not yet anchored" and can be
+// retried; the procurement data itself is already saved either way.
+export const apiListProjectAnchors = (projectId) => apiFetch(`/projects/${projectId}/anchors/`)
+
+// Explicit per-entity helpers, for callers that would rather not use attach_url.
+const anchorBody = ({ anchorId, stage, txHash, blockNumber, actorAddress }) =>
+  JSON.stringify({
+    anchor_id: anchorId, stage, tx_hash: txHash,
+    block_number: blockNumber, actor_address: actorAddress,
+  })
+export const apiAnchorProject = (projectId, payload) =>
+  apiFetch(`/projects/${projectId}/anchor/`, { method: 'POST', body: anchorBody(payload) })
+export const apiAnchorBid = (bidId, payload) =>
+  apiFetch(`/bids/${bidId}/anchor/`, { method: 'POST', body: anchorBody(payload) })
+export const apiAnchorAward = (awardId, payload) =>
+  apiFetch(`/awards/${awardId}/anchor/`, { method: 'POST', body: anchorBody(payload) })
 
 // ── Notifications ──────────────────────────────────────────────────────────────
 export const apiListNotifications = () => apiFetch('/notifications/')

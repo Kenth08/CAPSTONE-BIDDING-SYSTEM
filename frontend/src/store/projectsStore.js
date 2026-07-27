@@ -13,6 +13,7 @@ import {
   apiListProjects, apiCreateProject, apiApproveProject, apiRejectProject, apiPublishProject,
   apiProjectRequestRevision, apiResubmitProjectDocuments,
 } from '../api'
+import { runAnchor } from '../blockchain/anchorStore'
 
 // ── Internal state ────────────────────────────────────────────────────────────
 let projects = []
@@ -67,6 +68,9 @@ function fromApi(p) {
     status: p.status,
     description: p.description,
     documents: p.documents || [],   // [{ key, label, required, url, review_status, review_note }]
+    // Blockchain anchor trail for this procurement (its own steps plus its bids'
+    // and its award's) — [{ id, stage, data_hash, tx_hash, anchored, ... }].
+    anchors: p.anchors || [],
     referenceImage: p.reference_image_url || '',  // optional product reference photo
     submittedAt: fmtDate(p.created_at),
     reviewedAt: p.reviewed_at ? fmtDate(p.reviewed_at) : null,
@@ -128,6 +132,18 @@ function upsert(apiProject) {
   emit()
 }
 
+// Every transition endpoint returns an `anchor` alongside the updated project:
+// the SHA-256 the backend computed for this exact step. Anchoring it is a
+// separate, optional follow-up — the project change is already committed, so we
+// deliberately DON'T await it and never let it reject. Progress and retry are
+// handled by the shared anchoring card (see blockchain/anchorStore.js), so each
+// action here stays a one-liner.
+function anchorAfter(apiProject, stageLabel) {
+  const anchor = apiProject?.anchor
+  if (!anchor) return
+  runAnchor(anchor, { label: `${apiProject.code} · ${stageLabel}` })
+}
+
 // Procurement creation is multipart — text fields + the required document files.
 export async function createProject(form, files = {}) {
   const fd = new FormData()
@@ -143,21 +159,29 @@ export async function createProject(form, files = {}) {
   Object.entries(files).forEach(([key, file]) => { if (file) fd.append(key, file) })
   // Optional reference image — only sent when the admin attached one.
   if (form.reference_image) fd.append('reference_image', form.reference_image)
-  upsert(await apiCreateProject(fd))
+  const created = await apiCreateProject(fd)
+  upsert(created)
+  anchorAfter(created, 'Submitted for approval')
 }
 
 export async function approveProject(id) {
-  upsert(await apiApproveProject(id))
+  const updated = await apiApproveProject(id)
+  upsert(updated)
+  anchorAfter(updated, 'Approved by Head')
 }
 
 export async function rejectProject(id, reason = '') {
-  upsert(await apiRejectProject(id, reason))
+  const updated = await apiRejectProject(id, reason)
+  upsert(updated)
+  anchorAfter(updated, 'Rejected by Head')
 }
 
 // Head flags one or more procurement documents — project bounces to Admin's
 // Planning queue (status `needs_revision`) instead of being rejected outright.
 export async function requestProjectRevision(id, documents) {
-  upsert(await apiProjectRequestRevision(id, documents))
+  const updated = await apiProjectRequestRevision(id, documents)
+  upsert(updated)
+  anchorAfter(updated, 'Revision requested')
 }
 
 // Admin re-uploads just the flagged document(s) — project returns to
@@ -168,7 +192,9 @@ export async function resubmitProjectDocuments(id, formData) {
 
 // Admin publishes an approved procurement → status `published` (open for bidding).
 export async function publishProject(id) {
-  upsert(await apiPublishProject(id))
+  const updated = await apiPublishProject(id)
+  upsert(updated)
+  anchorAfter(updated, 'Published for bidding')
 }
 
 // Force a silent refresh — used after an out-of-store change (e.g. selecting a

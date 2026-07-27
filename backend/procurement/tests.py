@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -8,7 +9,8 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import Award, Bid, Project, Supplier
+from .blockchain import hash_file, hash_payload, record_anchor
+from .models import Award, Bid, BlockchainAnchor, Project, Supplier
 
 User = get_user_model()
 
@@ -321,3 +323,236 @@ class BidSubmissionEligibilityTests(APITestCase):
         # A non-published project is excluded from get_queryset entirely for a
         # supplier, so get_object() 404s before the status check even runs.
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class BlockchainAnchorTests(APITestCase):
+    """The anchoring layer: hashes are deterministic, every transition records
+    one anchor, and a status change never depends on the chain succeeding."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.head = make_head()
+        self.project = make_project(status=Project.Status.PENDING_HEAD)
+
+    def test_hash_payload_is_deterministic_and_key_order_independent(self):
+        first = hash_payload({"b": 2, "a": 1})
+        second = hash_payload({"a": 1, "b": 2})
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("0x"))
+        self.assertEqual(len(first), 66)  # the contract rejects anything else
+
+    def test_hash_payload_changes_when_a_single_field_changes(self):
+        base = {"code": "P-2026-001", "budget": "50000.00"}
+        tampered = {"code": "P-2026-001", "budget": "50001.00"}
+        self.assertNotEqual(hash_payload(base), hash_payload(tampered))
+
+    def test_hash_file_hashes_contents_and_is_empty_without_a_file(self):
+        self.assertEqual(hash_file(None), "")
+        project = make_project()
+        project.purchase_request = dummy_pdf("pr.pdf")
+        project.save()
+        digest = hash_file(project.purchase_request)
+        self.assertEqual(len(digest), 66)
+        self.assertEqual(digest, hash_file(project.purchase_request))  # stable
+
+    def test_head_approve_records_an_anchor_and_returns_the_hash(self):
+        self.client.force_authenticate(user=self.head)
+        res = self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        anchor = BlockchainAnchor.objects.get(
+            entity_ref=self.project.code, stage=BlockchainAnchor.Stage.HEAD_APPROVED
+        )
+        # The endpoint hands the browser everything it needs to sign.
+        self.assertEqual(res.data["anchor"]["data_hash"], anchor.data_hash)
+        self.assertEqual(res.data["anchor"]["id"], anchor.id)
+        # Created un-anchored: the chain write happens afterwards, off-request.
+        self.assertEqual(anchor.tx_hash, "")
+        self.assertFalse(anchor.anchored)
+
+    def test_each_lifecycle_transition_records_exactly_one_anchor(self):
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{self.project.pk}/approve/")
+
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/projects/{self.project.pk}/publish/")
+
+        supplier = make_supplier(verified=True)
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.post(
+            f"/api/projects/{self.project.pk}/bid/",
+            {
+                "amount": "10000",
+                "delivery_timeline": "2 weeks",
+                "notes": "We can deliver within the requested timeline and specifications.",
+                "terms_accepted": "true", "interest_declared": "true",
+                "scm_declared": "true", "accuracy_confirmed": "true",
+                "quotation_document": dummy_pdf("quotation.pdf"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        bid = Bid.objects.get(project=self.project, supplier=supplier)
+
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/bids/{bid.pk}/qualify/")
+        res = self.client.post(f"/api/bids/{bid.pk}/select-winner/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        stages = list(
+            BlockchainAnchor.objects.filter(entity_ref=self.project.code)
+            .values_list("stage", flat=True)
+        )
+        self.assertEqual(stages, [
+            BlockchainAnchor.Stage.HEAD_APPROVED,
+            BlockchainAnchor.Stage.BIDDING_OPEN,
+            BlockchainAnchor.Stage.BID_SUBMITTED,
+            BlockchainAnchor.Stage.BID_QUALIFIED,
+            BlockchainAnchor.Stage.AWARDED,
+        ])
+        # The quotation document is bound into the bid's anchor hash, so
+        # swapping the file afterwards would break verification.
+        submitted = BlockchainAnchor.objects.get(stage=BlockchainAnchor.Stage.BID_SUBMITTED)
+        self.assertTrue(submitted.document_hash.startswith("0x"))
+
+    def test_anchor_endpoint_records_the_transaction(self):
+        self.client.force_authenticate(user=self.head)
+        res = self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        anchor_id = res.data["anchor"]["id"]
+        tx = "0x" + "ab" * 32
+
+        res = self.client.post(
+            f"/api/projects/{self.project.pk}/anchor/",
+            {"anchor_id": anchor_id, "tx_hash": tx, "block_number": 7654321},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        anchor = BlockchainAnchor.objects.get(pk=anchor_id)
+        self.assertEqual(anchor.tx_hash, tx)
+        self.assertEqual(anchor.block_number, 7654321)
+        self.assertTrue(res.data["explorer_url"].endswith(tx))
+
+    def test_anchor_endpoint_rejects_a_malformed_transaction_hash(self):
+        self.client.force_authenticate(user=self.head)
+        res = self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        res = self.client.post(
+            f"/api/projects/{self.project.pk}/anchor/",
+            {"anchor_id": res.data["anchor"]["id"], "tx_hash": "not-a-hash"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_anchor_endpoint_is_idempotent(self):
+        self.client.force_authenticate(user=self.head)
+        res = self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        anchor_id = res.data["anchor"]["id"]
+        first_tx = "0x" + "11" * 32
+        body = {"anchor_id": anchor_id, "tx_hash": first_tx}
+        self.client.post(f"/api/projects/{self.project.pk}/anchor/", body, format="json")
+        # A retry (double click, flaky response) must never rewrite the trail.
+        self.client.post(
+            f"/api/projects/{self.project.pk}/anchor/",
+            {"anchor_id": anchor_id, "tx_hash": "0x" + "22" * 32}, format="json",
+        )
+        self.assertEqual(BlockchainAnchor.objects.get(pk=anchor_id).tx_hash, first_tx)
+
+    def test_supplier_cannot_anchor_a_project_transition(self):
+        supplier = make_supplier(verified=True)
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.post(
+            f"/api/projects/{self.project.pk}/anchor/",
+            {"stage": "HEAD_APPROVED", "tx_hash": "0x" + "cd" * 32},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_record_anchor_never_raises_into_the_caller(self):
+        # Anchoring is a side effect: if it fails, the approval it accompanies
+        # must still stand — same contract as accounts.audit.log_action.
+        with patch(
+            "procurement.blockchain.BlockchainAnchor.objects.create",
+            side_effect=RuntimeError("db down"),
+        ):
+            self.assertIsNone(record_anchor("PROJECT", "P-2026-001", "SUBMITTED", {"a": 1}))
+
+    def test_status_change_survives_an_anchor_that_returns_nothing(self):
+        # With anchoring unavailable the transition still succeeds and simply
+        # reports no anchor, which the UI renders as "not yet anchored".
+        self.client.force_authenticate(user=self.head)
+        with patch("procurement.views.anchor_project", return_value=None):
+            res = self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIsNone(res.data["anchor"])
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, Project.Status.APPROVED)
+
+    def test_public_anchor_trail_is_open_and_hash_only(self):
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{self.project.pk}/approve/")
+
+        self.client.force_authenticate(user=None)  # a member of the public
+        res = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["code"], self.project.code)
+        self.assertEqual(len(res.data["anchors"]), 1)
+        # Hashes only — never the payload, bid amounts, or supplier identities.
+        self.assertNotIn("payload", res.data["anchors"][0])
+
+    def test_public_anchor_trail_404s_on_an_unknown_code(self):
+        res = self.client.get("/api/public/procurement/P-9999-999/anchors/")
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_public_trail_withholds_bid_document_hashes(self):
+        # A losing bidder's quotation is not a public document, so its hash must
+        # not be published — only the record hash that proves the step happened.
+        project = make_project(status=Project.Status.PUBLISHED)
+        supplier = make_supplier(verified=True)
+        self.client.force_authenticate(user=supplier.user)
+        self.client.post(
+            f"/api/projects/{project.pk}/bid/",
+            {
+                "amount": "10000", "delivery_timeline": "2 weeks",
+                "notes": "We can deliver within the requested timeline and specifications.",
+                "terms_accepted": "true", "interest_declared": "true",
+                "scm_declared": "true", "accuracy_confirmed": "true",
+                "quotation_document": dummy_pdf("quotation.pdf"),
+            },
+            format="multipart",
+        )
+        stored = BlockchainAnchor.objects.get(stage=BlockchainAnchor.Stage.BID_SUBMITTED)
+        self.assertTrue(stored.document_hash)  # kept internally
+
+        self.client.force_authenticate(user=None)
+        res = self.client.get(f"/api/public/procurement/{project.code}/anchors/")
+        published = next(a for a in res.data["anchors"] if a["entity_type"] == "BID")
+        self.assertEqual(published["document_hash"], "")
+        self.assertTrue(published["data_hash"].startswith("0x"))
+
+    def test_supplier_does_not_see_rivals_bid_anchors_on_a_project(self):
+        project = make_project(status=Project.Status.PUBLISHED)
+        rival = make_supplier(verified=True)
+        self.client.force_authenticate(user=rival.user)
+        self.client.post(
+            f"/api/projects/{project.pk}/bid/",
+            {
+                "amount": "10000", "delivery_timeline": "2 weeks",
+                "notes": "We can deliver within the requested timeline and specifications.",
+                "terms_accepted": "true", "interest_declared": "true",
+                "scm_declared": "true", "accuracy_confirmed": "true",
+                "quotation_document": dummy_pdf("quotation.pdf"),
+            },
+            format="multipart",
+        )
+
+        other = make_supplier(verified=True)
+        self.client.force_authenticate(user=other.user)
+        res = self.client.get("/api/projects/")
+        row = next(p for p in res.data if p["code"] == project.code)
+        self.assertEqual([a for a in row["anchors"] if a["entity_type"] == "BID"], [])
+
+        # The Admin, who runs the evaluation, still sees the whole trail.
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get("/api/projects/")
+        row = next(p for p in res.data if p["code"] == project.code)
+        self.assertTrue(any(a["entity_type"] == "BID" for a in row["anchors"]))
