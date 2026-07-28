@@ -119,11 +119,35 @@ def _iso(value):
 # ── Canonical payloads (one per entity) ──────────────────────────────────────
 # Only stable, business-meaningful fields go in. Adding a field here changes
 # every future hash, so treat these as a versioned schema: `v` is bumped if the
-# shape ever has to change, and old anchors stay verifiable against v1.
-PAYLOAD_VERSION = 1
+# shape ever has to change, and old anchors stay verifiable against their own
+# version (see _legacy_record_ok).
+#
+# v2 — removed the mutable lifecycle fields (project: status/deadline/
+#      reviewed_at/published_at, bid: status/reviewed_at). They changed as a
+#      procurement advanced, so re-hashing an earlier stage produced a different
+#      value and verify_anchor branded untouched records as altered. A verifier
+#      that cries tampering on every normal procurement is worse than no
+#      verifier, so only fields that are final at anchor time are hashed now.
+# v1 — original shape. Anchors written under it are still on-chain and are
+#      verified by the compatibility path below, never re-hashed under v2 rules.
+PAYLOAD_VERSION = 2
 
 
 def project_payload(project, stage, document_hash=""):
+    """What a procurement WAS at `stage`, as a hashable snapshot.
+
+    Only fields that are already final when the anchor is taken belong here.
+    `status`, `deadline`, `reviewed_at` and `published_at` were in v1 and had to
+    come out: they keep changing as the procurement advances, so re-hashing an
+    early stage later produced a different value and the verifier reported
+    honest records as altered — every project that got past its first step lit
+    up red. (See PAYLOAD_VERSION.)
+
+    Nothing meaningful is lost. `stage` already says what the status was, the
+    ordering and timing of the steps are proven by the anchors' own on-chain
+    timestamps — which are far harder to forge than a database column — and the
+    deadline that matters is the one bound into the AWARD stages.
+    """
     return {
         "v": PAYLOAD_VERSION,
         "entity": "PROJECT",
@@ -133,13 +157,9 @@ def project_payload(project, stage, document_hash=""):
         "category": project.category or "",
         "type": project.type or "",
         "budget": f"{project.budget:.2f}",
-        "status": project.status,
         "bidding_period_days": project.bidding_period_days or 0,
         "delivery_period_days": project.delivery_period_days or 0,
-        "deadline": _iso(project.deadline),
         "created_at": _iso(project.created_at),
-        "reviewed_at": _iso(project.reviewed_at),
-        "published_at": _iso(project.published_at),
         "document_hash": document_hash,
     }
 
@@ -155,10 +175,11 @@ def bid_payload(bid, stage, document_hash=""):
         # commercial data and is not needed to prove the record is unaltered.
         "supplier_id": bid.supplier_id,
         "amount": f"{bid.amount:.2f}",
-        "status": bid.status,
         "delivery_timeline": bid.delivery_timeline or "",
         "submitted_at": _iso(bid.submitted_at),
-        "reviewed_at": _iso(bid.reviewed_at),
+        # `status` and `reviewed_at` were dropped in v2 for the same reason as
+        # the project's: they change after the anchor is taken (under_review →
+        # qualified → winner), which made an honest bid verify as altered.
         "document_hash": document_hash,
     }
 
@@ -334,6 +355,28 @@ def rebuild_payload(anchor, record, document_hash=None):
     return award_parts(record, anchor.stage, document_hash)
 
 
+def _legacy_record_ok(anchor, rebuilt):
+    """Record check for anchors written before PAYLOAD_VERSION 2.
+
+    Their hash covered fields that have since legitimately changed, so it can
+    never be reproduced from the live record — re-hashing under v2 rules would
+    fail every one of them. Verified in two steps instead, which is weaker only
+    in that it cannot prove the retired fields are untouched:
+
+      1. The stored snapshot must itself hash to the value that went on-chain.
+         That is what rules out someone editing the anchor row after the fact —
+         data_hash is public on Sepolia and cannot be edited to match.
+      2. Every field v2 still hashes must equal what that snapshot recorded, so
+         an edited budget, name or document is caught exactly as it is today.
+    """
+    stored = anchor.payload or {}
+    if not stored or hash_payload(stored) != anchor.data_hash:
+        return False
+    # v2's keys are a subset of v1's apart from "v" itself, which is expected to
+    # differ — comparing it would fail every legacy anchor by construction.
+    return all(value == stored.get(key) for key, value in rebuilt.items() if key != "v")
+
+
 def verify_anchor(anchor, deep=False):
     """Check the live record against what was anchored.
 
@@ -349,7 +392,10 @@ def verify_anchor(anchor, deep=False):
 
         # ── Record check ──────────────────────────────────────────────────
         payload, _ = rebuild_payload(anchor, record, document_hash=anchor.document_hash)
-        record_ok = hash_payload(payload) == anchor.data_hash
+        if (anchor.payload or {}).get("v", 1) < PAYLOAD_VERSION:
+            record_ok = _legacy_record_ok(anchor, payload)
+        else:
+            record_ok = hash_payload(payload) == anchor.data_hash
         result["record"] = MATCH if record_ok else MISMATCH
         if not record_ok:
             result["detail"] = "This record has been altered since it was recorded on-chain."

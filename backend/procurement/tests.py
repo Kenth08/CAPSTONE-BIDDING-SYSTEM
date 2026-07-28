@@ -406,11 +406,14 @@ class BlockchainAnchorTests(APITestCase):
             BlockchainAnchor.objects.filter(entity_ref=self.project.code)
             .values_list("stage", flat=True)
         )
+        # No BID_QUALIFIED: qualification happens for every bidder, and only the
+        # winner's bid is published. BID_SUBMITTED appears here even though the
+        # bid was submitted much earlier — it is written at award time, right
+        # before AWARDED, so the trail still reads offer-then-award.
         self.assertEqual(stages, [
             BlockchainAnchor.Stage.HEAD_APPROVED,
             BlockchainAnchor.Stage.BIDDING_OPEN,
             BlockchainAnchor.Stage.BID_SUBMITTED,
-            BlockchainAnchor.Stage.BID_QUALIFIED,
             BlockchainAnchor.Stage.AWARDED,
         ])
         # The quotation document is bound into the bid's anchor hash, so
@@ -778,16 +781,12 @@ class BlockchainAnchorTests(APITestCase):
         res = self.client.get("/api/public/procurement/P-9999-999/anchors/")
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_public_trail_withholds_bid_document_hashes(self):
-        # A losing bidder's quotation is not a public document, so its hash must
-        # not be published — only the record hash that proves the step happened.
-        project = make_project(status=Project.Status.PUBLISHED)
-        supplier = make_supplier(verified=True)
+    def _bid(self, project, supplier, amount="10000"):
         self.client.force_authenticate(user=supplier.user)
         self.client.post(
             f"/api/projects/{project.pk}/bid/",
             {
-                "amount": "10000", "delivery_timeline": "2 weeks",
+                "amount": amount, "delivery_timeline": "2 weeks",
                 "notes": "We can deliver within the requested timeline and specifications.",
                 "terms_accepted": "true", "interest_declared": "true",
                 "scm_declared": "true", "accuracy_confirmed": "true",
@@ -795,6 +794,18 @@ class BlockchainAnchorTests(APITestCase):
             },
             format="multipart",
         )
+        return Bid.objects.get(project=project, supplier=supplier)
+
+    def test_public_trail_withholds_bid_document_hashes(self):
+        # The winning quotation's hash is kept internally but never published:
+        # the public trail proves the step happened without exposing the file.
+        project = make_project(status=Project.Status.PUBLISHED)
+        supplier = make_supplier(verified=True)
+        bid = self._bid(project, supplier)
+
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/bids/{bid.pk}/select-winner/")
+
         stored = BlockchainAnchor.objects.get(stage=BlockchainAnchor.Stage.BID_SUBMITTED)
         self.assertTrue(stored.document_hash)  # kept internally
 
@@ -804,27 +815,51 @@ class BlockchainAnchorTests(APITestCase):
         self.assertEqual(published["document_hash"], "")
         self.assertTrue(published["data_hash"].startswith("0x"))
 
+    def test_only_the_winning_bid_is_ever_anchored(self):
+        # The point of the whole scoping rule: a supplier who bids and loses
+        # leaves nothing on the public ledger. Their amount is commercial
+        # information and never becomes anyone else's business.
+        project = make_project(status=Project.Status.PUBLISHED)
+        winner = make_supplier(verified=True)
+        loser = make_supplier(verified=True)
+        winning_bid = self._bid(project, winner, "10000")
+        losing_bid = self._bid(project, loser, "12000")
+
+        # Nothing is anchored while bidding and evaluation are still running.
+        self.assertFalse(
+            BlockchainAnchor.objects.filter(
+                entity_type=BlockchainAnchor.EntityType.BID).exists()
+        )
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/bids/{winning_bid.pk}/qualify/")
+        self.client.post(f"/api/bids/{losing_bid.pk}/disqualify/")
+        self.assertFalse(
+            BlockchainAnchor.objects.filter(
+                entity_type=BlockchainAnchor.EntityType.BID).exists()
+        )
+
+        self.client.post(f"/api/bids/{winning_bid.pk}/select-winner/")
+
+        bid_anchors = BlockchainAnchor.objects.filter(
+            entity_type=BlockchainAnchor.EntityType.BID)
+        self.assertEqual(bid_anchors.count(), 1)
+        self.assertEqual(int(bid_anchors.first().entity_id), winning_bid.id)
+
     def test_supplier_does_not_see_rivals_bid_anchors_on_a_project(self):
         project = make_project(status=Project.Status.PUBLISHED)
         rival = make_supplier(verified=True)
-        self.client.force_authenticate(user=rival.user)
-        self.client.post(
-            f"/api/projects/{project.pk}/bid/",
-            {
-                "amount": "10000", "delivery_timeline": "2 weeks",
-                "notes": "We can deliver within the requested timeline and specifications.",
-                "terms_accepted": "true", "interest_declared": "true",
-                "scm_declared": "true", "accuracy_confirmed": "true",
-                "quotation_document": dummy_pdf("quotation.pdf"),
-            },
-            format="multipart",
-        )
+        bid = self._bid(project, rival)
 
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/bids/{bid.pk}/select-winner/")
+
+        # The winning bid's anchor now exists, so this is the moment a rival
+        # could in principle read it. They can't: awarding drops the project out
+        # of the supplier feed entirely, so there is no row to read it from.
         other = make_supplier(verified=True)
         self.client.force_authenticate(user=other.user)
         res = self.client.get("/api/projects/")
-        row = next(p for p in res.data if p["code"] == project.code)
-        self.assertEqual([a for a in row["anchors"] if a["entity_type"] == "BID"], [])
+        self.assertEqual([p for p in res.data if p["code"] == project.code], [])
 
         # The Admin, who runs the evaluation, still sees the whole trail.
         self.client.force_authenticate(user=self.admin)
@@ -937,3 +972,116 @@ class ServerSideSigningTests(APITestCase):
         self._submit(Web3)
         self.assertEqual(captured["chainId"], 11155111)
         self.assertEqual(captured["from"], "0x" + "11" * 20)
+
+
+class PayloadVersionTests(APITestCase):
+    """The integrity check must not cry wolf, and must still catch real edits.
+
+    v1 hashed fields that legitimately change as a procurement advances
+    (status, deadline, reviewed_at, published_at), so re-hashing an early stage
+    later produced a different value and honest records were reported as
+    altered. v2 hashes only what is final at anchor time. These tests pin both
+    halves: no false alarm on a normal lifecycle, and no weakening of the real
+    tamper detection that justifies the feature existing.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.head = make_head()
+        self.project = make_project(status=Project.Status.PENDING_HEAD)
+
+    def _anchors(self):
+        return BlockchainAnchor.objects.filter(entity_ref=self.project.code).order_by("id")
+
+    def _advance_through_the_lifecycle(self):
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/projects/{self.project.pk}/publish/")
+
+    def test_advancing_a_procurement_does_not_report_earlier_steps_as_altered(self):
+        # The regression this whole version bump exists for. Approving and then
+        # publishing changes status, deadline, reviewed_at and published_at —
+        # under v1 that turned every earlier anchor red on the public page.
+        self._advance_through_the_lifecycle()
+        anchors = list(self._anchors())
+        self.assertGreaterEqual(len(anchors), 2)
+        for anchor in anchors:
+            self.assertEqual(
+                verify_anchor(anchor)["status"], "match",
+                f"{anchor.stage} reported as altered after a normal lifecycle step",
+            )
+
+    def test_an_edited_budget_is_still_caught(self):
+        # The check that makes the feature worth having: if this ever passes
+        # silently, the verifier is decoration.
+        self._advance_through_the_lifecycle()
+        anchor = self._anchors().first()
+        self.assertEqual(verify_anchor(anchor)["status"], "match")
+
+        self.project.budget = 999999
+        self.project.save(update_fields=["budget"])
+        result = verify_anchor(anchor)
+        self.assertEqual(result["status"], "mismatch")
+        self.assertIn("altered", result["detail"])
+
+    def test_an_edited_name_is_still_caught(self):
+        self._advance_through_the_lifecycle()
+        anchor = self._anchors().first()
+        self.project.name = "Something else entirely"
+        self.project.save(update_fields=["name"])
+        self.assertEqual(verify_anchor(anchor)["status"], "mismatch")
+
+    def _write_v1_anchor(self, stage=BlockchainAnchor.Stage.SUBMITTED):
+        """An anchor exactly as v1 would have written it, including the fields
+        v2 dropped — this is what is already sitting on Sepolia."""
+        payload = {
+            "v": 1,
+            "entity": "PROJECT",
+            "stage": str(stage),
+            "code": self.project.code,
+            "name": self.project.name,
+            "category": self.project.category or "",
+            "type": self.project.type or "",
+            "budget": f"{self.project.budget:.2f}",
+            "status": self.project.status,
+            "bidding_period_days": self.project.bidding_period_days or 0,
+            "delivery_period_days": self.project.delivery_period_days or 0,
+            "deadline": "",
+            "created_at": self.project.created_at.isoformat(),
+            "reviewed_at": "",
+            "published_at": "",
+            "document_hash": "",
+        }
+        return BlockchainAnchor.objects.create(
+            entity_type=BlockchainAnchor.EntityType.PROJECT,
+            entity_ref=self.project.code, entity_id=str(self.project.id),
+            stage=stage, data_hash=hash_payload(payload), payload=payload,
+            tx_hash="0x" + "ab" * 32,
+        )
+
+    def test_v1_anchors_still_verify_after_the_version_bump(self):
+        # Anchors already on-chain cannot be rewritten, so the bump must not
+        # invalidate them — otherwise fixing the false alarm would replace it
+        # with a worse one.
+        anchor = self._write_v1_anchor()
+        self._advance_through_the_lifecycle()
+        self.assertEqual(verify_anchor(anchor)["status"], "match")
+
+    def test_v1_anchors_still_catch_a_tampered_record(self):
+        # The compatibility path must not become a blanket "match".
+        anchor = self._write_v1_anchor()
+        self.project.budget = 1
+        self.project.save(update_fields=["budget"])
+        self.assertEqual(verify_anchor(anchor)["status"], "mismatch")
+
+    def test_a_rewritten_v1_snapshot_is_rejected(self):
+        # Someone editing the stored payload to match a doctored record still
+        # fails: the snapshot no longer hashes to what is published on-chain.
+        anchor = self._write_v1_anchor()
+        self.project.budget = 1
+        self.project.save(update_fields=["budget"])
+        anchor.payload = {**anchor.payload, "budget": "1.00"}
+        anchor.save(update_fields=["payload"])
+        self.assertEqual(verify_anchor(anchor)["status"], "mismatch")

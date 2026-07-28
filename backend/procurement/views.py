@@ -517,14 +517,13 @@ class ProjectViewSet(viewsets.ModelViewSet):
             entity_type="Bid", entity_id=bid.id,
             description=f"{supplier.company} {verb} {project.code} for {amount}.",
         )
-        # Anchor the bid as submitted — hashes the bid record + the quotation
-        # document, so neither the amount nor the file can be changed afterwards
-        # without breaking the on-chain hash. A re-submission is a new anchor
-        # (append-only), never an overwrite of the old one.
-        anchor = anchor_bid(bid, BlockchainAnchor.Stage.BID_SUBMITTED)
+        # Deliberately NOT anchored here. Only the winning bid reaches the
+        # blockchain, and it is anchored at award time (see select_winner) —
+        # losing suppliers' amounts stay off the public ledger entirely.
+        # The bid is still hashed and stored locally like every other record.
         return anchored_response(
             BidSerializer(bid, context={"request": request}).data,
-            anchor,
+            None,
             status_code=http_status.HTTP_201_CREATED,
         )
 
@@ -987,14 +986,14 @@ class BidViewSet(viewsets.ModelViewSet):
             qs = qs.filter(project_id=project_id)
         return qs
 
-    def _set_status(self, bid, status, stage=None):
+    def _set_status(self, bid, status):
         bid.status = status
         bid.reviewed_at = timezone.now()
         bid.save(update_fields=["status", "reviewed_at"])
-        # Anchor AFTER the save so the hashed payload is the state that was
-        # actually committed, never a state that a later failure rolled back.
-        anchor = anchor_bid(bid, stage) if stage else None
-        return anchored_response(self.get_serializer(bid).data, anchor)
+        # Qualification decisions are NOT anchored: they happen for every bidder,
+        # and only the winner's bid goes on the public ledger. The decision is
+        # still captured in the audit log and the notification to the supplier.
+        return anchored_response(self.get_serializer(bid).data, None)
 
     @action(detail=True, methods=["post"])
     def qualify(self, request, pk=None):
@@ -1011,8 +1010,7 @@ class BidViewSet(viewsets.ModelViewSet):
             entity_type="Bid", entity_id=bid.id,
             description=f"Qualified {bid.supplier.company}'s bid on {bid.project.code}.",
         )
-        return self._set_status(
-            bid, Bid.Status.QUALIFIED, BlockchainAnchor.Stage.BID_QUALIFIED)
+        return self._set_status(bid, Bid.Status.QUALIFIED)
 
     @action(detail=True, methods=["post"])
     def disqualify(self, request, pk=None):
@@ -1029,8 +1027,7 @@ class BidViewSet(viewsets.ModelViewSet):
             entity_type="Bid", entity_id=bid.id,
             description=f"Disqualified {bid.supplier.company}'s bid on {bid.project.code}.",
         )
-        return self._set_status(
-            bid, Bid.Status.DISQUALIFIED, BlockchainAnchor.Stage.BID_DISQUALIFIED)
+        return self._set_status(bid, Bid.Status.DISQUALIFIED)
 
     @action(detail=True, methods=["post"], url_path="request-revision")
     def request_revision(self, request, pk=None):
@@ -1181,6 +1178,13 @@ class BidViewSet(viewsets.ModelViewSet):
             entity_type="Project", entity_id=project.id,
             description=f"Awarded {project.code} to {bid.supplier.company} for {bid.amount}.",
         )
+        # The winning bid reaches the ledger here and nowhere else. Bids are not
+        # anchored on submission or on qualification, because that would publish
+        # every losing supplier's amount; only the bid that actually won the
+        # contract is public business. Anchored BEFORE the award so the trail
+        # reads in the order the events happened: the offer, then the award.
+        anchor_bid(bid, BlockchainAnchor.Stage.BID_SUBMITTED)
+
         # Final link in the chain: the award itself, hashed with the winning
         # quotation. Anchored as AWARD (not BID) so the public trail ends with an
         # unambiguous "this contract went to this bid at this amount".
