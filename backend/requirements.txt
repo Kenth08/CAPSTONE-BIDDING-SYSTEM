@@ -16,8 +16,9 @@ boto3==1.43.36
 # the award record — see procurement/documents.py.
 fpdf2==2.8.7
 
-# Optional — only needed for the server-side blockchain signing path
-# (BLOCKCHAIN_SERVER_SIGNING=True). The default MetaMask demo path needs nothing
-# extra: procurement/blockchain.py imports web3 lazily and degrades gracefully
-# when it isn't installed. Uncomment to enable server-side anchoring.
-# web3==7.6.0
+# Server-side blockchain signing (BLOCKCHAIN_SERVER_SIGNING=True): the backend
+# submits anchor transactions itself, so no MetaMask prompt ever appears — for
+# admins, the Head, or suppliers. procurement/blockchain.py imports web3 lazily,
+# so the app still runs normally if this is ever removed; anchoring just falls
+# back to the browser/MetaMask path.
+web3==7.6.0

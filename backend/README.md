@@ -26,6 +26,28 @@ python manage.py runserver       # http://127.0.0.1:8000
 Passwords are printed to the console when `python manage.py seed` runs.
 `admin` is also a Django superuser → log into `/admin/`.
 
+## Running tests
+
+```bash
+python manage.py test
+```
+
+Tests always run against a **local SQLite** database, even when `.env` points
+`DB_HOST` at Supabase. Without that rule the test runner would create a
+`test_postgres` database on the live server — slow, unusable offline, and it
+consumes free-tier storage (an interrupted run leaves the database behind).
+
+This is safe because nothing here is PostgreSQL-specific: every JSON column is
+Django's cross-database `models.JSONField`, and there is no raw SQL or
+full-text search. See the `RUNNING_TESTS` block in
+[`config/settings.py`](config/settings.py).
+
+To verify against PostgreSQL instead — prefer a **local** instance, not Supabase:
+
+```bash
+TEST_USE_POSTGRES=1 python manage.py test
+```
+
 ## API
 
 Base URL: `http://127.0.0.1:8000/api/`

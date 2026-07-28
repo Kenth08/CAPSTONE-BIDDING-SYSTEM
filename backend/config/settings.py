@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -108,7 +109,28 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # Uses Supabase (PostgreSQL) when DB_HOST is set in .env;
 # falls back to local SQLite otherwise so the project still runs without config.
-if os.environ.get('DB_HOST'):
+#
+# EXCEPT under `manage.py test`: .env points DB_HOST at the live Supabase
+# instance, so without this the test runner would reach across the internet and
+# CREATE A test_<DB_NAME> DATABASE ON THE PRODUCTION SERVER — slow, offline-
+# hostile, and it eats free-tier storage (a killed run leaves the database
+# behind). Tests therefore always get a local SQLite database, which is safe
+# here because nothing in this codebase is PostgreSQL-specific: every JSON
+# column is Django's cross-database models.JSONField (no django.contrib.postgres
+# fields), and there is no raw SQL, .extra(), or full-text search.
+#
+# Set TEST_USE_POSTGRES=1 to opt back in when you specifically want to verify
+# against PostgreSQL. Prefer a LOCAL PostgreSQL in that case — pointing it at
+# Supabase works but is what this guard exists to prevent by default.
+# Matched positionally, not with `'test' in sys.argv` — the loose check would
+# also fire on something like `createsuperuser --username test` and silently
+# point that command at the wrong database.
+RUNNING_TESTS = sys.argv[1:2] == ['test']
+USE_POSTGRES = bool(os.environ.get('DB_HOST')) and (
+    not RUNNING_TESTS or os.environ.get('TEST_USE_POSTGRES') == '1'
+)
+
+if USE_POSTGRES:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',

@@ -1,10 +1,24 @@
-# Render Blueprint — deploys the Django API and the React frontend together.
-# Push this to your repo, then in Render: New + → Blueprint → pick this repo.
-# Values marked `sync: false` must be filled in via the Render dashboard.
+# Render Blueprint — the Django API only.
+#
+# HOW THIS PROJECT IS ACTUALLY DEPLOYED
+#   Backend  → Render web service  https://capstone-bidding-system.onrender.com
+#   Frontend → Vercel              https://capstone-bidding-system.vercel.app
+#   Database → Supabase PostgreSQL
+#
+# The frontend is NOT on Render, so it is not described here — see the Vercel
+# section at the bottom of this file for the variables it needs.
+#
+# The live backend service (named CAPSTONE-BIDDING-SYSTEM) was created by hand
+# in the Render dashboard rather than from this blueprint, so editing this file
+# does not change it. Env var changes must be made in the dashboard under
+# Environment. This file exists so the service can be recreated from scratch,
+# and as a record of what the backend needs in order to run.
+#
+# Values marked `sync: false` are never stored in git — fill them in via the
+# Render dashboard.
 services:
-  # ── Backend: Django REST API ──────────────────────────────────────────────
   - type: web
-    name: eprocurement-api
+    name: capstone-bidding-system
     runtime: python
     rootDir: backend
     plan: free
@@ -15,9 +29,13 @@ services:
         value: "3.12.6"
       - key: SECRET_KEY
         generateValue: true        # Render generates a strong secret
+      # Must be False in production: settings.py refuses to boot with the
+      # insecure development SECRET_KEY fallback once DEBUG is off, and the
+      # HSTS / SSL-redirect / secure-cookie hardening is gated on this.
       - key: DEBUG
         value: "False"
-      # Supabase Postgres connection (copy from your Supabase project settings).
+
+      # ── Supabase PostgreSQL (Session pooler values, port 5432) ────────────
       - key: DB_HOST
         sync: false
       - key: DB_NAME
@@ -28,37 +46,86 @@ services:
         sync: false
       - key: DB_PORT
         value: "5432"
-      # Set this to your deployed frontend URL after the static site exists,
-      # e.g. https://eprocurement-frontend.onrender.com
-      - key: FRONTEND_URL
-        sync: false
-      # Optional: SMTP creds so password-reset emails actually get delivered.
-      # Leave unset and the backend just logs emails to the server console.
-      - key: EMAIL_HOST
-        sync: false
-      - key: EMAIL_PORT
-        sync: false
-      - key: EMAIL_USE_TLS
-        sync: false
-      - key: EMAIL_HOST_USER
-        sync: false
-      - key: EMAIL_HOST_PASSWORD
-        sync: false
-      - key: DEFAULT_FROM_EMAIL
-        sync: false
 
-  # ── Frontend: React + Vite static site ────────────────────────────────────
-  - type: web
-    name: eprocurement-frontend
-    runtime: static
-    rootDir: frontend
-    buildCommand: "npm install && npm run build"
-    staticPublishPath: ./dist
-    envVars:
-      # Your backend URL + /api, e.g. https://eprocurement-api.onrender.com/api
-      - key: VITE_API_URL
-        sync: false
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+      # ── Blockchain ────────────────────────────────────────────────────────
+      # Deployed ProcurementLedger address on Sepolia. Read by the public
+      # verification endpoints so they can report which contract holds the
+      # anchors. Safe to commit — a contract address is public data.
+      - key: LEDGER_CONTRACT_ADDRESS
+        value: "0x0c832739F61dCCb644e21799b1432842572EdcF5"
+      # Read-only Sepolia RPC. Defaults to a public node when unset; set your
+      # own (Alchemy / Infura) if the public one rate-limits.
+      # - key: SEPOLIA_RPC_URL
+      #   value: "https://ethereum-sepolia-rpc.publicnode.com"
+
+      # ── Server-side signing: anchoring with NO MetaMask prompt ────────────
+      # OFF by default, and the code path is completely inert until it is on.
+      #
+      # With it enabled the backend signs every anchor itself, so nobody — not
+      # the Admin, not the Head, and importantly not suppliers — needs a wallet
+      # or test ETH. Each transition is still anchored at the moment it happens.
+      #
+      # BLOCKCHAIN_PRIVATE_KEY belongs to a DEDICATED throwaway wallet holding
+      # only Sepolia test ETH. Never a wallet with real funds, never in git,
+      # never in a VITE_* variable (those ship to the browser in plain text).
+      # `sync: false` keeps the value out of this file — set it in the dashboard.
+      #
+      # Trade-off to accept before enabling: every anchor is then signed by the
+      # one server wallet, so the chain records THAT an event happened, not WHO
+      # approved it. With MetaMask each anchor carries the acting person's
+      # address. The database records the acting user either way.
+      #
+      # When the wallet runs out of test ETH, anchoring stops silently by
+      # design (best-effort) — records stay valid and retryable. Check the
+      # balance before anything that matters.
+      # - key: BLOCKCHAIN_SERVER_SIGNING
+      #   value: "True"
+      # - key: BLOCKCHAIN_PRIVATE_KEY
+      #   sync: false
+
+      # ── Optional, NOT currently set on the live service ───────────────────
+      # Each of these is safe to leave unset — the app degrades rather than
+      # failing — but the feature it powers stays inactive until it is set.
+
+      # Frontend origin. CORS already allows the Vercel domain via a regex in
+      # settings.py, so login works without this; it is what password-reset and
+      # email-verification links are built from.
+      # - key: FRONTEND_URL
+      #   value: "https://capstone-bidding-system.vercel.app"
+
+      # SMTP. Unset = Django's console backend: password-reset and email
+      # verification messages are written to the Render log and never delivered.
+      # - key: EMAIL_HOST
+      #   sync: false
+      # - key: EMAIL_PORT
+      #   value: "587"
+      # - key: EMAIL_USE_TLS
+      #   value: "True"
+      # - key: EMAIL_HOST_USER
+      #   sync: false
+      # - key: EMAIL_HOST_PASSWORD
+      #   sync: false
+      # - key: DEFAULT_FROM_EMAIL
+      #   sync: false
+
+      # S3-compatible storage (Supabase Storage). Unset = uploads are written
+      # to the container's local media/ directory, which Render's free plan
+      # wipes on every deploy and restart. Set these to make uploaded
+      # procurement documents survive.
+      # - key: AWS_STORAGE_BUCKET_NAME
+      #   sync: false
+      # - key: AWS_ACCESS_KEY_ID
+      #   sync: false
+      # - key: AWS_SECRET_ACCESS_KEY
+      #   sync: false
+      # - key: AWS_S3_ENDPOINT_URL
+      #   sync: false
+
+# ── Frontend (Vercel — not managed by this file) ────────────────────────────
+# Set in the Vercel dashboard under Settings → Environments → Production:
+#
+#   VITE_API_URL         https://capstone-bidding-system.onrender.com/api
+#   VITE_LEDGER_ADDRESS  0x0c832739F61dCCb644e21799b1432842572EdcF5
+#
+# Vite inlines VITE_* variables at BUILD time, so changing either one requires
+# a redeploy before it takes effect — saving the variable alone does nothing.

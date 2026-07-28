@@ -527,6 +527,15 @@ def submit_anchor_server_side(anchor):
     failure (no funds, RPC down, package missing) just leaves the anchor
     un-anchored and retryable, exactly like a declined MetaMask prompt.
 
+    Deliberately does NOT wait for the transaction to be mined. This runs inside
+    the request that approved/published/awarded something, and a Sepolia block
+    takes ~12-30s — longer than gunicorn's 30s worker timeout, so waiting would
+    get the worker killed and turn a successful approval into a 502. Broadcasting
+    is enough: the transaction is signed, accepted by the network and final in
+    the next block or two, and its hash is what proves the anchor. The trade-off
+    is that `block_number` stays NULL (nothing tells us the block without the
+    receipt); Etherscan shows it via the tx hash, and verification never uses it.
+
     Returns the updated anchor, or None if nothing was submitted."""
     if not (SERVER_SIGNING_ENABLED and BLOCKCHAIN_PRIVATE_KEY and LEDGER_CONTRACT_ADDRESS):
         if SERVER_SIGNING_ENABLED:
@@ -550,7 +559,12 @@ def submit_anchor_server_side(anchor):
             anchor.entity_type, anchor.entity_ref, anchor.stage, anchor.data_hash,
         ).build_transaction({
             "from": account.address,
-            "nonce": w3.eth.get_transaction_count(account.address),
+            # "pending", not the default "latest": awarding issues three
+            # documents (BAC Resolution, NOA, NTP) back to back, so the earlier
+            # transactions are still unmined when the next nonce is read. Off
+            # "latest" all three would claim the same nonce and two would be
+            # rejected as duplicates.
+            "nonce": w3.eth.get_transaction_count(account.address, "pending"),
             "chainId": SEPOLIA_CHAIN_ID,
             # A tx this small is ~200k gas at most; leave price to the node.
             "gas": 400_000,
@@ -561,12 +575,11 @@ def submit_anchor_server_side(anchor):
         # web3.py v6 exposes .rawTransaction, v7 renamed it to .raw_transaction.
         raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
         tx_hash = w3.eth.send_raw_transaction(raw)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+        # Web3.to_hex, not tx_hash.hex(): hexbytes >= 1.0 (what web3 v7 pins)
+        # dropped the "0x" prefix from .hex(), which attach_transaction rejects.
+        # to_hex is prefixed on every version.
         return attach_transaction(
-            anchor, receipt["transactionHash"].hex() if hasattr(receipt["transactionHash"], "hex")
-            else str(receipt["transactionHash"]),
-            receipt.get("blockNumber"),
-            actor_address=account.address,
+            anchor, Web3.to_hex(tx_hash), actor_address=account.address,
         )
     except Exception:  # pragma: no cover — never break the request
         logger.exception("Server-side anchoring failed for anchor %s", anchor.id)

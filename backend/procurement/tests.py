@@ -1,5 +1,5 @@
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -9,7 +9,9 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .blockchain import hash_file, hash_payload, record_anchor, verify_anchor
+from .blockchain import (
+    hash_file, hash_payload, record_anchor, submit_anchor_server_side, verify_anchor,
+)
 from .models import Award, Bid, BlockchainAnchor, Project, Supplier
 
 User = get_user_model()
@@ -829,3 +831,109 @@ class BlockchainAnchorTests(APITestCase):
         res = self.client.get("/api/projects/")
         row = next(p for p in res.data if p["code"] == project.code)
         self.assertTrue(any(a["entity_type"] == "BID" for a in row["anchors"]))
+
+
+class ServerSideSigningTests(APITestCase):
+    """The no-MetaMask path: the backend signs and submits anchors itself.
+
+    web3 talks to a live network, so it is mocked. What these tests pin down are
+    the three things that are easy to get wrong here and effectively invisible
+    until they fail in production against real money-shaped constraints: where
+    the nonce comes from, that the request never blocks on mining, and that a
+    failure stays best-effort instead of breaking the transition it accompanies.
+    """
+
+    TX_HASH = "0x" + "ab" * 32
+
+    def _anchor(self):
+        return BlockchainAnchor.objects.create(
+            entity_type=BlockchainAnchor.EntityType.PROJECT,
+            entity_ref="P-2026-001",
+            stage=BlockchainAnchor.Stage.HEAD_APPROVED,
+            data_hash="0x" + "cd" * 32,
+        )
+
+    def _fake_web3(self, send_raises=None):
+        """A stand-in Web3 class that records the tx params it is handed."""
+        captured = {}
+        Web3 = MagicMock(name="Web3")
+        Web3.to_checksum_address.side_effect = lambda a: a
+        # Real HexBytes.hex() lost its "0x" prefix in hexbytes>=1.0; to_hex keeps it.
+        Web3.to_hex.side_effect = lambda _: self.TX_HASH
+
+        w3 = Web3.return_value
+        w3.eth.account.from_key.return_value.address = "0x" + "11" * 20
+        w3.eth.get_transaction_count.return_value = 7
+        w3.eth.gas_price = 10
+        w3.to_wei.return_value = 1
+        if send_raises:
+            w3.eth.send_raw_transaction.side_effect = send_raises
+        else:
+            w3.eth.send_raw_transaction.return_value = b"\xab" * 32
+
+        ledger = w3.eth.contract.return_value
+        ledger.functions.recordEvent.return_value.build_transaction.side_effect = (
+            lambda params: captured.update(params) or dict(params)
+        )
+        return Web3, w3, captured
+
+    def _submit(self, Web3, enabled=True):
+        anchor = self._anchor()
+        with patch("procurement.blockchain._load_web3", return_value=Web3), \
+             patch("procurement.blockchain.SERVER_SIGNING_ENABLED", enabled), \
+             patch("procurement.blockchain.BLOCKCHAIN_PRIVATE_KEY", "0x" + "22" * 32), \
+             patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", "0x" + "33" * 20):
+            result = submit_anchor_server_side(anchor)
+        anchor.refresh_from_db()
+        return result, anchor
+
+    def test_nonce_is_read_from_pending_not_latest(self):
+        # Awarding issues three documents back to back. Off the default "latest"
+        # block the earlier transactions are still unmined, so all three would
+        # claim one nonce and two would be rejected.
+        Web3, w3, _ = self._fake_web3()
+        self._submit(Web3)
+        w3.eth.get_transaction_count.assert_called_once_with("0x" + "11" * 20, "pending")
+
+    def test_does_not_block_the_request_waiting_to_be_mined(self):
+        # A Sepolia block takes ~12-30s, past gunicorn's 30s worker timeout —
+        # waiting here would turn a successful approval into a 502.
+        Web3, w3, _ = self._fake_web3()
+        _, anchor = self._submit(Web3)
+        w3.eth.wait_for_transaction_receipt.assert_not_called()
+        self.assertEqual(anchor.tx_hash, self.TX_HASH)
+        # No receipt means no block number, by design.
+        self.assertIsNone(anchor.block_number)
+
+    def test_transaction_hash_is_stored_0x_prefixed(self):
+        # attach_transaction rejects an unprefixed hash outright, and the failure
+        # would be swallowed as "anchoring didn't work" with no clue why.
+        Web3, _, _ = self._fake_web3()
+        _, anchor = self._submit(Web3)
+        self.assertTrue(anchor.tx_hash.startswith("0x"))
+        self.assertEqual(len(anchor.tx_hash), 66)
+        self.assertTrue(anchor.anchored)
+
+    def test_a_failed_submission_leaves_the_record_valid_and_retryable(self):
+        # Same contract as a declined MetaMask prompt: no exception escapes, the
+        # record stands, and the UI offers "Anchor now".
+        Web3, _, _ = self._fake_web3(send_raises=RuntimeError("insufficient funds"))
+        result, anchor = self._submit(Web3)
+        self.assertIsNone(result)
+        self.assertEqual(anchor.tx_hash, "")
+        self.assertFalse(anchor.anchored)
+
+    def test_nothing_is_submitted_while_server_signing_is_off(self):
+        # The default. Enabling it is an explicit deployment decision, so the
+        # code path must stay completely inert until then.
+        Web3, w3, _ = self._fake_web3()
+        result, anchor = self._submit(Web3, enabled=False)
+        self.assertIsNone(result)
+        self.assertFalse(anchor.anchored)
+        w3.eth.send_raw_transaction.assert_not_called()
+
+    def test_gas_and_chain_id_target_sepolia(self):
+        Web3, _, captured = self._fake_web3()
+        self._submit(Web3)
+        self.assertEqual(captured["chainId"], 11155111)
+        self.assertEqual(captured["from"], "0x" + "11" * 20)

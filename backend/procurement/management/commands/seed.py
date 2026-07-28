@@ -2,11 +2,19 @@
 
 Run:  python manage.py seed
 Idempotent-ish: clears procurement tables first, then recreates.
+
+DESTRUCTIVE — this deletes every award, bid, document, project and supplier
+before rebuilding the demo rows, and resets the three role accounts to their
+well-known demo passwords. That is exactly what you want on a local dev
+database and never what you want on the deployed one, so the command refuses
+to run whenever DEBUG=False (i.e. anywhere configured like production) unless
+--force is passed explicitly.
 """
 from datetime import date
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from procurement.models import Award, Bid, Document, Project, Supplier
 
@@ -14,9 +22,28 @@ User = get_user_model()
 
 
 class Command(BaseCommand):
-    help = "Load demo procurement data and role accounts."
+    help = "Load demo procurement data and role accounts (development only)."
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Run even when DEBUG=False. Wipes live procurement data — be certain.",
+        )
 
     def handle(self, *args, **options):
+        # Fail closed: a production-shaped environment needs a deliberate opt-in.
+        # Checked before anything is read or written, so an accidental run in a
+        # deployed shell exits without touching a single row.
+        if not settings.DEBUG and not options["force"]:
+            raise CommandError(
+                "Refusing to seed: DEBUG=False, so this looks like a deployed "
+                "environment and seeding would DELETE all procurement data and "
+                "reset the role accounts to demo passwords. Re-run with --force "
+                "if that is genuinely what you want."
+            )
+
+
         # --- Role accounts -------------------------------------------------
         # Admin and Head can sign in with either their plain username
         # (admin / head) or their email address below.
