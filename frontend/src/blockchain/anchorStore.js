@@ -60,6 +60,25 @@ export function dismissAnchorActivity() {
 export async function runAnchor(anchor, { label = '' } = {}) {
   if (!anchor) return false
 
+  // Already on-chain before the browser ever saw it — the backend signed and
+  // submitted this anchor itself (BLOCKCHAIN_SERVER_SIGNING). Prompting for a
+  // wallet signature now would write the IDENTICAL hash a second time: a
+  // duplicate entry in the trail, paid for twice, for no added proof.
+  //
+  // Every caller passes the `anchor` straight from a transition response, so
+  // this one guard covers all of them — no dashboard needs to know whether the
+  // deployment signs server-side or through MetaMask. Reported as 'done' rather
+  // than skipped silently, because from the user's point of view it IS done.
+  if (anchor.anchored || anchor.tx_hash) {
+    set({
+      state: 'done', anchor, label,
+      txHash: anchor.tx_hash, blockNumber: anchor.block_number,
+      message: MESSAGES.done,
+      explorerUrl: txUrl(anchor.tx_hash),
+    })
+    return true
+  }
+
   if (!isLedgerConfigured() || !hasWallet()) {
     set({
       state: 'unavailable', anchor, label,
