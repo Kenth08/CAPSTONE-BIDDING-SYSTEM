@@ -415,22 +415,36 @@ function BidModal({ project, profile, onClose, onSubmit }) {
             {/* ── STEP 2 — Documents (product response + supporting docs) ─── */}
             {step === 1 && (
               <>
-                {hasRef && (
-                  <div className="sd-bid-section">
-                    <h4 className="sd-bid-section-label">Your Product Response</h4>
-                    <p className="sd-bid-section-hint">Upload files showing your matching product and confirm your product meets the specification.</p>
-                    <BidUpload label="Your Product Image" rule={UPLOAD_RULES.productImage}
-                      file={productImage} error={fileErrors.productImage}
-                      onPick={pickFile(UPLOAD_RULES.productImage, setProductImage, 'productImage')}
-                      onRemove={() => setProductImage(null)} />
-                    <BidUpload label="Product Datasheet" rule={UPLOAD_RULES.datasheet}
-                      file={datasheet} error={fileErrors.datasheet}
-                      onPick={pickFile(UPLOAD_RULES.datasheet, setDatasheet, 'datasheet')}
-                      onRemove={() => setDatasheet(null)} />
-                    <BidUpload label="Compliance / Certificate Document" rule={UPLOAD_RULES.compliance}
-                      file={compliance} error={fileErrors.compliance}
-                      onPick={pickFile(UPLOAD_RULES.compliance, setCompliance, 'compliance')}
-                      onRemove={() => setCompliance(null)} />
+                {/* Always offered, on every bidding — not just the ones that
+                    happen to carry a reference image. A supplier bidding on a
+                    specific product is usually the one with the strongest case
+                    to make visually, and letting them show it is what puts the
+                    Admin in a position to compare offers on the actual goods
+                    rather than on price alone. Everything here is optional; only
+                    the spec-match declaration below is conditional, because it
+                    refers to a reference image that may not exist. */}
+                <div className="sd-bid-section">
+                  <h4 className="sd-bid-section-label">
+                    Your Product Response <span className="sd-optional">(optional)</span>
+                  </h4>
+                  <p className="sd-bid-section-hint">
+                    {hasRef
+                      ? 'Upload files showing your matching product and confirm your product meets the specification.'
+                      : 'Bidding with a specific product? Add a photo and its documents so the evaluators can see exactly what you are offering. This is optional and does not affect your eligibility.'}
+                  </p>
+                  <BidUpload label="Your Product Image" rule={UPLOAD_RULES.productImage}
+                    file={productImage} error={fileErrors.productImage}
+                    onPick={pickFile(UPLOAD_RULES.productImage, setProductImage, 'productImage')}
+                    onRemove={() => setProductImage(null)} />
+                  <BidUpload label="Product Datasheet" rule={UPLOAD_RULES.datasheet}
+                    file={datasheet} error={fileErrors.datasheet}
+                    onPick={pickFile(UPLOAD_RULES.datasheet, setDatasheet, 'datasheet')}
+                    onRemove={() => setDatasheet(null)} />
+                  <BidUpload label="Compliance / Certificate Document" rule={UPLOAD_RULES.compliance}
+                    file={compliance} error={fileErrors.compliance}
+                    onPick={pickFile(UPLOAD_RULES.compliance, setCompliance, 'compliance')}
+                    onRemove={() => setCompliance(null)} />
+                  {hasRef && (
                     <div className="sd-decl">
                       <label className="sd-decl-label">
                         <input type="checkbox" checked={specMatch}
@@ -439,8 +453,8 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                       </label>
                       {errors.specMatch && <span className="sd-field-error sd-decl-error">{errors.specMatch}</span>}
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
 
                 <div className="sd-bid-section">
                   <h4 className="sd-bid-section-label">Supporting Documents</h4>

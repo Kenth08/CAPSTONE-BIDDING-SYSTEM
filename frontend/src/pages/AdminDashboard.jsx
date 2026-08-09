@@ -5,7 +5,7 @@ import {
   Search, ChevronRight, LogOut, Shield,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
   CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock, ArrowLeft,
-  Upload, ShieldCheck, Link2,
+  Upload, ShieldCheck, Link2, Copy,
 } from 'lucide-react'
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
@@ -44,6 +44,41 @@ const STATUS_LABEL = {
 const STATUS_CLS = {
   draft: 'badge-gray', pending_head: 'badge-yellow', needs_revision: 'badge-orange', approved: 'badge-green', rejected: 'badge-red',
   published: 'badge-blue', awarded: 'badge-awarded', active: 'badge-blue',
+}
+
+// ── Reference Code ────────────────────────────────────────────────────────────
+// Every procurement carries a human-readable reference (e.g. "P-2026-001") that
+// doubles as its public lookup key: it is what anyone types into the Public
+// Verifier to replay the whole trail from the Sepolia ledger. Admins hand this
+// code out constantly, so it gets a deliberately loud, monospace, click-to-copy
+// treatment everywhere instead of being buried in muted subtitle text.
+function RefCode({ code, size = 'sm' }) {
+  const [copied, setCopied] = useState(false)
+  if (!code) return <span className="ad-muted ad-small">—</span>
+
+  const copy = async (e) => {
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1400)
+    } catch {
+      /* Clipboard blocked (insecure origin / denied) — the code is still on
+         screen to be read or selected by hand, so there is nothing to report. */
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className={`ad-ref ad-ref-${size}${copied ? ' ad-ref-copied' : ''}`}
+      onClick={copy}
+      title={copied ? 'Copied!' : `${code} — click to copy. Use this reference in the Public Verifier.`}
+    >
+      <span className="ad-ref-text">{code}</span>
+      {copied ? <Check size={11} /> : <Copy size={11} className="ad-ref-copy" />}
+    </button>
+  )
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -311,7 +346,7 @@ function ProjectsPage() {
 
   const filtered = active.filter(p => {
     const q = search.toLowerCase()
-    const matchSearch = !q || p.name.toLowerCase().includes(q)
+    const matchSearch = !q || p.name.toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q)
     const matchTab =
       filterTab === 'All'     ? true :
       filterTab === 'Awarded' ? p.status === 'awarded' :
@@ -337,7 +372,7 @@ function ProjectsPage() {
           <div className="ad-toolbar">
             <div className="ad-search-inline">
               <Search size={14} />
-              <input placeholder="Search projects" value={search} onChange={e => setSearch(e.target.value)} />
+              <input placeholder="Search by title or ref code" value={search} onChange={e => setSearch(e.target.value)} />
             </div>
             <button className="ad-btn-history" onClick={() => navigate('/admin/projects/history')}>
               <Clock size={12} /> History{historyCount > 0 ? ` (${historyCount})` : ''}
@@ -349,17 +384,18 @@ function ProjectsPage() {
         <table className="ad-table">
           <thead>
             <tr>
-              <th>TITLE</th><th>BUDGET</th><th>DEADLINE</th><th>TYPE</th>
+              <th>REF CODE</th><th>TITLE</th><th>BUDGET</th><th>DEADLINE</th><th>TYPE</th>
               <th>ELIGIBLE TYPES</th><th>STATUS</th><th>ACTIONS</th>
             </tr>
           </thead>
           <tbody>
             {loading && filtered.length === 0
-              ? <TableSkeleton rows={4} cols={7} />
+              ? <TableSkeleton rows={4} cols={8} />
               : filtered.length === 0
-              ? <tr><td colSpan={7} className="ad-empty-row">No approved projects yet.</td></tr>
+              ? <tr><td colSpan={8} className="ad-empty-row">No approved projects yet.</td></tr>
               : filtered.map(p => (
                 <tr key={p.id}>
+                  <td><RefCode code={p.code} /></td>
                   <td className="ad-bold">{p.name}</td>
                   <td>{p.budget}</td>
                   <td className="ad-muted">{deadlineLabel(p)}</td>
@@ -413,7 +449,7 @@ function ProjectHistoryPage() {
 
   const filtered = history.filter(p => {
     const q = search.toLowerCase()
-    return !q || p.name.toLowerCase().includes(q)
+    return !q || p.name.toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q)
   })
 
   // Most recently closed first.
@@ -436,7 +472,7 @@ function ProjectHistoryPage() {
           <div className="ad-toolbar">
             <div className="ad-search-inline">
               <Search size={14} />
-              <input placeholder="Search closed biddings" value={search} onChange={e => setSearch(e.target.value)} />
+              <input placeholder="Search closed biddings by title or ref code" value={search} onChange={e => setSearch(e.target.value)} />
             </div>
           </div>
         </div>
@@ -445,17 +481,18 @@ function ProjectHistoryPage() {
         <table className="ad-table">
           <thead>
             <tr>
-              <th>TITLE</th><th>BUDGET</th><th>CLOSED ON</th><th>TYPE</th>
+              <th>REF CODE</th><th>TITLE</th><th>BUDGET</th><th>CLOSED ON</th><th>TYPE</th>
               <th>ELIGIBLE TYPES</th><th>STATUS</th><th>ACTIONS</th>
             </tr>
           </thead>
           <tbody>
             {loading && sorted.length === 0
-              ? <TableSkeleton rows={4} cols={7} />
+              ? <TableSkeleton rows={4} cols={8} />
               : sorted.length === 0
-              ? <tr><td colSpan={7} className="ad-empty-row">No closed biddings yet.</td></tr>
+              ? <tr><td colSpan={8} className="ad-empty-row">No closed biddings yet.</td></tr>
               : sorted.map(p => (
                 <tr key={p.id}>
+                  <td><RefCode code={p.code} /></td>
                   <td className="ad-bold">{p.name}</td>
                   <td>{p.budget}</td>
                   <td className="ad-muted">{deadlineLabel(p)}</td>
@@ -703,7 +740,10 @@ function ProjectDetailModal({ project, onClose, setToast }) {
         <div className="ad-modal-header">
           <div>
             <h3>{project.name}</h3>
-            <p className="ad-muted ad-small">{project.code} · {project.category || '—'}</p>
+            <div className="ad-ref-line">
+              <RefCode code={project.code} />
+              <span className="ad-muted ad-small">{project.category || '—'}</span>
+            </div>
           </div>
           <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
         </div>
@@ -858,7 +898,8 @@ function PlanningPage() {
 
   const filtered = planning.filter(p => {
     const q = search.toLowerCase()
-    return !q || p.name.toLowerCase().includes(q) || p.type.toLowerCase().includes(q)
+    return !q || p.name.toLowerCase().includes(q) || p.type.toLowerCase().includes(q) ||
+      (p.code || '').toLowerCase().includes(q)
   })
 
   return (
@@ -875,7 +916,7 @@ function PlanningPage() {
         <div className="ad-card-header">
           <div className="ad-search-inline">
             <Search size={14} />
-            <input placeholder="Search by title or type" value={search} onChange={e => setSearch(e.target.value)} />
+            <input placeholder="Search by title, type, or ref code" value={search} onChange={e => setSearch(e.target.value)} />
           </div>
           <button className="ad-btn-primary" onClick={() => setShowForm(v => !v)}>
             <Plus size={14} /> {showForm ? 'Cancel' : 'Create Project'}
@@ -976,17 +1017,18 @@ function PlanningPage() {
         <table className="ad-table">
           <thead>
             <tr>
-              <th>PROJECT TITLE</th><th>BUDGET</th><th>TYPE</th>
+              <th>REF CODE</th><th>PROJECT TITLE</th><th>BUDGET</th><th>TYPE</th>
               <th>BIDDING PERIOD</th><th>STATUS</th><th>ACTIONS</th>
             </tr>
           </thead>
           <tbody>
             {loading && filtered.length === 0
-              ? <TableSkeleton rows={4} cols={6} />
+              ? <TableSkeleton rows={4} cols={7} />
               : filtered.length === 0
-              ? <tr><td colSpan={6} className="ad-empty-row">No planning requests yet. Click “Create Project” to add one.</td></tr>
+              ? <tr><td colSpan={7} className="ad-empty-row">No planning requests yet. Click “Create Project” to add one.</td></tr>
               : filtered.map(p => (
                 <tr key={p.id}>
+                  <td><RefCode code={p.code} /></td>
                   <td className="ad-bold">
                     {p.name}
                     {p.status === 'rejected' && p.rejectReason && (
@@ -1934,6 +1976,7 @@ function BidsPage() {
                 <ChevronRight size={16} className="ad-bid-card-arrow" />
               </div>
               <div className="ad-bid-card-name">{p.name}</div>
+              <div className="ad-ref-line"><RefCode code={p.code} /></div>
               <div className="ad-bid-card-budget">{p.budget} budget</div>
               <span className="badge badge-blue ad-bid-card-type">{p.type}</span>
               <div className="ad-muted ad-small ad-bid-card-desc">
@@ -1987,6 +2030,45 @@ function collectBidFiles(b) {
 
 const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 const isImageFile = (name) => IMAGE_FILE_RE.test(name || '')
+
+/**
+ * The offered product at a glance: the supplier's own product photo plus brand
+ * and model, shown inline in the bids table.
+ *
+ * Both are optional on a bid, so this degrades gracefully — a photo with no
+ * brand, a brand with no photo, or neither. It exists so the Admin can compare
+ * what is actually being offered across every bidder in one screen, instead of
+ * opening each bid in turn and judging on price alone. Clicking opens the full
+ * image; the row's own click handler still opens the bid.
+ */
+function BidProductCell({ bid }) {
+  const url = bid.supplier_product_image_url
+  const spec = [bid.brand_name, bid.model_number].filter(Boolean).join(' ')
+
+  if (!url && !spec) return <span className="ad-muted ad-small">—</span>
+
+  return (
+    <div className="ad-prod-cell">
+      {url ? (
+        <a
+          className="ad-prod-thumb"
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          onClick={e => e.stopPropagation()}
+          title="Open the full product image"
+        >
+          <img src={url} alt={spec ? `${spec} offered by ${bid.supplier_name}` : `Product offered by ${bid.supplier_name}`} loading="lazy" />
+        </a>
+      ) : (
+        <span className="ad-prod-thumb ad-prod-thumb-empty" title="No product image submitted">
+          <ImageIcon size={14} />
+        </span>
+      )}
+      {spec && <span className="ad-prod-spec" title={spec}>{spec}</span>}
+    </div>
+  )
+}
 
 const peso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
 const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
@@ -2073,7 +2155,10 @@ function TimelineModal({ project, bids, onClose }) {
         <div className="ad-modal-header">
           <div>
             <h3>Procurement Timeline</h3>
-            <p className="ad-muted ad-small">{project.name} · {project.code}</p>
+            <div className="ad-ref-line">
+              <RefCode code={project.code} />
+              <span className="ad-muted ad-small">{project.name}</span>
+            </div>
           </div>
           <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
         </div>
@@ -2160,6 +2245,7 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
             <Info2 label="Delivery Timeline" value={bid.delivery_timeline} />
             {bid.brand_name && <Info2 label="Brand Name" value={bid.brand_name} />}
             {bid.model_number && <Info2 label="Model Number" value={bid.model_number} />}
+            {bid.warranty_period && <Info2 label="Warranty Period" value={bid.warranty_period} />}
             {bid.additional_comments && <Info2 label="Additional Comments" value={bid.additional_comments} full />}
           </div>
 
@@ -2494,9 +2580,12 @@ function BidEvaluationPage() {
             <div className="ad-eval-head-row">
               <div>
                 <h2 style={{ margin: 0 }}>{project.name}</h2>
-                <p className="ad-muted ad-small" style={{ marginTop: 4 }}>
-                  {project.code} · {project.category || '—'} · ABC {peso(project.budget)}
-                </p>
+                <div className="ad-ref-line" style={{ marginTop: 6 }}>
+                  <RefCode code={project.code} size="lg" />
+                  <span className="ad-muted ad-small">
+                    {project.category || '—'} · ABC {peso(project.budget)}
+                  </span>
+                </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <BlockchainBadge anchors={project.anchors} />
@@ -2526,15 +2615,16 @@ function BidEvaluationPage() {
             </div>
             <table className="ad-table">
               <thead>
-                <tr><th>SUPPLIER</th><th>BID AMOUNT</th><th>SUBMITTED</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
+                <tr><th>PRODUCT</th><th>SUPPLIER</th><th>BID AMOUNT</th><th>SUBMITTED</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
               </thead>
               <tbody>
                 {loadingBids
-                  ? <TableSkeleton rows={3} cols={5} />
+                  ? <TableSkeleton rows={3} cols={6} />
                   : bids.length === 0
-                  ? <tr><td colSpan={5} className="ad-empty-row">No bids submitted yet.</td></tr>
+                  ? <tr><td colSpan={6} className="ad-empty-row">No bids submitted yet.</td></tr>
                   : bids.map(b => (
                     <tr key={b.id} className="ad-bid-row" onClick={() => setViewBid(b)}>
+                      <td><BidProductCell bid={b} /></td>
                       <td className="ad-bold ad-bid-supplier-cell">{b.supplier_name}</td>
                       <td>{peso(b.amount)}</td>
                       <td className="ad-muted">{fmtDate(b.submitted_at)}</td>
@@ -2743,7 +2833,8 @@ function AwardsPage() {
 
   const filtered = awards.filter(a => {
     const q = search.toLowerCase()
-    return !q || a.supplier_name.toLowerCase().includes(q) || a.project_name.toLowerCase().includes(q)
+    return !q || a.supplier_name.toLowerCase().includes(q) || a.project_name.toLowerCase().includes(q) ||
+      (a.project_code || '').toLowerCase().includes(q)
   })
 
   const totalAmount = awards.reduce((sum, a) => sum + Number(a.amount || 0), 0)
@@ -2779,7 +2870,7 @@ function AwardsPage() {
           <div className="ad-search-inline">
             <Search size={14} />
             <input
-              placeholder="Search by supplier or project"
+              placeholder="Search by supplier, project, or ref code"
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
@@ -2800,7 +2891,12 @@ function AwardsPage() {
             ) : filtered.map(a => (
               <tr key={a.id}>
                 <td className="ad-bold">{a.supplier_name}</td>
-                <td>{a.project_name}</td>
+                <td>
+                  <div className="ad-cell-stack">
+                    <span>{a.project_name}</span>
+                    <RefCode code={a.project_code} />
+                  </div>
+                </td>
                 <td className="ad-bold">{peso(a.amount)}</td>
                 <td className="ad-muted">{fmtDate(a.awarded_at)}</td>
                 <td><span className={`badge ${a.status === 'won' ? 'badge-green' : 'badge-gray'}`}>• {a.status === 'won' ? 'WON' : 'CANCELLED'}</span></td>

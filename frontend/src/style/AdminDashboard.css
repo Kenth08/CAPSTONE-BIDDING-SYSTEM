@@ -689,6 +689,61 @@
   font-size: 13px;
 }
 
+/* ── REFERENCE CODE ───────────────────────────────────── */
+/* The public lookup key (e.g. P-2026-001). Monospace + tinted so it reads as an
+   identifier rather than prose, and click-to-copy because admins paste it into
+   the Public Verifier and hand it to suppliers constantly. */
+.ad-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid rgba(59,130,246,0.28);
+  border-radius: 6px;
+  background: rgba(59,130,246,0.08);
+  color: #2563eb;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1.45;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.ad-ref:hover  { background: rgba(59,130,246,0.16); border-color: rgba(59,130,246,0.5); }
+.ad-ref:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+
+.ad-ref-lg { font-size: 14px; padding: 5px 11px; }
+
+/* The copy affordance stays quiet until the code is hovered. */
+.ad-ref .ad-ref-copy { opacity: 0.45; transition: opacity 0.15s; }
+.ad-ref:hover .ad-ref-copy { opacity: 1; }
+
+.ad-ref-copied {
+  background: rgba(16,185,129,0.12);
+  border-color: rgba(16,185,129,0.45);
+  color: #059669;
+}
+
+/* Code sitting beside a title/subtitle in a page or modal header. */
+.ad-ref-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+/* Two stacked lines inside one table cell (name over its code). */
+.ad-cell-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
 /* ── SKELETON LOADERS ─────────────────────────────────── */
 /* Placeholder shapes shown while data loads so it doesn't pop in abruptly. */
 .ad-skel {
@@ -1847,6 +1902,47 @@
 .ad-img-cap {
   padding: 6px 8px; font-size: 11.5px; font-weight: 600; color: var(--text-dark);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── OFFERED PRODUCT CELL (bids table) ────────────────── */
+/* Product photo + brand/model inline in the bids table, so competing offers can
+   be compared visually in one pass instead of one modal at a time. */
+.ad-prod-cell {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.ad-prod-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--light-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f1f5f9;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.ad-prod-thumb img { width: 100%; height: 100%; object-fit: cover; }
+a.ad-prod-thumb:hover { border-color: #3b82f6; box-shadow: 0 2px 10px rgba(59,130,246,0.2); }
+
+/* No photo submitted — a muted placeholder keeps the column aligned and makes
+   the absence itself readable at a glance. */
+.ad-prod-thumb-empty { color: #cbd5e1; background: #f8fafc; }
+
+.ad-prod-spec {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dark);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Scoped under .ad-doc-list (the BidDetailModal "Submitted Documents" plain
