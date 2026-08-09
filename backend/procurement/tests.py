@@ -217,8 +217,12 @@ class BidEvaluationTests(APITestCase):
         self.winner_supplier = make_supplier()
         self.other_supplier = make_supplier()
         self.project = make_project()
+        # Already QUALIFIED: only a bid that passed evaluation can be awarded
+        # (BidViewSet.select_winner enforces it), so this fixture stands where a
+        # real bid stands by the time a winner is picked.
         self.winning_bid = Bid.objects.create(
             project=self.project, supplier=self.winner_supplier, amount=45000,
+            status=Bid.Status.QUALIFIED,
         )
         self.other_bid = Bid.objects.create(
             project=self.project, supplier=self.other_supplier, amount=48000,
@@ -804,6 +808,8 @@ class BlockchainAnchorTests(APITestCase):
         bid = self._bid(project, supplier)
 
         self.client.force_authenticate(user=self.admin)
+        # A bid must pass evaluation before it can be awarded.
+        self.client.post(f"/api/bids/{bid.pk}/qualify/")
         self.client.post(f"/api/bids/{bid.pk}/select-winner/")
 
         stored = BlockchainAnchor.objects.get(stage=BlockchainAnchor.Stage.BID_SUBMITTED)
@@ -851,6 +857,8 @@ class BlockchainAnchorTests(APITestCase):
         bid = self._bid(project, rival)
 
         self.client.force_authenticate(user=self.admin)
+        # A bid must pass evaluation before it can be awarded.
+        self.client.post(f"/api/bids/{bid.pk}/qualify/")
         self.client.post(f"/api/bids/{bid.pk}/select-winner/")
 
         # The winning bid's anchor now exists, so this is the moment a rival

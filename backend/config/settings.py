@@ -203,7 +203,13 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# Philippine time. This is not cosmetic: bid deadlines, the publish window and
+# the delivery clock are all computed with timezone.localdate(), so under UTC a
+# deadline of "30 June" stayed open until 08:00 the next morning in Manila —
+# eight extra hours of bidding — while the browser-side UI already showed it as
+# closed. USE_TZ stays True, so datetimes are still STORED in UTC and only
+# rendered/compared in local time; no existing data is reinterpreted.
+TIME_ZONE = 'Asia/Manila'
 
 USE_I18N = True
 

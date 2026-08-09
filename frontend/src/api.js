@@ -182,24 +182,73 @@ export async function apiPublicAnchors(code, { deep = false } = {}) {
   return res.json() // { code, name, status, contract_address, anchors: [...] }
 }
 
+// ── Token refresh ─────────────────────────────────────────────────────────────
+// The access token lives 12 hours and the refresh token 7 days, but nothing
+// ever used the refresh token: a 401 simply cleared the session, so anyone
+// still working after 12 hours was thrown out to the login screen mid-task
+// (losing an in-progress bid or procurement form). Now an expired access token
+// is renewed once, transparently, and only a refresh that ALSO fails ends the
+// session — which is the case the 7-day refresh lifetime is actually for.
+
+// Shared across concurrent callers: a dashboard fires several requests at once,
+// and without this each one would start its own refresh and race the others,
+// with all but the winner then holding a token that has just been rotated away.
+let refreshInflight = null
+
+async function refreshAccessToken() {
+  const refresh = localStorage.getItem('refresh')
+  if (!refresh) return null
+  if (refreshInflight) return refreshInflight
+
+  refreshInflight = (async () => {
+    try {
+      const res = await fetch(`${API_URL}/auth/refresh/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh }),
+      })
+      if (!res.ok) return null
+      const data = await res.json()
+      if (!data?.access) return null
+      localStorage.setItem('access', data.access)
+      // SimpleJWT returns a new refresh token too when rotation is enabled.
+      if (data.refresh) localStorage.setItem('refresh', data.refresh)
+      return data.access
+    } catch {
+      return null   // offline / server down — treat as "could not refresh"
+    } finally {
+      refreshInflight = null
+    }
+  })()
+  return refreshInflight
+}
+
 // ── Authenticated requests (for wiring dashboard data later) ───────────────────
 export async function apiFetch(path, options = {}) {
-  const token = getToken()
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  })
+  const send = (token) =>
+    fetch(`${API_URL}${path}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
+    })
+
+  let res = await send(getToken())
   if (res.status === 401) {
-    clearSession()
-    throw new Error('Session expired. Please log in again.')
+    const renewed = await refreshAccessToken()
+    // Retried exactly once. A 401 that survives a fresh token is a real
+    // authorization failure, not an expiry, so retrying again would only loop.
+    if (renewed) res = await send(renewed)
+    if (!renewed || res.status === 401) {
+      clearSession()
+      throw new Error('Session expired. Please log in again.')
+    }
   }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(err.detail || `Request failed (${res.status}).`)
+    const err = await res.json().catch(() => null)
+    throw new Error(readError(err, `Request failed (${res.status}).`))
   }
   return res.status === 204 ? null : res.json()
 }
@@ -207,15 +256,21 @@ export async function apiFetch(path, options = {}) {
 // Authenticated multipart upload (no Content-Type header — the browser sets the
 // multipart boundary). Used for supplier document re-submission.
 async function apiUpload(path, formData, method = 'POST') {
-  const token = getToken()
-  const res = await fetch(`${API_URL}${path}`, {
-    method,
-    body: formData,
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
+  const send = (token) =>
+    fetch(`${API_URL}${path}`, {
+      method,
+      body: formData,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+
+  let res = await send(getToken())
   if (res.status === 401) {
-    clearSession()
-    throw new Error('Session expired. Please log in again.')
+    const renewed = await refreshAccessToken()
+    if (renewed) res = await send(renewed)
+    if (!renewed || res.status === 401) {
+      clearSession()
+      throw new Error('Session expired. Please log in again.')
+    }
   }
   if (!res.ok) {
     const err = await res.json().catch(() => null)

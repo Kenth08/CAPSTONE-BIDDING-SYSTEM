@@ -1607,13 +1607,49 @@ function docExpiryInfo(doc, profile) {
   return { date, expired: daysLeft < 0, expiringSoon: daysLeft >= 0 && daysLeft <= 30 }
 }
 
-function SupplierProfile({ profile, eligible }) {
+// Shown by Profile/Settings when the profile could not be loaded. Without this
+// both pages sat on their loading skeleton indefinitely, which looked like a
+// hung page rather than a failed request.
+function ProfileLoadError({ message, onRetry, retrying }) {
+  // A supplier account with no Supplier profile row is a real, recoverable
+  // state (e.g. the account was created outside the registration form), so it
+  // gets its own wording instead of a generic failure.
+  const missing = /no supplier profile/i.test(message || '')
+  return (
+    <div className="sd-card">
+      <div className="sd-load-error">
+        <AlertTriangle size={22} className="sd-load-error-icon" />
+        <div className="sd-load-error-text">
+          <span className="sd-bold">
+            {missing ? 'No supplier profile is linked to this account' : 'Could not load your profile'}
+          </span>
+          <span className="sd-muted">
+            {missing
+              ? 'Your sign-in works, but there is no company profile attached to it. Please contact the procuring entity’s administrator so they can link or re-create your supplier registration.'
+              : message || 'Something went wrong while loading your profile.'}
+          </span>
+        </div>
+        {!missing && (
+          <button className="sd-btn-primary" onClick={onRetry} disabled={retrying}>
+            {retrying ? 'Retrying…' : 'Retry'}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SupplierProfile({ profile, eligible, loading, error, onRetry }) {
   if (!profile) {
     return (
       <div className="sd-content">
-        <div className="sd-card">
-          <div style={{ padding: '40px 24px' }}><ListSkeleton rows={4} height={48} /></div>
-        </div>
+        {error && !loading
+          ? <ProfileLoadError message={error} onRetry={onRetry} retrying={loading} />
+          : (
+            <div className="sd-card">
+              <div style={{ padding: '40px 24px' }}><ListSkeleton rows={4} height={48} /></div>
+            </div>
+          )}
       </div>
     )
   }
@@ -1722,7 +1758,7 @@ function SupplierProfile({ profile, eligible }) {
   )
 }
 
-function SupplierSettings({ profile, setToast, onUpdated }) {
+function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetry }) {
   const [fullName, setFullName] = useState('')
   const [repName, setRepName] = useState('')
   const [phone, setPhone] = useState('')
@@ -1748,14 +1784,6 @@ function SupplierSettings({ profile, setToast, onUpdated }) {
 
   const toggleBusinessType = (t) =>
     setBusinessTypes(list => list.includes(t) ? list.filter(x => x !== t) : [...list, t])
-
-  if (!profile) {
-    return (
-      <div className="sd-content">
-        <div className="sd-card"><div style={{ padding: '40px 24px' }}><ListSkeleton rows={4} height={48} /></div></div>
-      </div>
-    )
-  }
 
   const saveProfile = async (e) => {
     e.preventDefault()
@@ -1798,55 +1826,67 @@ function SupplierSettings({ profile, setToast, onUpdated }) {
     }
   }
 
+  // Changing your password only needs an account, not a company profile — so it
+  // stays available even when the profile failed to load. Previously the whole
+  // page was behind a `if (!profile) return <skeleton>` guard, which locked a
+  // supplier out of their own password form whenever this request failed.
+  const profileCard = !profile ? (
+    error && !loading
+      ? <ProfileLoadError message={error} onRetry={onRetry} retrying={loading} />
+      : <div className="sd-card"><div style={{ padding: '40px 24px' }}><ListSkeleton rows={4} height={48} /></div></div>
+  ) : (
+    <div className="sd-card">
+      <div className="sd-card-header">
+        <div><h2>Edit Profile</h2><p>Update your contact details on file</p></div>
+      </div>
+      <form className="sd-profile-form" onSubmit={saveProfile}>
+        <div className="sd-form-group">
+          <label>Full Name</label>
+          <input type="text" value={fullName} onChange={e => setFullName(e.target.value)} />
+        </div>
+        <div className="sd-form-group">
+          <label>Representative Name</label>
+          <input type="text" value={repName} onChange={e => setRepName(e.target.value)} />
+        </div>
+        <div className="sd-form-group">
+          <label>Phone Number</label>
+          <input type="text" value={phone} onChange={e => setPhone(e.target.value)} />
+        </div>
+        <div className="sd-form-group">
+          <label>Business Address</label>
+          <input type="text" value={address} onChange={e => setAddress(e.target.value)} />
+        </div>
+        <div className="sd-form-group sd-profile-field-full">
+          <label>Business Types</label>
+          <span className="sd-muted sd-small" style={{ marginBottom: 6 }}>
+            Controls which procurement categories you see and can bid on. Changes apply immediately.
+          </span>
+          <div className="sd-chips">
+            {CATEGORIES.map(t => (
+              <button
+                type="button"
+                key={t}
+                className={`sd-chip sd-chip-toggle${businessTypes.includes(t) ? ' on' : ''}`}
+                onClick={() => toggleBusinessType(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+        {profileError && <span className="sd-field-error sd-profile-field-full">{profileError}</span>}
+        <div className="sd-profile-actions">
+          <button type="submit" className="sd-btn-primary" disabled={savingProfile}>
+            {savingProfile ? 'Saving…' : 'Save Changes'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+
   return (
     <div className="sd-content">
-      <div className="sd-card">
-        <div className="sd-card-header">
-          <div><h2>Edit Profile</h2><p>Update your contact details on file</p></div>
-        </div>
-        <form className="sd-profile-form" onSubmit={saveProfile}>
-          <div className="sd-form-group">
-            <label>Full Name</label>
-            <input type="text" value={fullName} onChange={e => setFullName(e.target.value)} />
-          </div>
-          <div className="sd-form-group">
-            <label>Representative Name</label>
-            <input type="text" value={repName} onChange={e => setRepName(e.target.value)} />
-          </div>
-          <div className="sd-form-group">
-            <label>Phone Number</label>
-            <input type="text" value={phone} onChange={e => setPhone(e.target.value)} />
-          </div>
-          <div className="sd-form-group">
-            <label>Business Address</label>
-            <input type="text" value={address} onChange={e => setAddress(e.target.value)} />
-          </div>
-          <div className="sd-form-group sd-profile-field-full">
-            <label>Business Types</label>
-            <span className="sd-muted sd-small" style={{ marginBottom: 6 }}>
-              Controls which procurement categories you see and can bid on. Changes apply immediately.
-            </span>
-            <div className="sd-chips">
-              {CATEGORIES.map(t => (
-                <button
-                  type="button"
-                  key={t}
-                  className={`sd-chip sd-chip-toggle${businessTypes.includes(t) ? ' on' : ''}`}
-                  onClick={() => toggleBusinessType(t)}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-          </div>
-          {profileError && <span className="sd-field-error sd-profile-field-full">{profileError}</span>}
-          <div className="sd-profile-actions">
-            <button type="submit" className="sd-btn-primary" disabled={savingProfile}>
-              {savingProfile ? 'Saving…' : 'Save Changes'}
-            </button>
-          </div>
-        </form>
-      </div>
+      {profileCard}
 
       <div className="sd-card">
         <div className="sd-card-header">
@@ -1886,6 +1926,8 @@ let myProfileCache = null
 export default function SupplierDashboard() {
   const loc = useLocation()
   const [profile, setProfile] = useState(myProfileCache)
+  const [profileError, setProfileError] = useState('')
+  const [loadingProfile, setLoadingProfile] = useState(!myProfileCache)
   const [projects, setProjects] = useState([])   // eligible (published + category match)
   const [bids, setBids] = useState([])
   const [awards, setAwards] = useState([])       // this supplier's own awards only
@@ -1895,11 +1937,24 @@ export default function SupplierDashboard() {
   const [navOpen, setNavOpen] = useState(false)
   useEffect(() => { setNavOpen(false) }, [loc.pathname])
 
+  // Loads the supplier's own profile. The error is KEPT, not swallowed: with no
+  // profile the Profile/Settings pages have nothing to render, and silently
+  // leaving `profile` null made them show their loading skeleton forever with no
+  // message and no way out. Now a failure is surfaced with a Retry button.
   const loadProfile = () => {
+    setProfileError('')
+    setLoadingProfile(true)
     return apiGetMySupplier()
       .then(p => { myProfileCache = p; setProfile(p) })
-      // Keep showing cached profile if a background refresh fails.
-      .catch(() => { if (!myProfileCache) setProfile(null) })
+      .catch(err => {
+        // Keep showing the cached profile if a background refresh fails; only
+        // report the error when there is nothing to fall back on.
+        if (!myProfileCache) {
+          setProfile(null)
+          setProfileError(err?.message || 'Could not load your profile.')
+        }
+      })
+      .finally(() => setLoadingProfile(false))
   }
   // Backend returns only the projects this supplier is eligible for.
   const loadProjects = () => {
@@ -1988,8 +2043,8 @@ export default function SupplierDashboard() {
             <Route path="bids"     element={<SupplierBids bids={bids} awards={awards} onWithdraw={withdrawBid} loading={loadingBids} onResubmitted={loadBids} setToast={setToast} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="reports"  element={<SupplierReportsPage bids={bids} profile={profile} />} />
-            <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} />} />
-            <Route path="settings" element={<SupplierSettings profile={profile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} />} />
+            <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} loading={loadingProfile} error={profileError} onRetry={loadProfile} />} />
+            <Route path="settings" element={<SupplierSettings profile={profile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} loading={loadingProfile} error={profileError} onRetry={loadProfile} />} />
             <Route path="*"        element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
           </Routes>
         </div>

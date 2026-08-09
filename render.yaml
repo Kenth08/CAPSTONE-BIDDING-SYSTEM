@@ -111,7 +111,14 @@ services:
       # S3-compatible storage (Supabase Storage). Unset = uploads are written
       # to the container's local media/ directory, which Render's free plan
       # wipes on every deploy and restart. Set these to make uploaded
-      # procurement documents survive.
+      # procurement documents SURVIVE a redeploy.
+      #
+      # Durability is the only thing still missing without these. Documents are
+      # no longer served from MEDIA_URL (whose route only existed when DEBUG was
+      # True, so every document 404'd here) — they now go through
+      # /api/files/... in procurement/files.py, which works identically on local
+      # disk and on S3 and enforces who may read what. So the app is correct
+      # either way; unset, uploaded files simply do not survive the next deploy.
       # - key: AWS_STORAGE_BUCKET_NAME
       #   sync: false
       # - key: AWS_ACCESS_KEY_ID

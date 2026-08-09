@@ -694,6 +694,28 @@
   margin-top: 4px;
 }
 
+/* PROFILE LOAD ERROR — shown when GET /suppliers/me/ fails, in place of the
+   loading skeleton that used to sit there forever with no explanation. */
+.sd-load-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 28px 24px;
+}
+.sd-load-error-icon { color: #f59e0b; flex-shrink: 0; margin-top: 2px; }
+.sd-load-error-text {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+.sd-load-error-text .sd-muted { font-size: 13px; line-height: 1.55; }
+@media (max-width: 640px) {
+  .sd-load-error { flex-direction: column; }
+  .sd-load-error .sd-btn-primary { align-self: stretch; }
+}
+
 /* TOAST */
 .sd-toast {
   display: flex;

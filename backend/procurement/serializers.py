@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .blockchain import anchor_summary, anchors_for
+from .files import protected_file_url
 from .models import (
     AWARD_DOCUMENT_FIELDS,
     BID_DOCUMENT_FIELDS,
@@ -60,10 +61,7 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
         reviews = obj.document_reviews or {}
         result = []
         for key, label, required in SUPPLIER_DOCUMENT_FIELDS:
-            file = getattr(obj, key, None)
-            url = None
-            if file:
-                url = request.build_absolute_uri(file.url) if request else file.url
+            url = protected_file_url(request, "supplier", obj, key)
             review = reviews.get(key) or {}
             result.append({
                 "key": key,
@@ -156,13 +154,9 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
         return rows
 
     def get_reference_image_url(self, obj):
-        """Absolute URL of the optional reference image, or None when there
-        isn't one — so the frontend never renders a broken/empty image box."""
-        f = getattr(obj, "reference_image", None)
-        if not f:
-            return None
-        request = self.context.get("request")
-        return request.build_absolute_uri(f.url) if request else f.url
+        """Access-controlled URL of the optional reference image, or None when
+        there isn't one — so the frontend never renders a broken/empty box."""
+        return protected_file_url(self.context.get("request"), "project", obj, "reference_image")
 
     def get_bid_count(self, obj):
         # Prefer the annotated value (list/detail) — falls back to the model
@@ -178,8 +172,7 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
         reviews = obj.document_reviews or {}
         out = []
         for key, label, required in PROCUREMENT_DOCUMENT_FIELDS:
-            f = getattr(obj, key, None)
-            url = (request.build_absolute_uri(f.url) if request else f.url) if f else None
+            url = protected_file_url(request, "project", obj, key)
             review = reviews.get(key) or {}
             out.append({
                 "key": key, "label": label, "required": required, "url": url,
@@ -264,10 +257,7 @@ class BidAttachmentSerializer(serializers.ModelSerializer):
         fields = ["id", "file_name", "url", "uploaded_at"]
 
     def get_url(self, obj):
-        if not obj.file:
-            return None
-        request = self.context.get("request")
-        return request.build_absolute_uri(obj.file.url) if request else obj.file.url
+        return protected_file_url(self.context.get("request"), "attachment", obj, "file")
 
 
 class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
@@ -316,26 +306,23 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             "accuracy_confirmed", "specification_confirmed",
         ]
 
-    def _abs_url(self, file):
-        if not file:
-            return None
-        request = self.context.get("request")
-        return request.build_absolute_uri(file.url) if request else file.url
+    def _abs_url(self, obj, field):
+        return protected_file_url(self.context.get("request"), "bid", obj, field)
 
     def get_quotation_document_url(self, obj):
-        return self._abs_url(obj.quotation_document)
+        return self._abs_url(obj, "quotation_document")
 
     def get_technical_document_url(self, obj):
-        return self._abs_url(obj.technical_document)
+        return self._abs_url(obj, "technical_document")
 
     def get_supplier_product_image_url(self, obj):
-        return self._abs_url(obj.supplier_product_image)
+        return self._abs_url(obj, "supplier_product_image")
 
     def get_supplier_datasheet_url(self, obj):
-        return self._abs_url(obj.supplier_datasheet)
+        return self._abs_url(obj, "supplier_datasheet")
 
     def get_supplier_compliance_doc_url(self, obj):
-        return self._abs_url(obj.supplier_compliance_doc)
+        return self._abs_url(obj, "supplier_compliance_doc")
 
     def anchor_ref(self, obj):
         # Anchors are indexed by the PROCUREMENT code (that's how the contract
@@ -351,7 +338,7 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
                 "key": key,
                 "label": label,
                 "required": required,
-                "url": self._abs_url(getattr(obj, key, None)),
+                "url": self._abs_url(obj, key),
                 "review_status": review.get("status"),
                 "review_note": review.get("note", ""),
             })
@@ -397,13 +384,12 @@ class AwardSerializer(AnchorTrailMixin, serializers.ModelSerializer):
 
         out = []
         for key, label, stage, issued_field in AWARD_DOCUMENT_FIELDS:
-            f = getattr(obj, key, None)
             anchor = anchor_summary(by_stage.get(stage))
             out.append({
                 "key": key,
                 "label": label,
                 "stage": stage,
-                "url": (request.build_absolute_uri(f.url) if request else f.url) if f else None,
+                "url": protected_file_url(request, "award", obj, key),
                 "issued_at": getattr(obj, issued_field, None),
                 "anchored": bool(anchor and anchor["tx_hash"]),
                 "tx_hash": anchor["tx_hash"] if anchor else "",

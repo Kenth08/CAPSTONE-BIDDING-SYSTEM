@@ -2,11 +2,11 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-from django.utils.timesince import timesince
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -96,14 +96,27 @@ class RegisterSerializer(serializers.ModelSerializer):
     SupplierRegisterSerializer instead, but the route is public so it must be
     safe to call directly). `role` is read-only — every account created here
     gets the model default ('supplier'); without this, any caller could pass
-    role=admin and grant themselves full admin access with no verification."""
+    role=admin and grant themselves full admin access with no verification.
 
-    password = serializers.CharField(write_only=True, min_length=6, max_length=128)
+    Password strength is enforced with Django's configured validators, the same
+    as SupplierRegisterSerializer. This route previously accepted anything six
+    characters long — no strength check at all — so it was a public back door
+    around the password policy the real registration form applies.
+    """
+
+    password = serializers.CharField(write_only=True, max_length=128)
 
     class Meta:
         model = User
         fields = ["id", "username", "email", "password", "role", "full_name"]
         read_only_fields = ["role"]
+
+    def validate_password(self, value):
+        try:
+            validate_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages))
+        return value
 
     def create(self, validated_data):
         password = validated_data.pop("password")
@@ -208,19 +221,32 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
         password = validated_data.pop("password")
         full_name = validated_data.pop("full_name")
 
-        user = User(
-            username=email,
-            email=email,
-            full_name=full_name,
-            role=User.Role.SUPPLIER,
-        )
-        user.set_password(password)
-        user.save()
+        # The User and the Supplier profile are one registration and must
+        # succeed or fail together. Unwrapped, a failure while creating the
+        # profile (a bad file, a full disk, a dropped connection) left the User
+        # row committed and orphaned — and because validate_email rejects an
+        # address that already has an account, the applicant was then
+        # permanently locked out of registering with their own email, with no
+        # way to fix it themselves.
+        with transaction.atomic():
+            user = User(
+                username=email,
+                email=email,
+                full_name=full_name,
+                role=User.Role.SUPPLIER,
+            )
+            user.set_password(password)
+            user.save()
 
-        # Fill the legacy fields the rest of the app already reads.
-        validated_data["contact"] = validated_data.get("representative_name", "")
-        validated_data["business_type"] = ", ".join(validated_data.get("business_types", []))
-        supplier = Supplier.objects.create(user=user, **validated_data)
+            # Fill the legacy fields the rest of the app already reads.
+            validated_data["contact"] = validated_data.get("representative_name", "")
+            validated_data["business_type"] = ", ".join(validated_data.get("business_types", []))
+            supplier = Supplier.objects.create(user=user, **validated_data)
+
+        # Both side effects are best-effort and deliberately OUTSIDE the
+        # transaction: neither should be able to roll back a completed
+        # registration, and on_commit semantics don't apply to work that is
+        # allowed to fail silently.
         send_verification_email(user)
 
         # Let the admins know a new supplier is waiting for verification.
@@ -265,8 +291,26 @@ class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
     Users log in with EITHER their username OR their email (admins/heads can
     use their email saved in the database, suppliers already use their email as
     their username). The account's real role is returned so the frontend knows
-    which dashboard to open — no role picker needed. Errors are specific so the
-    user knows exactly what went wrong."""
+    which dashboard to open — no role picker needed.
+
+    Every failure returns the SAME message. It used to distinguish "no account
+    found with that username or email" from "incorrect password", which turned
+    this endpoint into an account-enumeration oracle: anyone could test an email
+    address and learn from the wording alone whether it was registered. That
+    directly undermined PasswordResetRequestView, which deliberately returns one
+    generic response for exactly this reason. The old version also appended "your
+    password was changed N ago" to a failed attempt — telling an UNAUTHENTICATED
+    caller when the account was last touched.
+
+    The trade-off is a slightly less helpful message for a user who genuinely
+    mistyped their email; the login screen points at Forgot Password and Register
+    to cover that.
+    """
+
+    # One message for every failure mode, so nothing can be inferred from wording.
+    INVALID_CREDENTIALS = (
+        "The username/email or password is incorrect. Please check your details and try again."
+    )
 
     @classmethod
     def get_token(cls, user):
@@ -288,25 +332,17 @@ class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
         user_obj = User.objects.filter(
             Q(username__iexact=identifier) | Q(email__iexact=identifier)
         ).first()
-        if user_obj is None:
-            raise serializers.ValidationError(
-                {"detail": "No account found with that username or email. "
-                           "Please register to create an account."}
-            )
-        if not user_obj.is_active:
-            raise serializers.ValidationError(
-                {"detail": "This account is inactive. Please contact the administrator."}
-            )
+        if user_obj is None or not user_obj.is_active:
+            # Deliberately indistinguishable from a wrong password — including
+            # for a disabled account, whose existence is equally private.
+            raise serializers.ValidationError({"detail": self.INVALID_CREDENTIALS})
 
         # Authenticate with the resolved username (SimpleJWT uses USERNAME_FIELD).
         attrs[self.username_field] = user_obj.get_username()
         try:
             data = super().validate(attrs)
         except AuthenticationFailed:
-            detail = "Incorrect password. Please try again."
-            if user_obj.password_changed_at:
-                detail += f" Note: your password was changed {timesince(user_obj.password_changed_at)} ago."
-            raise serializers.ValidationError({"detail": detail})
+            raise serializers.ValidationError({"detail": self.INVALID_CREDENTIALS})
 
         data["user"] = UserSerializer(self.user).data
         return data

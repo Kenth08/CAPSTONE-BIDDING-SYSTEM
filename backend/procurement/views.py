@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.base import ContentFile
+from django.db import IntegrityError, transaction
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import status as http_status
@@ -84,6 +85,41 @@ BID_TEXT_FIELD_LIMITS = {
 }
 
 
+def next_project_code():
+    """The next free procurement code for this year, e.g. "P-2026-004".
+
+    Derived from the HIGHEST existing code, not from a row count. Counting was
+    wrong in two ways that both ended in an IntegrityError on the unique `code`
+    column — and once a year's numbering collided, no procurement could be
+    created for the rest of that year:
+
+      * deleting a project lowered the count, so the next create re-proposed a
+        code that still existed (delete P-2026-002 of three, count+1 == 3, and
+        P-2026-003 is already taken);
+      * two simultaneous creates read the same count and proposed the same code.
+
+    The retry loop closes the concurrency window that remains between reading
+    the maximum and committing the insert: if another request wins the race, the
+    unique constraint rejects this one and we simply take the next number. The
+    caller must therefore be prepared to have `code` re-derived, which is why
+    this is called inside perform_create's save.
+    """
+    year = date.today().year
+    prefix = f"P-{year}-"
+    latest = (
+        Project.objects.filter(code__startswith=prefix)
+        .order_by("-code")
+        .values_list("code", flat=True)
+        .first()
+    )
+    try:
+        # "P-2026-014" -> 14. A malformed legacy code falls back to the count.
+        nxt = int(latest.rsplit("-", 1)[1]) + 1 if latest else 1
+    except (ValueError, IndexError):
+        nxt = Project.objects.filter(code__startswith=prefix).count() + 1
+    return f"{prefix}{nxt:03d}"
+
+
 def close_expired_published_projects():
     """Flip any PUBLISHED procurement whose bid deadline has passed to CLOSED.
 
@@ -126,6 +162,15 @@ def attach_anchor_transaction(request, *, entity_ref, entity_type, entity_id):
     anchor_id = request.data.get("anchor_id")
     stage = (request.data.get("stage") or "").strip()
     if anchor_id:
+        # Coerced explicitly: passing a non-numeric anchor_id straight into
+        # filter(id=...) makes Django raise ValueError, which DRF turns into a
+        # 500 rather than the 400 that a malformed request deserves.
+        try:
+            anchor_id = int(anchor_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "anchor_id must be a number."},
+                status=http_status.HTTP_400_BAD_REQUEST)
         anchor = scoped.filter(id=anchor_id).first()
     elif stage:
         anchor = scoped.filter(stage=stage, tx_hash="").order_by("-created_at", "-id").first()
@@ -305,6 +350,44 @@ class ProjectViewSet(viewsets.ModelViewSet):
         if self.action == "anchor":
             return [IsAdminOrHeadRole()]
         return [IsAdminRole()]
+
+    # Once bidding opens, the procurement's terms are fixed. Suppliers priced
+    # their bids against this budget, these specifications and this evaluation
+    # criteria, and every one of those fields is inside the BIDDING_OPEN hash
+    # that went on-chain. Editing afterwards silently rewrites the deal AND
+    # makes verify_anchor report the procurement as altered on the public page
+    # — so an innocent typo fix permanently brands an honest record as tampered.
+    LOCKED_STATUSES = {
+        Project.Status.PUBLISHED, Project.Status.AWARDED, Project.Status.CLOSED,
+    }
+
+    def update(self, request, *args, **kwargs):
+        project = self.get_object()
+        if project.status in self.LOCKED_STATUSES:
+            return Response(
+                {"detail": f"\"{project.name}\" is already {project.get_status_display().lower()} "
+                           "and can no longer be edited. Its details are part of the published "
+                           "record suppliers bid against."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete a procurement — only before it has been opened for bidding.
+
+        A published or awarded procurement has bids, possibly an award, and an
+        on-chain trail hanging off it. Deleting the row cascades those away and
+        leaves the anchors pointing at nothing, which the public verifier can
+        only report as "the record this anchor was taken from no longer exists".
+        """
+        project = self.get_object()
+        if project.status in self.LOCKED_STATUSES:
+            return Response(
+                {"detail": f"\"{project.name}\" has already been opened for bidding and cannot be "
+                           "deleted. Its bids and blockchain record depend on it."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
 
     def list(self, request, *args, **kwargs):
         """Same as the default list, with every project's blockchain trail
@@ -504,8 +587,19 @@ class ProjectViewSet(viewsets.ModelViewSet):
         bid.save()
 
         # Multiple "Other Attachments" — each becomes its own row.
-        for uploaded in other_attachments:
-            BidAttachment.objects.create(bid=bid, file=uploaded, file_name=uploaded.name)
+        #
+        # Re-submitting REPLACES the set rather than adding to it, matching how
+        # every other file on a bid behaves and how the form reads ("Other
+        # Attachments" shows what will be on file, not what to append). Appending
+        # meant a supplier who edited their bid three times ended up with three
+        # copies of each attachment for the evaluator to wade through, and the
+        # rows grew without bound. Only done when new files were actually
+        # attached, so re-submitting without touching this field keeps what is
+        # already there — the same rule the single-file fields follow above.
+        if other_attachments:
+            bid.attachments.all().delete()
+            for uploaded in other_attachments:
+                BidAttachment.objects.create(bid=bid, file=uploaded, file_name=uploaded.name)
 
         verb = "submitted a bid on" if created else "updated their bid on"
         notify_admins(
@@ -535,13 +629,22 @@ class ProjectViewSet(viewsets.ModelViewSet):
         return response
 
     def perform_create(self, serializer):
-        # Auto-generate a code like P-2026-001
-        year = date.today().year
-        count = Project.objects.filter(code__startswith=f"P-{year}-").count() + 1
-        code = f"P-{year}-{count:03d}"
         user = self.request.user if self.request.user.is_authenticated else None
         # Created from Planning → goes straight into the Head's approval queue.
-        project = serializer.save(code=code, created_by=user, status=Project.Status.PENDING_HEAD)
+        # Retried because next_project_code() reads the highest code and another
+        # request can insert between that read and this write; the unique
+        # constraint is what actually settles the race, so losing it just means
+        # taking the next number rather than failing the create.
+        for attempt in range(5):
+            try:
+                with transaction.atomic():
+                    project = serializer.save(
+                        code=next_project_code(), created_by=user,
+                        status=Project.Status.PENDING_HEAD)
+                break
+            except IntegrityError:
+                if attempt == 4:
+                    raise
         notify_heads(
             f"New procurement \"{project.name}\" ({project.code}) needs your approval.",
             link="/head/pending",
@@ -701,6 +804,15 @@ class ProjectViewSet(viewsets.ModelViewSet):
         bidding window is always real no matter how long this project sat
         waiting in approval (see Project.bidding_period_days)."""
         project = self.get_object()
+        # The Head's approval is the gate this whole workflow exists to enforce,
+        # so it is checked HERE and not only in the Admin UI. Without this an
+        # admin could POST straight to this endpoint and put a draft — or a
+        # procurement the Head had explicitly REJECTED — out to bidding.
+        if project.status != Project.Status.APPROVED:
+            return Response(
+                {"detail": "Only a procurement approved by the Head can be published for bidding."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
         if project.bidding_period_days:
             project.deadline = timezone.localdate() + timedelta(days=project.bidding_period_days)
         project.status = Project.Status.PUBLISHED
@@ -765,6 +877,30 @@ class SupplierViewSet(viewsets.ModelViewSet):
     def _detail_response(self, supplier, status_code=http_status.HTTP_200_OK):
         data = SupplierDetailSerializer(supplier, context={"request": self.request}).data
         return Response(data, status=status_code)
+
+    def destroy(self, request, *args, **kwargs):
+        """Remove a supplier — only one that has never taken part in a bidding.
+
+        Bid.supplier and Award.supplier both CASCADE, so deleting a supplier who
+        has bid takes their bids (and any award) with them. Those rows are the
+        evidence behind BID_SUBMITTED and AWARDED anchors that are already on
+        Sepolia and cannot be withdrawn, so the deletion would quietly turn a
+        verifiable procurement into one the public page reports as broken.
+        Rejecting the delete is the reversible choice; the account can be
+        rejected or deactivated instead.
+        """
+        supplier = self.get_object()
+        bids = supplier.bids.count()
+        awards = supplier.awards.count()
+        if bids or awards:
+            return Response(
+                {"detail": f"{supplier.company} has {bids} bid(s) and {awards} award(s) on record "
+                           "and cannot be deleted — the procurement history and its blockchain "
+                           "trail depend on them. Reject the supplier instead to block them from "
+                           "bidding."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
 
     # ── Supplier's own profile ────────────────────────────────────────────
     def _own_supplier(self, request):
@@ -972,6 +1108,33 @@ class BidViewSet(viewsets.ModelViewSet):
             entity_type=BlockchainAnchor.EntityType.BID, entity_id=bid.id,
         )
 
+    def destroy(self, request, *args, **kwargs):
+        """Withdraw a bid — only while the bidding is genuinely still open.
+
+        A supplier may change their mind before the deadline. They may NOT
+        delete a bid that has already won, or one belonging to a procurement
+        that has closed or been awarded: the bid at that point is part of the
+        evaluation record, it is referenced by the Award, and its BID_SUBMITTED
+        anchor is on-chain — deleting the row leaves that anchor pointing at
+        nothing, so the public verifier reports a real contract as
+        "unavailable". Admins keep the unrestricted delete for cleanup.
+        """
+        bid = self.get_object()
+        if getattr(request.user, "role", None) == "supplier":
+            if bid.status == Bid.Status.WINNER:
+                return Response(
+                    {"detail": "This bid won the contract and can no longer be withdrawn. "
+                               "Contact the procuring entity if you need to decline the award."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            if bid.project.status != Project.Status.PUBLISHED:
+                return Response(
+                    {"detail": "Bidding for this procurement is closed, so your bid can no longer "
+                               "be withdrawn."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+        return super().destroy(request, *args, **kwargs)
+
     def get_queryset(self):
         qs = Bid.objects.select_related(
             "project", "supplier", "supplier__user").prefetch_related("attachments")
@@ -1127,6 +1290,32 @@ class BidViewSet(viewsets.ModelViewSet):
         Awarded, and notifies the participating suppliers."""
         bid = self.get_object()
         project = bid.project
+
+        # A procurement is awarded ONCE. Without this check a second call for a
+        # different supplier passed straight through: get_or_create keys on
+        # (project, supplier), so it created a SECOND Award row rather than
+        # finding the first. The result was two suppliers both holding a `won`
+        # award for the same contract, both shown on the public results page and
+        # both anchored on-chain as the winner — a contradiction written into an
+        # append-only ledger that can never be retracted.
+        if project.status == Project.Status.AWARDED:
+            existing = project.awards.filter(status=Award.Status.WON).select_related("supplier").first()
+            winner = existing.supplier.company if existing else "another supplier"
+            return Response(
+                {"detail": f"\"{project.name}\" has already been awarded to {winner}. "
+                           "An award cannot be reassigned once it has been made."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Only a bid that passed evaluation can win. The Admin UI already hides
+        # the button unless the bid is qualified; this is the same rule on the
+        # server, so an under-review or explicitly DISQUALIFIED bid can't be
+        # awarded by calling the endpoint directly.
+        if bid.status != Bid.Status.QUALIFIED:
+            return Response(
+                {"detail": "Only a bid that has been marked Qualified can be selected as the winner."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
 
         flagged_keys = [
             key for key, review in (bid.document_reviews or {}).items()
@@ -1349,8 +1538,21 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
     serializer_class = NotificationSerializer
 
+    # The bell polls this list every 30 seconds for every signed-in user, and
+    # notifications are never deleted — so an account that has been active for a
+    # while was re-downloading its entire history twice a minute. The dropdown
+    # only ever shows the most recent handful, so serving more is pure waste.
+    MAX_NOTIFICATIONS = 50
+
     def get_queryset(self):
+        """The caller's own notifications, newest first (Meta.ordering)."""
         return Notification.objects.filter(user=self.request.user)
+
+    def list(self, request, *args, **kwargs):
+        # Capped here rather than in get_queryset: a sliced queryset can't be
+        # filtered or updated afterwards, which would break mark_read below.
+        rows = self.get_queryset()[: self.MAX_NOTIFICATIONS]
+        return Response(self.get_serializer(rows, many=True).data)
 
     @action(detail=False, methods=["post"], url_path="mark-read")
     def mark_read(self, request):

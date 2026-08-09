@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .files import ProtectedFileView
 from .views import (
     AwardViewSet,
     BidViewSet,
@@ -29,5 +30,13 @@ urlpatterns = [
         "public/procurement/<str:code>/anchors/",
         PublicAnchorTrailView.as_view(),
         name="public-procurement-anchors",
+    ),
+    # Every uploaded document is served from here, never from MEDIA_URL — the
+    # route exists in production (MEDIA_URL's does not) and it enforces who may
+    # read what. See procurement/files.py.
+    path(
+        "files/<str:kind>/<int:pk>/<str:field>/",
+        ProtectedFileView.as_view(),
+        name="protected-file",
     ),
 ] + router.urls
