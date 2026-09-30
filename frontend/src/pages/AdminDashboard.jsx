@@ -548,6 +548,8 @@ const EMPTY_PROJECT = {
   name: '', category: '', type: 'Goods', budget: '',
   delivery_location: '', bidding_period_days: '', delivery_period_days: '', description: '',
   reference_image: null,   // optional product reference photo (File)
+  require_product_images: false,   // bidders must attach product photos
+  product_image_instructions: '',  // optional guidance shown to bidders
 }
 // Common bidding windows — the deadline itself is computed at publish time
 // (today + this many days), never chosen as a fixed calendar date, so it can
@@ -780,6 +782,13 @@ function ProjectDetailModal({ project, onClose, setToast }) {
             <Info2 label="Expected Delivery" value={deliveryLabel(project)} />
             <Info2 label="Delivery Location" value={project.deliveryLocation} />
             <Info2 label="Submitted" value={project.submittedAt} />
+            <Info2
+              label="Product Images from Bidders"
+              value={project.requireProductImages ? 'Required' : 'Optional'}
+            />
+            {project.requireProductImages && project.productImageInstructions && (
+              <Info2 label="Instructions for Bidders" value={project.productImageInstructions} full />
+            )}
             <Info2 label="Description" value={project.description} full />
           </div>
 
@@ -997,6 +1006,38 @@ function PlanningPage() {
                 onFile={onImage}
                 onRemove={() => set('reference_image', null)}
               />
+
+              {/* Off by default: only procurements where the exact product,
+                  brand or style matters need bidders to show photos of it. */}
+              <div className="ad-form-full ad-pimg-option">
+                <label className="ad-pimg-toggle">
+                  <input
+                    type="checkbox"
+                    checked={form.require_product_images}
+                    onChange={e => set('require_product_images', e.target.checked)}
+                  />
+                  <span>
+                    <strong>Require product images from bidders</strong>
+                    <span className="ad-muted ad-small">
+                      Each supplier must attach at least one photo (up to 5) of the exact product they are offering.
+                    </span>
+                  </span>
+                </label>
+                {form.require_product_images && (
+                  <div className="ad-form-group" style={{ marginTop: 10 }}>
+                    <label htmlFor="pimg-instructions">Instructions for bidders <span className="ad-opt-tag">Optional</span></label>
+                    <textarea
+                      id="pimg-instructions"
+                      rows={2}
+                      maxLength={300}
+                      value={form.product_image_instructions}
+                      onChange={e => set('product_image_instructions', e.target.value)}
+                      placeholder="e.g. Show the exact brand/model and a photo of the actual product"
+                    />
+                    <span className="ad-muted ad-small">{form.product_image_instructions.length} / 300</span>
+                  </div>
+                )}
+              </div>
 
               {submitErr && (
                 <div className="ad-form-full" style={{ color: '#ef4444', fontSize: 13, fontWeight: 500 }}>
@@ -2042,7 +2083,8 @@ const isImageFile = (name) => IMAGE_FILE_RE.test(name || '')
  * image; the row's own click handler still opens the bid.
  */
 function BidProductCell({ bid }) {
-  const url = bid.supplier_product_image_url
+  // Legacy single image first (older bids), else the first of the new gallery.
+  const url = bid.supplier_product_image_url || bid.product_images?.[0]?.url
   const spec = [bid.brand_name, bid.model_number].filter(Boolean).join(' ')
 
   if (!url && !spec) return <span className="ad-muted ad-small">—</span>
@@ -2199,6 +2241,68 @@ function TimelineModal({ project, bids, onClose }) {
   )
 }
 
+// Enlarged view of one product image, inside the bid modal. Esc, the close
+// button, or a click on the backdrop closes it; arrows step through the set.
+function ImageLightbox({ images, index, onIndex, onClose }) {
+  const img = images[index]
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); onClose() }
+      if (e.key === 'ArrowRight' && index < images.length - 1) onIndex(index + 1)
+      if (e.key === 'ArrowLeft' && index > 0) onIndex(index - 1)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [index, images.length, onIndex, onClose])
+  if (!img) return null
+  return (
+    <div className="ad-lightbox" role="dialog" aria-modal="true" aria-label="Product image" onClick={onClose}>
+      <div className="ad-lightbox-inner" onClick={e => e.stopPropagation()}>
+        <button className="ad-lightbox-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
+        <img src={img.url} alt={img.caption || `Product image ${index + 1}`} />
+        <div className="ad-lightbox-bar">
+          <button disabled={index === 0} onClick={() => onIndex(index - 1)} aria-label="Previous image">‹</button>
+          <span>
+            {img.caption || <span className="ad-muted">No caption</span>}
+            <span className="ad-muted ad-small"> · {index + 1} / {images.length}</span>
+          </span>
+          <button disabled={index === images.length - 1} onClick={() => onIndex(index + 1)} aria-label="Next image">›</button>
+        </div>
+        <a className="ad-lightbox-open" href={img.url} target="_blank" rel="noreferrer">
+          <ExternalLink size={12} /> Open original
+        </a>
+      </div>
+    </div>
+  )
+}
+
+// Supplier's product photos on a bid — thumbnail gallery, click to enlarge.
+function BidProductGallery({ bid }) {
+  const images = bid.product_images || []
+  const [open, setOpen] = useState(null)
+  if (images.length === 0) {
+    return bid.project_requires_product_images
+      ? <p className="ad-muted ad-small">No product images on this bid.</p>
+      : null
+  }
+  return (
+    <>
+      <div className="ad-img-grid">
+        {images.map((img, i) => (
+          <button type="button" key={img.id} className="ad-img-card ad-img-card-btn" onClick={() => setOpen(i)}
+            title={img.caption || 'View larger'}>
+            <img src={img.url} alt={img.caption || `Product image ${i + 1}`} loading="lazy" />
+            <span className="ad-img-cap">{img.caption || `Image ${i + 1}`}</span>
+          </button>
+        ))}
+      </div>
+      {open !== null && (
+        <ImageLightbox images={images} index={open} onIndex={setOpen} onClose={() => setOpen(null)} />
+      )}
+    </>
+  )
+}
+
 // Full bid detail modal (admin evaluation) — opened by clicking a supplier's row.
 // Shows every field, with images previewed inline so the admin doesn't have to
 // download each one to check it.
@@ -2248,6 +2352,16 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
             {bid.warranty_period && <Info2 label="Warranty Period" value={bid.warranty_period} />}
             {bid.additional_comments && <Info2 label="Additional Comments" value={bid.additional_comments} full />}
           </div>
+
+          {((bid.product_images || []).length > 0 || bid.project_requires_product_images) && (
+            <div className="ad-bid-details-sec">
+              <div className="ad-bid-details-title">
+                <ImageIcon size={13} /> Product Images
+                {bid.project_requires_product_images && <span className="ad-req-tag" style={{ marginLeft: 6 }}>Required</span>}
+              </div>
+              <BidProductGallery bid={bid} />
+            </div>
+          )}
 
           {images.length > 0 && (
             <div className="ad-bid-details-sec">
@@ -2322,7 +2436,7 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
                         </label>
                       )}
                       <div className="ad-doc-name">
-                        <span className="ad-bold">{d.label}</span>
+                        <span className="ad-bold">{d.label}{d.count ? ` (${d.count})` : ''}</span>
                         <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
                         {checked
                           ? <span className="ad-doc-status ad-doc-flag">Flagged for revision</span>

@@ -16,6 +16,10 @@ boto3==1.43.36
 # the award record — see procurement/documents.py.
 fpdf2==2.8.7
 
+# Decodes bid product images to verify their real format (validators.py).
+# Already installed as an fpdf2 dependency; pinned here because we now use it directly.
+Pillow==12.3.0
+
 # Server-side blockchain signing (BLOCKCHAIN_SERVER_SIGNING=True): the backend
 # submits anchor transactions itself, so no MetaMask prompt ever appears — for
 # admins, the Head, or suppliers. procurement/blockchain.py imports web3 lazily,

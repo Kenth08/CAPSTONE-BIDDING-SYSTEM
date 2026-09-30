@@ -7,10 +7,13 @@ from .models import (
     BID_DOCUMENT_FIELDS,
     PROCUREMENT_CATEGORIES,
     PROCUREMENT_DOCUMENT_FIELDS,
+    PRODUCT_IMAGES_REVIEW_KEY,
+    PRODUCT_IMAGES_REVIEW_LABEL,
     SUPPLIER_DOCUMENT_FIELDS,
     Award,
     Bid,
     BidAttachment,
+    BidProductImage,
     Document,
     Notification,
     Project,
@@ -228,6 +231,8 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             "approved_budget_document", "bid_evaluation_criteria",
             # optional reference image: write via `reference_image`, read via URL
             "reference_image", "reference_image_url",
+            # bidders must attach product photos (default off) + guidance for them
+            "require_product_images", "product_image_instructions",
         ]
         # Status transitions only happen through the approve/reject/publish
         # actions, never by directly writing the field. `deadline` and
@@ -260,6 +265,19 @@ class BidAttachmentSerializer(serializers.ModelSerializer):
         return protected_file_url(self.context.get("request"), "attachment", obj, "file")
 
 
+class BidProductImageSerializer(serializers.ModelSerializer):
+    """One product photo on a bid, with a signed, access-controlled URL."""
+
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BidProductImage
+        fields = ["id", "caption", "url", "uploaded_at"]
+
+    def get_url(self, obj):
+        return protected_file_url(self.context.get("request"), "bidimage", obj, "image")
+
+
 class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
     # Only THIS bid's anchors (submitted / qualified / disqualified), not the
     # whole procurement's — a supplier must not see other bidders' activity.
@@ -279,6 +297,16 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
     supplier_datasheet_url = serializers.SerializerMethodField()
     supplier_compliance_doc_url = serializers.SerializerMethodField()
     attachments = BidAttachmentSerializer(many=True, read_only=True)
+    product_images = BidProductImageSerializer(many=True, read_only=True)
+    # Project context the supplier's bid screen needs to decide whether the
+    # images can still be edited (open + before deadline) and whether at least
+    # one is required.
+    project_status = serializers.CharField(source="project.status", read_only=True)
+    project_deadline = serializers.DateField(source="project.deadline", read_only=True)
+    project_requires_product_images = serializers.BooleanField(
+        source="project.require_product_images", read_only=True)
+    project_product_image_instructions = serializers.CharField(
+        source="project.product_image_instructions", read_only=True)
     # Per-document review state — same {key,label,required,url,review_status,
     # review_note} shape as SupplierDetailSerializer.documents, so the Admin
     # can flag a single document on a bid without disqualifying the whole bid.
@@ -297,6 +325,9 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             "quotation_document_url", "technical_document_url",
             "supplier_product_image_url", "supplier_datasheet_url",
             "supplier_compliance_doc_url", "attachments",
+            # product photos (their own table, up to 5) + the project rules for them
+            "product_images", "project_status", "project_deadline",
+            "project_requires_product_images", "project_product_image_instructions",
             # per-document review state
             "document_reviews", "documents",
             # blockchain anchor trail for this bid
@@ -339,6 +370,22 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
                 "label": label,
                 "required": required,
                 "url": self._abs_url(obj, key),
+                "review_status": review.get("status"),
+                "review_note": review.get("note", ""),
+            })
+        # The product-image SET is reviewed as one extra row, but only when it's
+        # relevant (the bid has images, or the project requires them) — so bids
+        # without images keep exactly the documents list they always had.
+        images = list(obj.product_images.all())
+        if images or obj.project.require_product_images:
+            review = reviews.get(PRODUCT_IMAGES_REVIEW_KEY) or {}
+            result.append({
+                "key": PRODUCT_IMAGES_REVIEW_KEY,
+                "label": PRODUCT_IMAGES_REVIEW_LABEL,
+                "required": obj.project.require_product_images,
+                "url": protected_file_url(
+                    self.context.get("request"), "bidimage", images[0], "image") if images else None,
+                "count": len(images),
                 "review_status": review.get("status"),
                 "review_note": review.get("note", ""),
             })

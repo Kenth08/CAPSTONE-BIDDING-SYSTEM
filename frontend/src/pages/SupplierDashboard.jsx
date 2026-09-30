@@ -9,6 +9,7 @@ import {
 import {
   apiLogout, apiGetMySupplier, apiResubmitDocuments,
   apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid, apiResubmitBidDocuments,
+  apiUploadBidImages, apiDeleteBidImage,
   apiListNotifications, apiMarkNotificationsRead, apiListAwards,
   apiUpdateMySupplier, apiChangePassword, apiResendVerification,
 } from '../api'
@@ -32,6 +33,9 @@ const mapProject = (p) => ({
   budgetRaw: Number(p.budget || 0),  // numeric ABC for the live budget comparison
   deadline: fmtDate(p.deadline), category: p.category, description: p.description,
   referenceImage: p.reference_image_url || '',  // optional required-product reference
+  // Whether bidders must attach product photos, plus the Admin's guidance.
+  requireProductImages: !!p.require_product_images,
+  productImageInstructions: p.product_image_instructions || '',
   isExpired: !!p.deadline && p.deadline < todayISO(),
 })
 
@@ -71,13 +75,21 @@ const mapBid = (b) => ({
   // supplier's own tamper-evident proof of what they submitted and when.
   anchors: b.anchors || [],
   declarations: BID_DECLARATIONS.map(([key, label]) => ({ label, ok: !!b[key] })),
+  // Product photos (up to 5) and the project rules that decide whether they
+  // can still be changed (open + before deadline) and whether one is required.
+  productImages: (b.product_images || []).map(mapProductImage),
+  projectStatus: b.project_status || '',
+  projectDeadline: b.project_deadline || null,
+  requiresProductImages: !!b.project_requires_product_images,
+  productImageInstructions: b.project_product_image_instructions || '',
 })
+const mapProductImage = (i) => ({ id: i.id, url: i.url, caption: i.caption || '' })
 
 // ── Bid document upload rules (per-field types; shared 5 MB cap) ──────────────
 const MAX_MB = 5
 // accept: the <input accept> attribute; exts: allowed extensions; text: shown in the box.
 const UPLOAD_RULES = {
-  productImage:  { accept: '.jpg,.jpeg,.png', exts: ['jpg', 'jpeg', 'png'], text: 'JPG or PNG' },
+  productImages: { accept: '.jpg,.jpeg,.png,.webp', exts: ['jpg', 'jpeg', 'png', 'webp'], text: 'JPG, PNG or WebP' },
   datasheet:     { accept: '.pdf,.docx,.xlsx', exts: ['pdf', 'docx', 'xlsx'], text: 'PDF, DOCX or XLSX' },
   compliance:    { accept: '.pdf', exts: ['pdf'], text: 'PDF only' },
   quotation:     { accept: '.pdf,.doc,.docx', exts: ['pdf', 'doc', 'docx'], text: 'PDF, DOC or DOCX' },
@@ -182,12 +194,99 @@ function BidDeclaration({ checked, onChange, error, children }) {
   )
 }
 
+// ─── Product images ──────────────────────────────────────────────────────────
+// Up to 5 photos of the offered product, each with an optional caption. The
+// backend re-checks everything (real format via Pillow, size, count, deadline);
+// these checks only save the supplier a failed round-trip.
+const MAX_PRODUCT_IMAGES = 5
+const CAPTION_MAX = 150
+
+// Preview of a not-yet-uploaded File. The object URL is revoked on unmount so
+// removed or submitted images don't leak memory.
+function LocalThumb({ file, alt }) {
+  const [url, setUrl] = useState('')
+  useEffect(() => {
+    const u = URL.createObjectURL(file)
+    setUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [file])
+  return url ? <img src={url} alt={alt} /> : null
+}
+
+let pickSeq = 0
+
+// Picker for NEW images: thumbnail, caption and remove per image, plus an add
+// tile while there is room. `items` is [{ id, file, caption }]; `max` is how many
+// more images this bid can take.
+function ProductImagePicker({ items, onChange, max, disabled }) {
+  const ref = useRef(null)
+  const [pickError, setPickError] = useState('')
+
+  const add = (fileList) => {
+    const picked = Array.from(fileList || [])
+    const next = []
+    let err = ''
+    for (const f of picked) {
+      if (items.length + next.length >= max) { err = `You can attach up to ${MAX_PRODUCT_IMAGES} images per bid.`; break }
+      const msg = validateBidFile(f, UPLOAD_RULES.productImages)
+      if (msg) { err = `${f.name}: ${msg}`; continue }
+      next.push({ id: ++pickSeq, file: f, caption: '' })
+    }
+    setPickError(err)
+    if (next.length) onChange([...items, ...next])
+  }
+  const setCaption = (id, caption) =>
+    onChange(items.map(i => (i.id === id ? { ...i, caption } : i)))
+  const remove = (id) => { setPickError(''); onChange(items.filter(i => i.id !== id)) }
+
+  return (
+    <>
+      <div className="sd-pimg-grid">
+        {items.map((item, idx) => (
+          <div className="sd-pimg-card" key={item.id}>
+            <div className="sd-pimg-thumb">
+              <LocalThumb file={item.file} alt={item.caption || `Product image ${idx + 1}`} />
+              <button type="button" className="sd-pimg-remove" onClick={() => remove(item.id)}
+                disabled={disabled} aria-label={`Remove ${item.file.name}`}>
+                <X size={13} />
+              </button>
+            </div>
+            <input className="sd-pimg-caption" type="text" maxLength={CAPTION_MAX}
+              placeholder="Caption (optional)" value={item.caption} disabled={disabled}
+              aria-label={`Caption for ${item.file.name}`}
+              onChange={e => setCaption(item.id, e.target.value)} />
+          </div>
+        ))}
+        {items.length < max && (
+          <button type="button" className="sd-pimg-add" onClick={() => ref.current?.click()} disabled={disabled}>
+            <Camera size={18} />
+            <span>Add image</span>
+            <span className="sd-upload-size">{UPLOAD_RULES.productImages.text} · {MAX_MB}MB</span>
+          </button>
+        )}
+      </div>
+      <input ref={ref} type="file" accept={UPLOAD_RULES.productImages.accept} multiple hidden
+        onChange={e => { add(e.target.files); e.target.value = '' }} />
+      {pickError && <span className="sd-field-error">{pickError}</span>}
+    </>
+  )
+}
+
+// Append picked images + their captions (same order) to a FormData.
+function appendProductImages(fd, items) {
+  items.forEach(i => {
+    fd.append('product_images', i.file)
+    fd.append('product_image_captions', i.caption.trim())
+  })
+}
+
 // ─── Bid submit modal — step-by-step wizard ──────────────────────────────────
 
 const BID_STEPS = ['Bid Details', 'Documents', 'Declarations']
 
 function BidModal({ project, profile, onClose, onSubmit }) {
   const hasRef = !!project.referenceImage
+  const needImages = project.requireProductImages
   const [step, setStep] = useState(0)
   const [amount, setAmount] = useState('')
   const [deliveryTimeline, setDeliveryTimeline] = useState('')
@@ -197,7 +296,7 @@ function BidModal({ project, profile, onClose, onSubmit }) {
   const [modelNumber, setModelNumber] = useState('')
   const [warrantyPeriod, setWarrantyPeriod] = useState('')
   // Files
-  const [productImage, setProductImage] = useState(null)
+  const [productImages, setProductImages] = useState([])  // [{ id, file, caption }]
   const [datasheet, setDatasheet] = useState(null)
   const [compliance, setCompliance] = useState(null)
   const [quotation, setQuotation] = useState(null)
@@ -247,6 +346,7 @@ function BidModal({ project, profile, onClose, onSubmit }) {
     }
     if (s === 1) {
       if (!quotation) errs.quotation = 'Please upload your quotation document.'
+      if (needImages && productImages.length === 0) errs.productImages = 'This procurement requires at least one product image.'
       if (hasRef && !specMatch) errs.specMatch = 'Please confirm your product matches the required specification.'
     }
     if (s === 2) {
@@ -291,7 +391,7 @@ function BidModal({ project, profile, onClose, onSubmit }) {
     fd.append('specification_confirmed', specMatch)
     if (quotation) fd.append('quotation_document', quotation)
     if (technical) fd.append('technical_document', technical)
-    if (productImage) fd.append('supplier_product_image', productImage)
+    appendProductImages(fd, productImages)
     if (datasheet) fd.append('supplier_datasheet', datasheet)
     if (compliance) fd.append('supplier_compliance_doc', compliance)
     others.forEach(f => fd.append('other_attachments', f))
@@ -420,22 +520,36 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                     specific product is usually the one with the strongest case
                     to make visually, and letting them show it is what puts the
                     Admin in a position to compare offers on the actual goods
-                    rather than on price alone. Everything here is optional; only
-                    the spec-match declaration below is conditional, because it
-                    refers to a reference image that may not exist. */}
+                    rather than on price alone. Everything here is optional
+                    unless the Admin switched on "Require product images" for
+                    this procurement, in which case at least one photo is. The
+                    spec-match declaration is conditional too, because it refers
+                    to a reference image that may not exist. */}
                 <div className="sd-bid-section">
                   <h4 className="sd-bid-section-label">
-                    Your Product Response <span className="sd-optional">(optional)</span>
+                    Your Product Response {!needImages && <span className="sd-optional">(optional)</span>}
                   </h4>
                   <p className="sd-bid-section-hint">
-                    {hasRef
+                    {needImages
+                      ? 'This procurement requires photos of the exact product you are offering. Add its documents too if you have them.'
+                      : hasRef
                       ? 'Upload files showing your matching product and confirm your product meets the specification.'
-                      : 'Bidding with a specific product? Add a photo and its documents so the evaluators can see exactly what you are offering. This is optional and does not affect your eligibility.'}
+                      : 'Bidding with a specific product? Add photos and its documents so the evaluators can see exactly what you are offering. This is optional and does not affect your eligibility.'}
                   </p>
-                  <BidUpload label="Your Product Image" rule={UPLOAD_RULES.productImage}
-                    file={productImage} error={fileErrors.productImage}
-                    onPick={pickFile(UPLOAD_RULES.productImage, setProductImage, 'productImage')}
-                    onRemove={() => setProductImage(null)} />
+                  <div className="sd-upload-field">
+                    <label className="sd-upload-label">
+                      Product Images{needImages ? <span className="sd-req"> *</span> : <span className="sd-optional"> (optional)</span>}
+                    </label>
+                    {needImages && project.productImageInstructions && (
+                      <p className="sd-pimg-instructions"><Camera size={13} /> {project.productImageInstructions}</p>
+                    )}
+                    <span className="sd-upload-hint">
+                      Up to {MAX_PRODUCT_IMAGES} photos, {MAX_MB}MB each. Add a caption such as “Brand X Model Y, front view”.
+                    </span>
+                    <ProductImagePicker items={productImages} max={MAX_PRODUCT_IMAGES}
+                      onChange={v => { setProductImages(v); setErrors(x => ({ ...x, productImages: '' })) }} />
+                    {errors.productImages && <span className="sd-field-error">{errors.productImages}</span>}
+                  </div>
                   <BidUpload label="Product Datasheet" rule={UPLOAD_RULES.datasheet}
                     file={datasheet} error={fileErrors.datasheet}
                     onPick={pickFile(UPLOAD_RULES.datasheet, setDatasheet, 'datasheet')}
@@ -603,11 +717,139 @@ function BidDocRevisionRow({ doc, file, onFile, onRemove }) {
   )
 }
 
+// The flagged product-image SET: the supplier picks a fresh set of photos,
+// which replaces the current ones when the revision is resubmitted.
+function ImageRevisionRow({ doc, items, onChange, disabled }) {
+  return (
+    <div className="sd-revision-row sd-revision-row-images">
+      <div className="sd-revision-info">
+        <span className="sd-bold">{doc.label}</span>
+        {doc.review_note && <span className="sd-revision-note"><AlertTriangle size={12} /> {doc.review_note}</span>}
+        <span className="sd-muted sd-small">The photos you add here replace your current product images.</span>
+      </div>
+      <ProductImagePicker items={items} onChange={onChange} max={MAX_PRODUCT_IMAGES} disabled={disabled} />
+    </div>
+  )
+}
+
+// Product images already on the bid. Editable (add / remove) only while the
+// procurement is open for bidding and before its deadline — the same window the
+// backend enforces; afterwards they're read-only like the rest of the bid.
+function BidProductImages({ bid, onChanged, setToast }) {
+  const [images, setImages] = useState(bid.productImages)
+  const [adding, setAdding] = useState([])       // [{ id, file, caption }]
+  const [busy, setBusy] = useState(false)
+  const [confirmId, setConfirmId] = useState(null)
+  const editable = bid.projectStatus === 'published' && !(bid.projectDeadline && bid.projectDeadline < todayISO())
+  const room = MAX_PRODUCT_IMAGES - images.length
+  const lastRequired = bid.requiresProductImages && images.length <= 1
+
+  if (!editable && images.length === 0) return null
+
+  const upload = async () => {
+    setBusy(true)
+    try {
+      const fd = new FormData()
+      appendProductImages(fd, adding)
+      const updated = await apiUploadBidImages(bid.id, fd)
+      setImages((updated.product_images || []).map(mapProductImage))
+      setAdding([])
+      setToast({ type: 'success', message: 'Product images added to your bid.' })
+      onChanged()
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Could not upload the images.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (imageId) => {
+    setBusy(true)
+    try {
+      const updated = await apiDeleteBidImage(bid.id, imageId)
+      setImages((updated.product_images || []).map(mapProductImage))
+      setToast({ type: 'success', message: 'Image removed.' })
+      onChanged()
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Could not remove the image.' })
+    } finally {
+      setBusy(false)
+      setConfirmId(null)
+    }
+  }
+
+  return (
+    <div className="sd-bid-section">
+      <h4 className="sd-bid-section-label">
+        Product Images{bid.requiresProductImages && <span className="sd-req"> *</span>}
+      </h4>
+      {bid.requiresProductImages && bid.productImageInstructions && (
+        <p className="sd-pimg-instructions"><Camera size={13} /> {bid.productImageInstructions}</p>
+      )}
+      {images.length > 0 ? (
+        <div className="sd-pimg-grid">
+          {images.map((img, idx) => (
+            <div className="sd-pimg-card" key={img.id}>
+              <a className="sd-pimg-thumb" href={img.url} target="_blank" rel="noreferrer" title="Open full size">
+                <img src={img.url} alt={img.caption || `Product image ${idx + 1}`} loading="lazy" />
+              </a>
+              {img.caption && <span className="sd-pimg-cap" title={img.caption}>{img.caption}</span>}
+              {editable && !lastRequired && (
+                confirmId === img.id ? (
+                  <div className="sd-pimg-confirm">
+                    <button type="button" className="sd-pimg-confirm-yes" disabled={busy} onClick={() => remove(img.id)}>
+                      {busy ? 'Removing…' : 'Remove'}
+                    </button>
+                    <button type="button" className="sd-pimg-confirm-no" disabled={busy} onClick={() => setConfirmId(null)}>
+                      Keep
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" className="sd-pimg-delete" disabled={busy} onClick={() => setConfirmId(img.id)}>
+                    <Trash2 size={12} /> Remove
+                  </button>
+                )
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="sd-muted sd-small">No product images on this bid yet.</p>
+      )}
+
+      {editable ? (
+        <div className="sd-pimg-add-wrap">
+          {lastRequired && images.length === 1 && (
+            <p className="sd-muted sd-small">
+              This procurement requires at least one image. To replace it, add the new photo first, then remove the old one.
+            </p>
+          )}
+          {room > 0 ? (
+            <>
+              <ProductImagePicker items={adding} onChange={setAdding} max={room} disabled={busy} />
+              {adding.length > 0 && (
+                <button type="button" className="sd-btn-primary sd-pimg-upload" disabled={busy} onClick={upload}>
+                  <Upload size={14} /> {busy ? 'Uploading…' : `Upload ${adding.length} image${adding.length > 1 ? 's' : ''}`}
+                </button>
+              )}
+            </>
+          ) : (
+            <p className="sd-muted sd-small">You've reached the limit of {MAX_PRODUCT_IMAGES} images. Remove one to add another.</p>
+          )}
+        </div>
+      ) : (
+        <p className="sd-muted sd-small sd-pimg-locked"><Lock size={12} /> Bidding has closed, so product images can no longer be changed.</p>
+      )}
+    </div>
+  )
+}
+
 function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToast }) {
   const canWithdraw = bid.status === 'submitted' || bid.status === 'under_review'
   const flaggedDocs = (bid.documents || []).filter(d => d.review_status === 'needs_revision')
-  const [files, setFiles] = useState({})  // { key: File }
+  const [files, setFiles] = useState({})  // { key: File } — product_images holds [{ id, file, caption }]
   const [busy, setBusy] = useState(false)
+  const hasReplacement = (key) => (Array.isArray(files[key]) ? files[key].length > 0 : !!files[key])
 
   const onFile = (key, file) => {
     if (!file) return
@@ -620,7 +862,10 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
     setBusy(true)
     try {
       const fd = new FormData()
-      Object.entries(files).forEach(([k, file]) => fd.append(k, file))
+      Object.entries(files).forEach(([k, file]) => {
+        if (k === 'product_images') appendProductImages(fd, file)
+        else fd.append(k, file)
+      })
       await apiResubmitBidDocuments(bid.id, fd)
       setToast({ type: 'success', message: 'Documents resubmitted — the admin will take another look.' })
       onResubmitted()
@@ -675,7 +920,12 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
                   re-upload the fixed file(s) and resubmit.
                 </p>
                 <div className="sd-revision-list">
-                  {flaggedDocs.map(d => (
+                  {flaggedDocs.map(d => d.key === 'product_images' ? (
+                    <ImageRevisionRow
+                      key={d.key} doc={d} items={files.product_images || []} disabled={busy}
+                      onChange={(items) => setFiles(f => ({ ...f, product_images: items }))}
+                    />
+                  ) : (
                     <BidDocRevisionRow
                       key={d.key} doc={d} file={files[d.key]}
                       onFile={(file) => onFile(d.key, file)}
@@ -686,17 +936,19 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
                 <div className="sd-revision-footer">
                   <button
                     className="sd-btn-primary"
-                    disabled={!flaggedDocs.every(d => files[d.key]) || busy}
+                    disabled={!flaggedDocs.every(d => hasReplacement(d.key)) || busy}
                     onClick={doResubmit}
                   >
                     <Send size={14} /> {busy ? 'Resubmitting…' : 'Resubmit Documents'}
                   </button>
-                  {!flaggedDocs.every(d => files[d.key]) && (
+                  {!flaggedDocs.every(d => hasReplacement(d.key)) && (
                     <span className="sd-muted sd-small">Replace all flagged documents to enable resubmission.</span>
                   )}
                 </div>
               </div>
             )}
+
+            <BidProductImages bid={bid} onChanged={onResubmitted} setToast={setToast} />
 
             <div className="sd-bid-section">
               <h4 className="sd-bid-section-label">Submitted Documents</h4>

@@ -91,6 +91,40 @@ def validate_image_upload(file):
     _check_signature(file, ext)
 
 
+# Bid product images: decoded with Pillow, so the format is what the bytes ARE,
+# not what the filename or browser-sent MIME type claim. Maps Pillow's format
+# name to the extension the file is stored under.
+PRODUCT_IMAGE_FORMATS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+
+
+def validate_product_image(file):
+    """Validate one bid product image and return the extension to store it under.
+
+    Rejects anything over 5 MB, anything Pillow can't decode, decompression
+    bombs, and any real format other than JPEG/PNG/WebP — regardless of the
+    uploaded name. Restores the read position afterwards so the file saves whole.
+    """
+    from PIL import Image, UnidentifiedImageError  # installed via requirements.txt
+
+    if file.size > MAX_UPLOAD_SIZE_BYTES:
+        raise ValidationError(f"Image must be under {MAX_UPLOAD_SIZE_MB}MB.")
+    try:
+        file.seek(0)
+        with Image.open(file) as img:
+            fmt = img.format
+            img.verify()   # walks the data; raises on truncated/corrupt files
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError, ValueError):
+        raise ValidationError("This file is not a valid image. Upload a JPEG, PNG or WebP photo.")
+    finally:
+        try:
+            file.seek(0)
+        except (AttributeError, OSError):
+            pass
+    if fmt not in PRODUCT_IMAGE_FORMATS:
+        raise ValidationError("Only JPEG, PNG and WebP images are accepted.")
+    return PRODUCT_IMAGE_FORMATS[fmt]
+
+
 # Bid documents accept office formats too (quotations, datasheets, brochures),
 # so the allowed set is wider than the supplier-document validator. Same 5 MB cap.
 ALLOWED_BID_EXTENSIONS = {".pdf", ".doc", ".docx", ".xlsx", ".jpg", ".jpeg", ".png"}

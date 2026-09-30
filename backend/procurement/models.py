@@ -38,6 +38,13 @@ BID_DOCUMENT_FIELDS = [
 ]
 BID_DOCUMENT_KEYS = [key for key, _, _ in BID_DOCUMENT_FIELDS]
 
+# The set of BidProductImage rows is reviewed as ONE item in Bid.document_reviews
+# under this key. It is deliberately NOT in BID_DOCUMENT_FIELDS: those are single
+# FileFields on Bid (the resubmit/request-revision loops setattr/getattr them),
+# whereas product images live in their own table and are handled explicitly.
+PRODUCT_IMAGES_REVIEW_KEY = "product_images"
+PRODUCT_IMAGES_REVIEW_LABEL = "Product Images"
+
 
 # Post-award documents in the order real procurement issues them: the BAC
 # resolves to award, the winner is formally notified (NOA), then authorised to
@@ -109,6 +116,17 @@ def award_doc_path(instance, filename):
     ext = ext.lower()[:10]
     unique = uuid.uuid4().hex[:8]
     return f"award_docs/{instance.pk or 'new'}/{base}_{unique}{ext}"
+
+
+def bid_product_image_path(instance, filename):
+    """Store a bid product image under a per-bid folder with a random name.
+
+    The uploaded filename is ignored entirely — only the extension survives, and
+    the view sets that from the format Pillow actually detected (see
+    validate_product_image), so a stored name never carries anything the
+    supplier typed."""
+    ext = os.path.splitext(filename)[1].lower()[:10]
+    return f"bid_documents/product_images/{instance.bid_id or 'new'}/{uuid.uuid4().hex}{ext}"
 
 
 def supplier_doc_path(instance, filename):
@@ -275,6 +293,20 @@ class Project(models.Model):
     # the same row, so no copy step is needed).
     reference_image = models.FileField(
         upload_to=procurement_image_path, blank=True, null=True, validators=[validate_image_upload])
+    # When True, every bid must carry at least one BidProductImage — for
+    # procurements where the exact product/brand/style matters. Off by default,
+    # so every project created before this existed behaves exactly as it did.
+    # Deliberately NOT part of the anchored project payload (see blockchain.py).
+    #
+    # db_default (not just default) keeps the default in the DATABASE too: on
+    # deploy, migrate runs while the previous release is still serving, and its
+    # INSERTs don't know these columns exist — without a DB-level default they
+    # would fail NOT NULL for the length of that window.
+    require_product_images = models.BooleanField(default=False, db_default=False)
+    # Optional guidance shown to suppliers above the image upload, e.g. "Show
+    # the exact brand/model and a photo of the actual product".
+    product_image_instructions = models.CharField(
+        max_length=300, blank=True, default="", db_default="")
     # Set when the Head approves/rejects/requests revision; reject_reason
     # explains a rejection. document_reviews is per-document review state for
     # the request-revision flow, keyed by document field name — same shape as
@@ -395,6 +427,30 @@ class BidAttachment(models.Model):
 
     def __str__(self):
         return self.file_name
+
+
+class BidProductImage(models.Model):
+    """A photo of the product a supplier is offering, attached to their bid.
+
+    Up to MAX_BID_PRODUCT_IMAGES per bid, each with an optional caption. Kept in
+    its own table (rather than more columns on Bid) so the count is flexible and
+    old bids need no data migration. Never part of any anchor payload: images
+    are evidence for the evaluator, not part of the hashed bid record."""
+
+    bid = models.ForeignKey(Bid, on_delete=models.CASCADE, related_name="product_images")
+    image = models.FileField(upload_to=bid_product_image_path, max_length=255)
+    caption = models.CharField(max_length=150, blank=True, default="")
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "bid_product_images"
+        ordering = ["uploaded_at", "id"]
+
+    def __str__(self):
+        return f"Bid {self.bid_id} image {self.pk}"
+
+
+MAX_BID_PRODUCT_IMAGES = 5
 
 
 class Award(models.Model):

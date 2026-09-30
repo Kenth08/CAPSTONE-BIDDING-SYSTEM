@@ -28,6 +28,7 @@ THE RULES, IN ONE PLACE
     procurement docs    → admin/head, or a supplier the procurement is open to
     bid documents       → admin/head, or the supplier who filed the bid
     award documents     → admin/head, or the supplier who won
+    bid product images  → admin, or the supplier who filed the bid (NOT the Head)
 
 Note the third rule: a supplier can read their OWN bid documents and nobody
 else's, which is what keeps rival quotations private during evaluation.
@@ -92,6 +93,7 @@ from .models import (
     Award,
     Bid,
     BidAttachment,
+    BidProductImage,
     Project,
     Supplier,
 )
@@ -105,6 +107,7 @@ ALLOWED_FIELDS = {
     "bid": set(BID_DOCUMENT_KEYS),
     "award": set(AWARD_DOCUMENT_KEYS),
     "attachment": {"file"},
+    "bidimage": {"image"},
 }
 
 
@@ -121,6 +124,14 @@ def _can_read(user, kind, record):
     belonging to anyone else.
     """
     role = getattr(user, "role", None)
+    if kind == "bidimage":
+        # Product photos are bid evaluation material: the Admin evaluates, the
+        # owner manages them. The Head never evaluates bids (BidViewSet gives
+        # the Head no bids at all), so the Head isn't granted these.
+        if role == "admin":
+            return True
+        supplier = _supplier_of(user) if role == "supplier" else None
+        return supplier is not None and record.bid.supplier_id == supplier.pk
     if role in {"admin", "head"}:
         return True
     if role != "supplier":
@@ -158,6 +169,7 @@ _LOOKUPS = {
     "bid": lambda: Bid.objects.select_related("supplier"),
     "award": lambda: Award.objects.select_related("supplier"),
     "attachment": lambda: BidAttachment.objects.select_related("bid"),
+    "bidimage": lambda: BidProductImage.objects.select_related("bid"),
 }
 
 

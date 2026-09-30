@@ -36,6 +36,9 @@ from .models import (
     AWARD_DOCUMENT_STAGES,
     BID_DOCUMENT_FIELDS,
     BID_DOCUMENT_KEYS,
+    MAX_BID_PRODUCT_IMAGES,
+    PRODUCT_IMAGES_REVIEW_KEY,
+    PRODUCT_IMAGES_REVIEW_LABEL,
     PROCUREMENT_DOCUMENT_FIELDS,
     PROCUREMENT_DOCUMENT_KEYS,
     SUPPLIER_DOCUMENT_FIELDS,
@@ -43,6 +46,7 @@ from .models import (
     Award,
     Bid,
     BidAttachment,
+    BidProductImage,
     BlockchainAnchor,
     Document,
     Notification,
@@ -63,7 +67,7 @@ from .serializers import (
     SupplierListSerializer,
     SupplierMeUpdateSerializer,
 )
-from .validators import validate_bid_upload, validate_upload
+from .validators import validate_bid_upload, validate_product_image, validate_upload
 
 # Bid amount is a DecimalField(max_digits=14, decimal_places=2) — keep the
 # manual check in the `bid` action in sync with that column limit so an
@@ -83,6 +87,87 @@ BID_TEXT_FIELD_LIMITS = {
     "model_number": 255,
     "warranty_period": 100,
 }
+
+
+# ── Bid product images ───────────────────────────────────────────────────────
+# Shared by the bid submission, the per-image endpoints and resubmit-documents.
+# Images are evidence for the evaluator only: nothing here touches anchoring,
+# and no image ever enters a hashed payload.
+PRODUCT_IMAGE_CAPTION_LIMIT = 150
+
+
+def bidding_open(project):
+    """Same rule ProjectViewSet.bid applies: published and not past deadline."""
+    if project.status != Project.Status.PUBLISHED:
+        return False
+    return not (project.deadline and timezone.localdate() > project.deadline)
+
+
+def parse_product_images(request):
+    """Validate every uploaded product image BEFORE anything is written.
+
+    Reads `product_images` (files) and `product_image_captions` (same order,
+    optional). Returns [(file, ext, caption)] where ext is the extension of the
+    format Pillow detected. Raises DjangoValidationError on the first problem."""
+    files = request.FILES.getlist("product_images")
+    getlist = getattr(request.data, "getlist", None)
+    captions = getlist("product_image_captions") if getlist else []
+    if len(files) > MAX_BID_PRODUCT_IMAGES:
+        raise DjangoValidationError(f"You can attach at most {MAX_BID_PRODUCT_IMAGES} product images.")
+    parsed = []
+    for i, uploaded in enumerate(files):
+        ext = validate_product_image(uploaded)
+        caption = (captions[i] if i < len(captions) else "").strip()
+        if len(caption) > PRODUCT_IMAGE_CAPTION_LIMIT:
+            raise DjangoValidationError(
+                f"Image captions must be {PRODUCT_IMAGE_CAPTION_LIMIT} characters or fewer.")
+        parsed.append((uploaded, ext, caption))
+    return parsed
+
+
+def save_product_images(bid, parsed):
+    """Store already-validated images. The stored name is random (see
+    bid_product_image_path); only the Pillow-detected extension is kept."""
+    for uploaded, ext, caption in parsed:
+        image = BidProductImage(bid=bid, caption=caption)
+        image.image.save(f"image{ext}", uploaded, save=True)
+
+
+def delete_files_after_commit(images):
+    """Remove the stored files of `images` from storage — but only once the
+    surrounding transaction has committed, so a rollback never leaves a row
+    pointing at a deleted file. A storage failure is logged, never raised: the
+    user's action already succeeded, an orphaned file is only a cleanup issue."""
+    targets = [(img.image.storage, img.image.name) for img in images if img.image]
+
+    def _delete():
+        for storage, name in targets:
+            try:
+                storage.delete(name)
+            except Exception:
+                logger.exception("Could not delete bid product image %r from storage", name)
+
+    if targets:
+        transaction.on_commit(_delete)
+
+
+def replace_product_images(bid, parsed):
+    """Swap a bid's whole image set for `parsed` in one transaction; the old
+    files are deleted from storage after it commits. Returns the old count."""
+    with transaction.atomic():
+        old = list(BidProductImage.objects.filter(bid=bid))
+        delete_files_after_commit(old)
+        BidProductImage.objects.filter(pk__in=[img.pk for img in old]).delete()
+        save_product_images(bid, parsed)
+    return len(old)
+
+
+def bid_review_labels(keys):
+    """Human labels for flagged bid review keys, including the product-image set."""
+    labels = [label for key, label, _ in BID_DOCUMENT_FIELDS if key in keys]
+    if PRODUCT_IMAGES_REVIEW_KEY in keys:
+        labels.append(PRODUCT_IMAGES_REVIEW_LABEL)
+    return ", ".join(labels)
 
 
 def next_project_code():
@@ -559,6 +644,22 @@ class ProjectViewSet(viewsets.ModelViewSet):
             except DjangoValidationError as exc:
                 return Response({"other_attachments": exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
 
+        # Product images (optional unless the project requires them). Validated
+        # by content with Pillow, before anything is written. Sending images
+        # REPLACES the bid's set; sending none keeps what is on file — the same
+        # rule as other_attachments above.
+        try:
+            new_images = parse_product_images(request)
+        except DjangoValidationError as exc:
+            return Response({"product_images": exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
+        if project.require_product_images and not new_images and (
+            existing is None or not existing.product_images.exists()
+        ):
+            return Response(
+                {"product_images": ["This procurement requires at least one product image."]},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
         bid, created = Bid.objects.get_or_create(
             project=project, supplier=supplier, defaults={"amount": amount},
         )
@@ -601,6 +702,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
             for uploaded in other_attachments:
                 BidAttachment.objects.create(bid=bid, file=uploaded, file_name=uploaded.name)
 
+        replaced_images = replace_product_images(bid, new_images) if new_images else 0
+
         verb = "submitted a bid on" if created else "updated their bid on"
         notify_admins(
             f"{supplier.company} {verb} \"{project.name}\" ({project.code}).",
@@ -611,6 +714,13 @@ class ProjectViewSet(viewsets.ModelViewSet):
             entity_type="Bid", entity_id=bid.id,
             description=f"{supplier.company} {verb} {project.code} for {amount}.",
         )
+        if new_images:
+            log_action(
+                request, "bid.images_replaced" if replaced_images else "bid.images_uploaded",
+                entity_type="Bid", entity_id=bid.id,
+                description=(f"{supplier.company} attached {len(new_images)} product image(s) to their bid "
+                             f"on {project.code}" + (f", replacing {replaced_images}." if replaced_images else ".")),
+            )
         # Deliberately NOT anchored here. Only the winning bid reaches the
         # blockchain, and it is anchored at award time (see select_winner) —
         # losing suppliers' amounts stay off the public ledger entirely.
@@ -1081,7 +1191,9 @@ class BidViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         # Suppliers list/withdraw their OWN bids (scoped by get_queryset) and
         # resubmit flagged documents; Admin lists all + runs evaluation actions.
-        if self.action == "resubmit_documents":
+        # Product images are managed only by the bid's own supplier (get_queryset
+        # scopes suppliers to their own bids, so anyone else's bid 404s).
+        if self.action in {"resubmit_documents", "upload_images", "delete_image"}:
             return [IsSupplierRole()]
         # A supplier anchors their own bid submission, the Admin anchors the
         # qualify/disqualify steps — both go through get_queryset, which already
@@ -1137,7 +1249,7 @@ class BidViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = Bid.objects.select_related(
-            "project", "supplier", "supplier__user").prefetch_related("attachments")
+            "project", "supplier", "supplier__user").prefetch_related("attachments", "product_images")
         role = getattr(self.request.user, "role", None)
         if role == "supplier":
             qs = qs.filter(supplier__user=self.request.user)
@@ -1208,7 +1320,7 @@ class BidViewSet(viewsets.ModelViewSet):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
         for key in documents:
-            if key not in BID_DOCUMENT_KEYS:
+            if key not in BID_DOCUMENT_KEYS and key != PRODUCT_IMAGES_REVIEW_KEY:
                 return Response({"detail": f"Unknown document '{key}'."}, status=http_status.HTTP_400_BAD_REQUEST)
 
         # Same approach as Supplier.request_revision: flagged -> needs_revision
@@ -1221,11 +1333,20 @@ class BidViewSet(viewsets.ModelViewSet):
                 reviews[key] = {"status": "approved", "note": ""}
             else:
                 reviews.pop(key, None)
+        # The product-image set is one review item (it isn't a Bid FileField,
+        # so it can't go through the getattr loop above).
+        if PRODUCT_IMAGES_REVIEW_KEY in documents:
+            reviews[PRODUCT_IMAGES_REVIEW_KEY] = {
+                "status": "needs_revision", "note": documents[PRODUCT_IMAGES_REVIEW_KEY] or ""}
+        elif bid.product_images.exists():
+            reviews[PRODUCT_IMAGES_REVIEW_KEY] = {"status": "approved", "note": ""}
+        else:
+            reviews.pop(PRODUCT_IMAGES_REVIEW_KEY, None)
 
         bid.document_reviews = reviews
         bid.save(update_fields=["document_reviews"])
 
-        flagged = ", ".join(label for key, label, _ in BID_DOCUMENT_FIELDS if key in documents)
+        flagged = bid_review_labels(documents)
         notify_supplier(
             bid.supplier,
             f"Document revision requested on your bid for \"{bid.project.name}\" ({bid.project.code}): "
@@ -1258,6 +1379,23 @@ class BidViewSet(viewsets.ModelViewSet):
                 except DjangoValidationError as exc:
                     return Response({key: exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
 
+        # Product images: a re-upload replaces the whole set. After the bidding
+        # deadline that is only allowed when the evaluator actually flagged the
+        # images, otherwise a supplier could swap the offered product after close.
+        try:
+            new_images = parse_product_images(request)
+        except DjangoValidationError as exc:
+            return Response({PRODUCT_IMAGES_REVIEW_KEY: exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
+        images_flagged = (
+            ((bid.document_reviews or {}).get(PRODUCT_IMAGES_REVIEW_KEY) or {}).get("status") == "needs_revision"
+        )
+        if new_images and not images_flagged and not bidding_open(bid.project):
+            return Response(
+                {"detail": "Product images can only be changed after the bidding deadline when the "
+                           "evaluator has flagged them for revision."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
         reviews = dict(bid.document_reviews or {})
         updated = []
         for key in BID_DOCUMENT_KEYS:
@@ -1267,6 +1405,10 @@ class BidViewSet(viewsets.ModelViewSet):
                 prev_note = (reviews.get(key) or {}).get("note", "")
                 reviews[key] = {"status": "resubmitted", "note": prev_note}
                 updated.append(key)
+        if new_images:
+            prev_note = (reviews.get(PRODUCT_IMAGES_REVIEW_KEY) or {}).get("note", "")
+            reviews[PRODUCT_IMAGES_REVIEW_KEY] = {"status": "resubmitted", "note": prev_note}
+            updated.append(PRODUCT_IMAGES_REVIEW_KEY)
 
         if not updated:
             return Response(
@@ -1275,13 +1417,95 @@ class BidViewSet(viewsets.ModelViewSet):
             )
 
         bid.document_reviews = reviews
-        bid.save()
+        if new_images:
+            with transaction.atomic():
+                bid.save()
+                replaced = replace_product_images(bid, new_images)
+            log_action(
+                request, "bid.images_replaced",
+                entity_type="Bid", entity_id=bid.id,
+                description=(f"{bid.supplier.company} re-submitted {len(new_images)} product image(s) on "
+                             f"their bid for {bid.project.code}, replacing {replaced}."),
+            )
+            bid = self.get_queryset().get(pk=bid.pk)   # fresh images for the response
+        else:
+            bid.save()
 
         notify_admins(
             f"{bid.supplier.company} re-submitted {len(updated)} document(s) on their bid for "
             f"\"{bid.project.name}\" ({bid.project.code}).",
             link=f"/admin/bids/{bid.project_id}",
         )
+        return Response(self.get_serializer(bid).data)
+
+    @action(detail=True, methods=["post"], url_path="images")
+    def upload_images(self, request, pk=None):
+        """Supplier adds product image(s) to their own bid while bidding is open.
+        Multipart: `product_images` (files) + optional `product_image_captions`."""
+        bid = self.get_object()
+        if not bidding_open(bid.project):
+            return Response(
+                {"detail": "Bidding for this procurement is closed, so product images can no longer be changed."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            parsed = parse_product_images(request)
+        except DjangoValidationError as exc:
+            return Response({"product_images": exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
+        if not parsed:
+            return Response({"product_images": ["Attach at least one image."]},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            # Lock the bid row so two concurrent uploads can't both pass the cap.
+            Bid.objects.select_for_update().filter(pk=bid.pk).first()
+            existing = BidProductImage.objects.filter(bid=bid).count()
+            if existing + len(parsed) > MAX_BID_PRODUCT_IMAGES:
+                return Response(
+                    {"product_images": [f"A bid can have at most {MAX_BID_PRODUCT_IMAGES} product images "
+                                        f"({existing} already attached)."]},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            save_product_images(bid, parsed)
+
+        log_action(
+            request, "bid.image_uploaded",
+            entity_type="Bid", entity_id=bid.id,
+            description=f"{bid.supplier.company} added {len(parsed)} product image(s) to their bid on {bid.project.code}.",
+        )
+        bid = self.get_queryset().get(pk=bid.pk)
+        return Response(self.get_serializer(bid).data, status=http_status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["delete"], url_path=r"images/(?P<image_id>\d+)")
+    def delete_image(self, request, pk=None, image_id=None):
+        """Supplier removes one product image from their own bid while bidding is
+        open. The stored file is deleted after the transaction commits."""
+        bid = self.get_object()
+        if not bidding_open(bid.project):
+            return Response(
+                {"detail": "Bidding for this procurement is closed, so product images can no longer be changed."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        with transaction.atomic():
+            Bid.objects.select_for_update().filter(pk=bid.pk).first()
+            image = BidProductImage.objects.filter(bid=bid, pk=image_id).first()
+            if image is None:
+                return Response({"detail": "Image not found."}, status=http_status.HTTP_404_NOT_FOUND)
+            if bid.project.require_product_images and BidProductImage.objects.filter(bid=bid).count() <= 1:
+                return Response(
+                    {"detail": "This procurement requires at least one product image. "
+                               "Add the replacement image before removing this one."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            delete_files_after_commit([image])
+            image.delete()
+
+        log_action(
+            request, "bid.image_removed",
+            entity_type="Bid", entity_id=bid.id,
+            description=f"{bid.supplier.company} removed a product image from their bid on {bid.project.code}.",
+        )
+        bid = self.get_queryset().get(pk=bid.pk)
         return Response(self.get_serializer(bid).data)
 
     @action(detail=True, methods=["post"], url_path="select-winner")
@@ -1322,7 +1546,7 @@ class BidViewSet(viewsets.ModelViewSet):
             if (review or {}).get("status") == "needs_revision"
         ]
         if flagged_keys:
-            labels = ", ".join(label for key, label, _ in BID_DOCUMENT_FIELDS if key in flagged_keys)
+            labels = bid_review_labels(flagged_keys)
             return Response(
                 {"detail": f"This bid still has document(s) flagged for revision and can't be "
                            f"selected as the winner until they're fixed: {labels}."},

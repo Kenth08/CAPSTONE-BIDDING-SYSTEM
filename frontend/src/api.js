@@ -359,6 +359,12 @@ export const apiBidRequestRevision = (bidId, { note, documents }) =>
 // Supplier re-uploads just the flagged document(s) on their own bid (multipart).
 export const apiResubmitBidDocuments = (bidId, formData) =>
   apiUpload(`/bids/${bidId}/resubmit-documents/`, formData)
+// Product images on the supplier's own bid — only while bidding is open.
+// formData: `product_images` (files) + `product_image_captions` (same order).
+export const apiUploadBidImages = (bidId, formData) =>
+  apiUpload(`/bids/${bidId}/images/`, formData)
+export const apiDeleteBidImage = (bidId, imageId) =>
+  apiFetch(`/bids/${bidId}/images/${imageId}/`, { method: 'DELETE' })
 
 // ── Awards ───────────────────────────────────────────────────────────────────────
 // Admin/Head see every award; a supplier sees ONLY their own (scoped server-side

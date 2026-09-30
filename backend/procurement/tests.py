@@ -1,3 +1,6 @@
+import io
+import shutil
+import tempfile
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
@@ -5,14 +8,20 @@ from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.files.storage import FileSystemStorage, default_storage
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from PIL import Image
+
+from accounts.models import AuditLog
+
 from .blockchain import (
-    hash_file, hash_payload, record_anchor, submit_anchor_server_side, verify_anchor,
+    bid_parts, hash_file, hash_payload, record_anchor, submit_anchor_server_side, verify_anchor,
 )
-from .models import Award, Bid, BlockchainAnchor, Project, Supplier
+from .models import BID_DOCUMENT_KEYS, Award, Bid, BidProductImage, BlockchainAnchor, Project, Supplier
 
 User = get_user_model()
 
@@ -1093,3 +1102,381 @@ class PayloadVersionTests(APITestCase):
         anchor.payload = {**anchor.payload, "budget": "1.00"}
         anchor.save(update_fields=["payload"])
         self.assertEqual(verify_anchor(anchor)["status"], "mismatch")
+
+
+# ── Bid product images ───────────────────────────────────────────────────────
+
+def make_image(name="photo.png", fmt="PNG", size=(8, 8)):
+    """A real, decodable image of the given format (Pillow-generated)."""
+    buf = io.BytesIO()
+    Image.new("RGB", size, (200, 30, 30)).save(buf, format=fmt)
+    content_type = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}[fmt]
+    return SimpleUploadedFile(name, buf.getvalue(), content_type=content_type)
+
+
+class BidProductImageTests(APITestCase):
+    """Suppliers attach up to 5 product photos to a bid. Validation is by real
+    content, only the owner may change them and only while bidding is open, and
+    none of it may touch the blockchain anchors."""
+
+    def setUp(self):
+        cache.clear()
+        self._media = tempfile.mkdtemp()
+        self._override = override_settings(MEDIA_ROOT=self._media)
+        self._override.enable()
+        self.admin = make_admin()
+        self.supplier = make_supplier()
+        self.other = make_supplier()
+        self.project = make_project()
+        self.bid = Bid.objects.create(project=self.project, supplier=self.supplier, amount=45000)
+
+    def tearDown(self):
+        self._override.disable()
+        shutil.rmtree(self._media, ignore_errors=True)
+
+    # helpers
+    def _bid_payload(self, **extra):
+        data = {
+            "amount": "10000",
+            "delivery_timeline": "2 weeks",
+            "notes": "We can deliver within the requested timeline and specifications.",
+            "terms_accepted": "true", "interest_declared": "true",
+            "scm_declared": "true", "accuracy_confirmed": "true",
+            "quotation_document": dummy_pdf("quotation.pdf"),
+        }
+        data.update(extra)
+        return data
+
+    def _upload(self, *files, captions=None, user=None, bid=None):
+        self.client.force_authenticate(user=user or self.supplier.user)
+        data = {"product_images": list(files)}
+        if captions is not None:
+            data["product_image_captions"] = captions
+        return self.client.post(f"/api/bids/{(bid or self.bid).pk}/images/", data, format="multipart")
+
+    def _add_images(self, n, bid=None):
+        for i in range(n):
+            img = BidProductImage(bid=bid or self.bid, caption=f"view {i}")
+            img.image.save("image.png", make_image(), save=True)
+
+    # 1. valid upload
+    def test_supplier_can_upload_a_valid_image_with_caption(self):
+        res = self._upload(make_image("my holiday photo!!.png"), captions=["Brand X Model Y, front view"])
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+
+        image = BidProductImage.objects.get(bid=self.bid)
+        self.assertEqual(image.caption, "Brand X Model Y, front view")
+        # Stored under a random name — nothing of the uploaded filename survives.
+        self.assertRegex(image.image.name, r"^bid_documents/product_images/\d+/[0-9a-f]{32}\.png$")
+        self.assertEqual(len(res.data["product_images"]), 1)
+        self.assertIn("/api/files/bidimage/", res.data["product_images"][0]["url"])
+        self.assertTrue(AuditLog.objects.filter(action="bid.image_uploaded", entity_id=str(self.bid.id)).exists())
+
+    def test_stored_extension_follows_real_format_not_the_filename(self):
+        res = self._upload(make_image("looks-like.png", fmt="JPEG"))
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(BidProductImage.objects.get(bid=self.bid).image.name.endswith(".jpg"))
+
+    def test_webp_is_accepted(self):
+        res = self._upload(make_image("p.webp", fmt="WEBP"))
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    # 2. wrong type
+    def test_rejects_non_image_disguised_as_png(self):
+        fake = SimpleUploadedFile("photo.png", b"%PDF-1.4 not an image", content_type="image/png")
+        res = self._upload(fake)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(BidProductImage.objects.exists())
+
+    def test_rejects_real_image_of_a_disallowed_format(self):
+        res = self._upload(make_image("anim.png", fmt="GIF"))
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(BidProductImage.objects.exists())
+
+    # 3. oversized
+    def test_rejects_file_over_5mb(self):
+        valid = make_image().read()
+        big = SimpleUploadedFile("big.png", valid + b"\0" * (5 * 1024 * 1024), content_type="image/png")
+        res = self._upload(big)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("5MB", str(res.data))
+        self.assertFalse(BidProductImage.objects.exists())
+
+    # 4. too many
+    def test_rejects_a_sixth_image(self):
+        self._add_images(5)
+        res = self._upload(make_image())
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(BidProductImage.objects.filter(bid=self.bid).count(), 5)
+
+    def test_rejects_more_than_five_in_one_bid_submission(self):
+        supplier = make_supplier()
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.post(
+            f"/api/projects/{self.project.pk}/bid/",
+            self._bid_payload(product_images=[make_image() for _ in range(6)]), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Bid.objects.filter(supplier=supplier).exists())
+
+    # 5. after deadline
+    def test_rejects_upload_after_deadline(self):
+        self.project.deadline = timezone.localdate() - timedelta(days=1)
+        self.project.save(update_fields=["deadline"])
+        res = self._upload(make_image())
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(BidProductImage.objects.exists())
+
+    def test_rejects_delete_after_bidding_closed(self):
+        self._add_images(1)
+        self.project.status = Project.Status.CLOSED
+        self.project.save(update_fields=["status"])
+        self.client.force_authenticate(user=self.supplier.user)
+        image = BidProductImage.objects.get()
+        res = self.client.delete(f"/api/bids/{self.bid.pk}/images/{image.pk}/")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(BidProductImage.objects.filter(pk=image.pk).exists())
+
+    # 6. another supplier / visibility
+    def test_other_supplier_cannot_upload_to_or_delete_from_someone_elses_bid(self):
+        res = self._upload(make_image(), user=self.other.user)
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self._add_images(1)
+        image = BidProductImage.objects.get()
+        res = self.client.delete(f"/api/bids/{self.bid.pk}/images/{image.pk}/")
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(BidProductImage.objects.filter(pk=image.pk).exists())
+
+    def test_admin_cannot_upload_images(self):
+        res = self._upload(make_image(), user=self.admin)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_only_admin_and_owner_can_read_the_image_file(self):
+        self._add_images(1)
+        image = BidProductImage.objects.get()
+        path = f"/api/files/bidimage/{image.pk}/image/"
+        for user, expected in (
+            (self.admin, 200), (self.supplier.user, 200),
+            (self.other.user, 404), (make_head(), 404),
+        ):
+            self.client.force_authenticate(user=user)
+            res = self.client.get(path)
+            self.assertEqual(res.status_code, expected, user.username)
+            if expected == 200:
+                self.assertEqual(res["Content-Type"], "image/png")
+                b"".join(res.streaming_content)
+                res.close()
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get(path).status_code, 404)
+
+    def test_images_never_reach_other_suppliers_or_the_public_page(self):
+        self._add_images(1)
+        self.client.force_authenticate(user=self.other.user)
+        self.assertEqual(self.client.get("/api/bids/").data, [])
+        project_json = str(self.client.get(f"/api/projects/{self.project.pk}/").data)
+        self.assertNotIn("bidimage", project_json)
+        self.client.force_authenticate(user=None)
+        public = str(self.client.get("/api/public/procurement/").data)
+        self.assertNotIn("bidimage", public)
+        self.assertNotIn("product_images", public)
+
+    # 7 / 8. submission with the option off / on
+    def test_bid_submits_without_images_when_option_off(self):
+        supplier = make_supplier()
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.post(f"/api/projects/{self.project.pk}/bid/", self._bid_payload(), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data["product_images"], [])
+        # Documents list is exactly the pre-existing five — no image row added.
+        self.assertEqual([d["key"] for d in res.data["documents"]], BID_DOCUMENT_KEYS)
+
+    def test_bid_rejected_without_images_when_option_on(self):
+        self.project.require_product_images = True
+        self.project.save(update_fields=["require_product_images"])
+        supplier = make_supplier()
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.post(f"/api/projects/{self.project.pk}/bid/", self._bid_payload(), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Bid.objects.filter(supplier=supplier).exists())
+
+        res = self.client.post(
+            f"/api/projects/{self.project.pk}/bid/",
+            self._bid_payload(product_images=[make_image()], product_image_captions=["front"]),
+            format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(len(res.data["product_images"]), 1)
+        self.assertEqual(res.data["product_images"][0]["caption"], "front")
+
+    def test_resubmitting_the_bid_without_images_keeps_the_existing_ones(self):
+        self.project.require_product_images = True
+        self.project.save(update_fields=["require_product_images"])
+        self._add_images(2)
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.post(f"/api/projects/{self.project.pk}/bid/", self._bid_payload(), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(BidProductImage.objects.filter(bid=self.bid).count(), 2)
+
+    def test_admin_can_set_the_option_when_creating_a_project(self):
+        self.client.force_authenticate(user=self.admin)
+        data = {
+            "name": "Office chairs", "description": "Ergonomic chairs", "type": "Goods",
+            "category": "Furniture", "budget": "50000", "delivery_location": "Main Campus",
+            "bidding_period_days": "7", "delivery_period_days": "30",
+            "purchase_request": dummy_pdf("pr.pdf"), "technical_specifications": dummy_pdf("ts.pdf"),
+            "terms_of_reference": dummy_pdf("tor.pdf"), "approved_budget_document": dummy_pdf("abd.pdf"),
+            "bid_evaluation_criteria": dummy_pdf("bec.pdf"),
+            "require_product_images": "true",
+            "product_image_instructions": "Show the exact brand/model.",
+        }
+        res = self.client.post("/api/projects/", data, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        project = Project.objects.get(pk=res.data["id"])
+        self.assertTrue(project.require_product_images)
+        self.assertEqual(project.product_image_instructions, "Show the exact brand/model.")
+
+    def test_existing_projects_default_to_option_off(self):
+        self.assertFalse(make_project().require_product_images)
+
+    # delete + storage cleanup
+    def test_delete_removes_row_and_file_after_commit(self):
+        self._add_images(2)
+        image = BidProductImage.objects.first()
+        stored = image.image.name
+        self.client.force_authenticate(user=self.supplier.user)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.client.delete(f"/api/bids/{self.bid.pk}/images/{image.pk}/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(BidProductImage.objects.filter(pk=image.pk).exists())
+        self.assertFalse(default_storage.exists(stored))
+        self.assertTrue(AuditLog.objects.filter(action="bid.image_removed").exists())
+
+    def test_file_is_not_deleted_before_commit(self):
+        self._add_images(2)
+        image = BidProductImage.objects.first()
+        stored = image.image.name
+        self.client.force_authenticate(user=self.supplier.user)
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            self.client.delete(f"/api/bids/{self.bid.pk}/images/{image.pk}/")
+        self.assertTrue(default_storage.exists(stored))   # still there until commit
+        self.assertEqual(len(callbacks), 1)
+
+    def test_storage_delete_failure_is_logged_not_raised(self):
+        self._add_images(2)
+        image = BidProductImage.objects.first()
+        self.client.force_authenticate(user=self.supplier.user)
+        with patch.object(FileSystemStorage, "delete", side_effect=OSError("bucket down")), \
+                self.assertLogs("procurement.views", level="ERROR") as logs:
+            with self.captureOnCommitCallbacks(execute=True):
+                res = self.client.delete(f"/api/bids/{self.bid.pk}/images/{image.pk}/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn("Could not delete bid product image", logs.output[0])
+
+    def test_cannot_delete_last_image_when_required(self):
+        self.project.require_product_images = True
+        self.project.save(update_fields=["require_product_images"])
+        self._add_images(1)
+        image = BidProductImage.objects.get()
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.delete(f"/api/bids/{self.bid.pk}/images/{image.pk}/")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(BidProductImage.objects.filter(pk=image.pk).exists())
+
+    def test_resubmitting_bid_with_new_images_replaces_set_and_deletes_old_files(self):
+        self._add_images(2)
+        old_names = [img.image.name for img in BidProductImage.objects.all()]
+        self.client.force_authenticate(user=self.supplier.user)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.client.post(
+                f"/api/projects/{self.project.pk}/bid/",
+                self._bid_payload(product_images=[make_image()]), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(BidProductImage.objects.filter(bid=self.bid).count(), 1)
+        for name in old_names:
+            self.assertFalse(default_storage.exists(name))
+        self.assertTrue(AuditLog.objects.filter(action="bid.images_replaced").exists())
+
+    # item 5 — revision flow
+    def test_admin_can_flag_images_and_supplier_resubmits_after_deadline(self):
+        self._add_images(1)
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f"/api/bids/{self.bid.pk}/request-revision/",
+            {"documents": {"product_images": "Show the actual product, not a catalogue render"}}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        row = next(d for d in res.data["documents"] if d["key"] == "product_images")
+        self.assertEqual(row["review_status"], "needs_revision")
+
+        # Winner selection is blocked while flagged, and the message names the images.
+        self.bid.refresh_from_db()
+        self.bid.status = Bid.Status.QUALIFIED
+        self.bid.save(update_fields=["status"])
+        res = self.client.post(f"/api/bids/{self.bid.pk}/select-winner/")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Product Images", res.data["detail"])
+
+        # Deadline passes; the flagged images can still be re-submitted.
+        self.project.deadline = timezone.localdate() - timedelta(days=1)
+        self.project.save(update_fields=["deadline"])
+        self.client.force_authenticate(user=self.supplier.user)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.client.post(
+                f"/api/bids/{self.bid.pk}/resubmit-documents/",
+                {"product_images": [make_image(), make_image()]}, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.bid.refresh_from_db()
+        self.assertEqual(self.bid.document_reviews["product_images"]["status"], "resubmitted")
+        self.assertEqual(BidProductImage.objects.filter(bid=self.bid).count(), 2)
+
+    def test_unflagged_images_cannot_be_swapped_after_deadline_via_resubmit(self):
+        self._add_images(1)
+        self.project.deadline = timezone.localdate() - timedelta(days=1)
+        self.project.save(update_fields=["deadline"])
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.post(
+            f"/api/bids/{self.bid.pk}/resubmit-documents/",
+            {"product_images": [make_image()]}, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(BidProductImage.objects.filter(bid=self.bid).count(), 1)
+
+    def test_document_revision_without_images_is_unchanged(self):
+        # Flagging a normal document on a bid with no images adds no image row.
+        self.bid.quotation_document = dummy_pdf("q.pdf")
+        self.bid.save()
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f"/api/bids/{self.bid.pk}/request-revision/",
+            {"documents": {"quotation_document": "unsigned"}}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.bid.refresh_from_db()
+        self.assertNotIn("product_images", self.bid.document_reviews)
+
+    # anchoring must be untouched
+    def test_images_do_not_change_any_anchor_of_an_awarded_project(self):
+        self.bid.quotation_document = dummy_pdf("quotation.pdf")
+        self.bid.status = Bid.Status.QUALIFIED
+        self.bid.save()
+        self._add_images(2)   # images present at award time
+
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(f"/api/bids/{self.bid.pk}/select-winner/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+        anchors = list(BlockchainAnchor.objects.filter(entity_ref=self.project.code))
+        self.assertEqual({a.stage for a in anchors}, {"BID_SUBMITTED", "AWARDED"})
+        before = {a.id: a.data_hash for a in anchors}
+        for a in anchors:
+            self.assertNotIn("product_images", a.payload)
+            self.assertEqual(verify_anchor(a, deep=True)["status"], "match")
+
+        # Adding or removing images later changes nothing either.
+        BidProductImage.objects.filter(bid=self.bid).first().delete()
+        self._add_images(3)
+        for a in BlockchainAnchor.objects.filter(entity_ref=self.project.code):
+            self.assertEqual(a.data_hash, before[a.id])
+            self.assertEqual(verify_anchor(a, deep=True)["status"], "match")
+        payload, _ = bid_parts(self.bid, BlockchainAnchor.Stage.BID_SUBMITTED)
+        bid_anchor = next(a for a in anchors if a.stage == "BID_SUBMITTED")
+        self.assertEqual(hash_payload(payload), bid_anchor.data_hash)
+
+        # The public trail stays hash-only.
+        public = str(self.client.get(f"/api/public/procurement/{self.project.code}/anchors/").data)
+        self.assertNotIn("bidimage", public)

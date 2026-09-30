@@ -72,6 +72,9 @@ function fromApi(p) {
     // and its award's) — [{ id, stage, data_hash, tx_hash, anchored, ... }].
     anchors: p.anchors || [],
     referenceImage: p.reference_image_url || '',  // optional product reference photo
+    // Bidders must attach product photos (off by default) + optional guidance.
+    requireProductImages: !!p.require_product_images,
+    productImageInstructions: p.product_image_instructions || '',
     submittedAt: fmtDate(p.created_at),
     reviewedAt: p.reviewed_at ? fmtDate(p.reviewed_at) : null,
     rejectReason: p.reject_reason || '',
@@ -159,6 +162,12 @@ export async function createProject(form, files = {}) {
   Object.entries(files).forEach(([key, file]) => { if (file) fd.append(key, file) })
   // Optional reference image — only sent when the admin attached one.
   if (form.reference_image) fd.append('reference_image', form.reference_image)
+  // Product-image requirement — sent only when switched on, so the default
+  // (off) request is byte-for-byte what it was before this option existed.
+  if (form.require_product_images) {
+    fd.append('require_product_images', 'true')
+    fd.append('product_image_instructions', (form.product_image_instructions || '').trim())
+  }
   const created = await apiCreateProject(fd)
   upsert(created)
   anchorAfter(created, 'Submitted for approval')

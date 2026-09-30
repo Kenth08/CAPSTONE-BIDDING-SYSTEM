@@ -1984,3 +1984,49 @@ a.ad-prod-thumb:hover { border-color: #3b82f6; box-shadow: 0 2px 10px rgba(59,13
 .ad-decl-badge-no { color: #b91c1c; }
 .ad-decl-badge-no svg { color: #ef4444; }
 
+
+/* ── PRODUCT IMAGES (create form option, bid gallery, lightbox) ─────────── */
+.ad-pimg-option {
+  padding: 12px 14px; border: 1px solid var(--light-border); border-radius: 10px;
+  background: var(--light-bg);
+}
+.ad-pimg-toggle { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.ad-pimg-toggle input { margin-top: 3px; width: 16px; height: 16px; accent-color: #10b981; }
+.ad-pimg-toggle > span { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--text-dark); }
+.ad-img-card-btn { padding: 0; cursor: zoom-in; font: inherit; text-align: left; }
+.ad-img-card-btn:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+
+/* Enlarged image, above the bid modal (which sits at z-index 200). */
+.ad-lightbox {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(2,6,23,0.82);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.ad-lightbox-inner {
+  position: relative; max-width: min(960px, 100%); max-height: 100%;
+  display: flex; flex-direction: column; gap: 10px; align-items: center;
+}
+.ad-lightbox-inner img {
+  max-width: 100%; max-height: calc(100vh - 150px); object-fit: contain;
+  border-radius: 10px; background: #0f172a;
+}
+.ad-lightbox-close {
+  position: absolute; top: -12px; right: -12px; width: 34px; height: 34px;
+  border-radius: 50%; border: none; background: #fff; color: #0f172a; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+}
+.ad-lightbox-bar {
+  display: flex; align-items: center; gap: 12px; color: #fff; font-size: 13.5px; font-weight: 600;
+}
+.ad-lightbox-bar .ad-muted { color: #94a3b8; }
+.ad-lightbox-bar button {
+  width: 32px; height: 32px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.3);
+  background: transparent; color: #fff; font-size: 20px; line-height: 1; cursor: pointer;
+}
+.ad-lightbox-bar button:disabled { opacity: 0.3; cursor: default; }
+.ad-lightbox-open {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: #cbd5e1; font-size: 12px; text-decoration: none;
+}
+.ad-lightbox-open:hover { color: #fff; }
