@@ -17,7 +17,9 @@ from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase, override_settings
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
@@ -1142,3 +1144,234 @@ class LegacyRegisterRouteRemovedTests(APITestCase):
             if any(perm is AllowAny for perm in getattr(cls, "permission_classes", [])):
                 public_creators.add(cls)
         self.assertEqual(public_creators, {SupplierRegisterView})
+
+
+class CategoryChangeWorkflowTests(APITestCase):
+    """A verified supplier's PATCH /suppliers/me/ {business_types} took effect
+    immediately, so a supplier verified for one category could see, download
+    the documents of, and bid on procurements in any other. A verified
+    supplier now files a REQUEST; only an Admin decision changes the approved
+    set, and nothing pending or rejected grants eligibility."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.head = make_head()
+        self.supplier = make_supplier(verified=True, categories=["IT Equipment"])
+        self.furniture = make_project(status=Project.Status.PUBLISHED, category="Furniture")
+        self.furniture.purchase_request = dummy_pdf()
+        self.furniture.save()
+
+    def _request(self, categories, user=None):
+        self.client.force_authenticate(user=user or self.supplier.user)
+        return self.client.patch("/api/suppliers/me/", {"business_types": categories}, format="json")
+
+    def _decide(self, decision, user=None, **body):
+        self.client.force_authenticate(user=user or self.admin)
+        return self.client.post(f"/api/suppliers/{self.supplier.pk}/{decision}-categories/", body, format="json")
+
+    def _can_see_furniture(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        visible = [p["id"] for p in self.client.get("/api/projects/").json()]
+        doc = self.client.get(f"/api/files/project/{self.furniture.pk}/purchase_request/")
+        return self.furniture.pk in visible, doc.status_code
+
+    def test_request_is_pending_logged_and_announced(self):
+        res = self._request(["IT Equipment", "Furniture"])
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.business_types, ["IT Equipment"])
+        self.assertEqual(self.supplier.pending_business_types, ["IT Equipment", "Furniture"])
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.PENDING)
+        self.assertIsNotNone(self.supplier.category_requested_at)
+        log = AuditLog.objects.get(action="supplier.category_change_requested")
+        self.assertIn("add Furniture", log.description)
+        self.assertTrue(self.admin.notifications.filter(message__contains="category change").exists())
+
+    def test_pending_category_grants_no_eligibility(self):
+        self._request(["IT Equipment", "Furniture"])
+        self.assertEqual(self._can_see_furniture(), (False, status.HTTP_404_NOT_FOUND))
+        bid = self.client.post(f"/api/projects/{self.furniture.pk}/bid/", {"amount": "100"}, format="multipart")
+        self.assertEqual(bid.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_pending_category_gets_no_publish_notification(self):
+        self._request(["IT Equipment", "Furniture"])
+        approved = make_project(status=Project.Status.APPROVED, category="Furniture")
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/projects/{approved.pk}/publish/").status_code, 200)
+        self.assertFalse(self.supplier.user.notifications.filter(message__contains="open for bidding").exists())
+
+    def test_approval_activates_the_requested_set(self):
+        self._request(["IT Equipment", "Furniture"])
+        res = self._decide("approve")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.business_types, ["IT Equipment", "Furniture"])
+        self.assertEqual(self.supplier.business_type, "IT Equipment, Furniture")
+        self.assertIsNone(self.supplier.pending_business_types)
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.NONE)
+        self.assertTrue(AuditLog.objects.filter(action="supplier.category_change_approved").exists())
+        self.assertTrue(self.supplier.user.notifications.filter(message__contains="approved").exists())
+        self.assertEqual(self._can_see_furniture(), (True, status.HTTP_200_OK))
+
+    def test_rejection_keeps_the_approved_set_and_grants_nothing(self):
+        self._request(["IT Equipment", "Furniture"])
+        res = self._decide("reject", note="No furniture permits on file")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.business_types, ["IT Equipment"])
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.REJECTED)
+        self.assertEqual(self.supplier.category_request_note, "No furniture permits on file")
+        self.assertTrue(AuditLog.objects.filter(action="supplier.category_change_rejected").exists())
+        self.assertEqual(self._can_see_furniture(), (False, status.HTTP_404_NOT_FOUND))
+        # A rejected request can't be approved afterwards, but a new one can be filed.
+        self.assertEqual(self._decide("approve").status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._request(["IT Equipment", "Furniture"]).data["category_request_status"], "pending")
+
+    def test_removal_waits_for_approval_too(self):
+        self.supplier.business_types = ["IT Equipment", "Furniture"]
+        self.supplier.save()
+        self._request(["IT Equipment"])
+        self.assertEqual(self._can_see_furniture()[0], True)    # still active while pending
+        self._decide("approve")
+        self.assertEqual(self._can_see_furniture()[0], False)
+
+    def test_resending_the_approved_set_withdraws_the_request(self):
+        self._request(["IT Equipment", "Furniture"])
+        self._request(["IT Equipment"])
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.NONE)
+        self.assertIsNone(self.supplier.pending_business_types)
+        self.assertTrue(AuditLog.objects.filter(action="supplier.category_change_withdrawn").exists())
+
+    def test_only_an_admin_can_decide(self):
+        self._request(["IT Equipment", "Furniture"])
+        other = make_supplier(verified=True)
+        for user in (self.supplier.user, other.user, self.head):
+            for decision in ("approve", "reject"):
+                with self.subTest(user=user.username, decision=decision):
+                    self.assertEqual(self._decide(decision, user=user).status_code, status.HTTP_403_FORBIDDEN)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.business_types, ["IT Equipment"])
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.post(f"/api/suppliers/{self.supplier.pk}/approve-categories/").status_code,
+                         status.HTTP_401_UNAUTHORIZED)
+
+    def test_deciding_without_a_pending_request_is_refused(self):
+        for decision in ("approve", "reject"):
+            with self.subTest(decision=decision):
+                self.assertEqual(self._decide(decision).status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_request_state_cannot_be_forged_through_the_api(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        self.client.patch("/api/suppliers/me/", {
+            "pending_business_types": ["Furniture"], "category_request_status": "pending",
+        }, format="json")
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.NONE)
+        # Filing a request and then trying to clear its status in the same call.
+        self.client.patch("/api/suppliers/me/", {
+            "business_types": ["IT Equipment", "Furniture"], "category_request_status": "",
+        }, format="json")
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.PENDING)
+        self.assertEqual(self.supplier.business_types, ["IT Equipment"])
+        # The Admin's generic edit route is gone (H3), so it can't be used either.
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.patch(f"/api/suppliers/{self.supplier.pk}/", {"business_types": ["Furniture"]},
+                                format="json")
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_an_invalid_request_changes_nothing_at_all(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        for bad in ([], ["Not A Real Category"], "Furniture", [1, 2]):
+            with self.subTest(bad=bad):
+                res = self.client.patch("/api/suppliers/me/",
+                                        {"business_types": bad, "full_name": "Changed Name"}, format="json")
+                self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.supplier.refresh_from_db()
+        self.supplier.user.refresh_from_db()
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.NONE)
+        self.assertNotEqual(self.supplier.user.full_name, "Changed Name")
+
+    def test_unverified_supplier_updates_categories_directly(self):
+        pending = make_supplier(verified=False, categories=["IT Equipment"])
+        res = self._request(["Furniture"], user=pending.user)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        pending.refresh_from_db()
+        self.assertEqual(pending.business_types, ["Furniture"])
+        self.assertEqual(pending.category_request_status, Supplier.CategoryRequest.NONE)
+        self.assertTrue(AuditLog.objects.filter(action="supplier.categories_updated",
+                                                entity_id=str(pending.pk)).exists())
+
+    def test_contact_details_still_save_without_touching_categories(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.patch("/api/suppliers/me/", {"phone_number": "09170000000"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.phone_number, "09170000000")
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.NONE)
+        self.assertFalse(AuditLog.objects.filter(action__startswith="supplier.categor").exists())
+
+
+class SupplierCategoryMigrationTests(TransactionTestCase):
+    """0018 must preserve every existing supplier's approved categories and
+    leave them with no pending request — forwards AND backwards."""
+
+    BEFORE = [("procurement", "0017_bid_product_images")]
+    AFTER = [("procurement", "0018_supplier_category_change_request")]
+
+    def _migrate(self, targets):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets)
+        return executor.loader.project_state(targets).apps
+
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+    def test_existing_suppliers_survive_forward_and_backward(self):
+        old = self._migrate(self.BEFORE)
+        OldUser = old.get_model("accounts", "User")
+        OldSupplier = old.get_model("procurement", "Supplier")
+        user = OldUser.objects.create(username="legacy@example.com", email="legacy@example.com", role="supplier")
+        rows = {
+            "verified": OldSupplier.objects.create(
+                user=user, company="Legacy Verified", contact="x", business_type="IT Equipment, Furniture",
+                business_types=["IT Equipment", "Furniture"], qualification_status="verified"),
+            "pending": OldSupplier.objects.create(
+                company="Legacy Pending", contact="y", business_types=["Construction"]),
+            "empty": OldSupplier.objects.create(company="Legacy Empty", contact="z", business_types=[]),
+        }
+
+        new = self._migrate(self.AFTER)
+        NewSupplier = new.get_model("procurement", "Supplier")
+        for key, before in rows.items():
+            with self.subTest(row=key):
+                after = NewSupplier.objects.get(pk=before.pk)
+                self.assertEqual(after.business_types, before.business_types)
+                self.assertEqual(after.qualification_status, before.qualification_status)
+                self.assertEqual(after.category_request_status, "")
+                self.assertIsNone(after.pending_business_types)
+                self.assertEqual(after.category_request_note, "")
+                self.assertIsNone(after.category_requested_at)
+
+        # A row inserted WITHOUT the new columns (as the previous release does
+        # while migrate runs on deploy) must still succeed — the DB defaults.
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO procurement_supplier (company, contact, business_type, status, "
+                "qualification_status, email_verified, registered, company_address, phone_number, tin, "
+                "representative_name, business_types, mayors_permit_expiry, tax_clearance_expiry, "
+                "financial_statement_year, track_record_description, declaration_accepted, admin_notes, "
+                "document_reviews, reviewed_at) VALUES ('Old Release Co', 'c', '', 'draft', "
+                "'waiting_admin_approval', 0, '2026-10-20', '', '', '', '', '[]', NULL, NULL, NULL, '', 0, "
+                "'', '{}', NULL)")
+        self.assertEqual(NewSupplier.objects.get(company="Old Release Co").category_request_status, "")
+
+        back = self._migrate(self.BEFORE)
+        BackSupplier = back.get_model("procurement", "Supplier")
+        self.assertEqual(BackSupplier.objects.get(pk=rows["verified"].pk).business_types,
+                         ["IT Equipment", "Furniture"])

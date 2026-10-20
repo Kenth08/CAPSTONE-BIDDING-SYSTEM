@@ -175,7 +175,32 @@ class Supplier(models.Model):
     phone_number = models.CharField(max_length=30, blank=True)
     tin = models.CharField("TIN", max_length=30, blank=True)
     representative_name = models.CharField(max_length=150, blank=True)
-    business_types = models.JSONField(default=list, blank=True)  # selected categories
+    # The APPROVED categories — the only ones that grant eligibility (project
+    # visibility, bidding, document access, publish notifications all read this).
+    business_types = models.JSONField(default=list, blank=True)
+
+    # ── Category change request ───────────────────────────────────────────
+    # A VERIFIED supplier can't change business_types directly: that used to
+    # take effect instantly, so a supplier verified for one category could
+    # start bidding in any other. A change is stored here as a request and only
+    # copied into business_types by an Admin (approve-categories). Pending and
+    # rejected requests never grant eligibility — nothing that decides access
+    # reads these fields.
+    #
+    # All nullable or with a DB default: on deploy, migrate runs while the
+    # previous release is still serving, and its INSERTs don't know these
+    # columns exist (same reason as Project.require_product_images).
+    class CategoryRequest(models.TextChoices):
+        NONE = "", "No request"
+        PENDING = "pending", "Pending Admin approval"
+        REJECTED = "rejected", "Rejected"
+
+    pending_business_types = models.JSONField(null=True, blank=True)  # requested full set
+    category_request_status = models.CharField(
+        max_length=20, choices=CategoryRequest.choices, blank=True, default="", db_default="")
+    category_request_note = models.CharField(max_length=500, blank=True, default="", db_default="")
+    category_requested_at = models.DateTimeField(null=True, blank=True)
+    category_reviewed_at = models.DateTimeField(null=True, blank=True)
 
     # ── Legal documents (Step 2 — required at registration) ───────────────
     sec_dti_certificate = models.FileField(

@@ -115,23 +115,28 @@ class SupplierReviewTests(APITestCase):
 
 
 class SupplierSelfEditBusinessTypesTests(APITestCase):
-    """A supplier may change their own business_types from Settings — no
-    admin re-approval, applies immediately (per user decision, see memory)."""
+    """A verified supplier REQUESTS category changes from Settings; they apply
+    only once an Admin approves them. (Was: applied immediately, with no
+    re-approval — reversed by decision 6 in the 2026-10 audit, because it let a
+    supplier verified for one category bid in any other.)"""
 
     def setUp(self):
         cache.clear()
         self.supplier = make_supplier(verified=True, categories=["IT Equipment"])
 
-    def test_supplier_can_update_own_business_types(self):
+    def test_supplier_change_is_filed_as_a_pending_request(self):
         self.client.force_authenticate(user=self.supplier.user)
         res = self.client.patch(
             "/api/suppliers/me/", {"business_types": ["IT Equipment", "Furniture"]}, format="json"
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["category_request_status"], "pending")
 
         self.supplier.refresh_from_db()
-        self.assertEqual(self.supplier.business_types, ["IT Equipment", "Furniture"])
-        # No re-approval triggered — verification status is untouched.
+        # The approved set is untouched until an Admin decides.
+        self.assertEqual(self.supplier.business_types, ["IT Equipment"])
+        self.assertEqual(self.supplier.pending_business_types, ["IT Equipment", "Furniture"])
+        # Verification status is untouched — they keep bidding in IT Equipment.
         self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.VERIFIED)
 
     def test_business_types_cannot_be_emptied(self):
@@ -144,7 +149,7 @@ class SupplierSelfEditBusinessTypesTests(APITestCase):
         res = self.client.patch("/api/suppliers/me/", {"business_types": ["Not A Real Category"]}, format="json")
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_new_business_type_immediately_unlocks_matching_projects(self):
+    def test_new_business_type_unlocks_matching_projects_only_after_admin_approval(self):
         # Supplier starts with only "IT Equipment" — a Furniture project isn't visible yet.
         make_project(status=Project.Status.PUBLISHED, category="Furniture")
         self.client.force_authenticate(user=self.supplier.user)
@@ -152,6 +157,12 @@ class SupplierSelfEditBusinessTypesTests(APITestCase):
         self.assertEqual(len(before.json()), 0)
 
         self.client.patch("/api/suppliers/me/", {"business_types": ["IT Equipment", "Furniture"]}, format="json")
+        pending = self.client.get("/api/projects/")
+        self.assertEqual(len(pending.json()), 0)   # a pending request grants nothing
+
+        self.client.force_authenticate(user=make_admin())
+        self.client.post(f"/api/suppliers/{self.supplier.pk}/approve-categories/")
+        self.client.force_authenticate(user=self.supplier.user)
         after = self.client.get("/api/projects/")
         self.assertEqual(len(after.json()), 1)
         self.assertEqual(after.json()[0]["category"], "Furniture")

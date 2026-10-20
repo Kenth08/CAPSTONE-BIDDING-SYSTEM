@@ -296,6 +296,13 @@ export const apiSupplierRequestRevision = (id, { note, documents }) =>
     body: JSON.stringify({ note, documents }),
   })
 
+// Category change requests: a verified supplier's new business_types are only
+// a request until an Admin approves them (enforced server-side).
+export const apiSupplierApproveCategories = (id) =>
+  apiFetch(`/suppliers/${id}/approve-categories/`, { method: 'POST', body: '{}' })
+export const apiSupplierRejectCategories = (id, note) =>
+  apiFetch(`/suppliers/${id}/reject-categories/`, { method: 'POST', body: JSON.stringify({ note }) })
+
 // Logged-in supplier's own profile + document re-submission.
 export const apiGetMySupplier = () => apiFetch('/suppliers/me/')
 export const apiUpdateMySupplier = (data) =>

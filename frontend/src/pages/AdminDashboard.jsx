@@ -10,6 +10,7 @@ import {
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
   apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision, apiAdminRegisterSupplier,
+  apiSupplierApproveCategories, apiSupplierRejectCategories,
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
   apiListAwards, apiListDocuments, apiBidRequestRevision,
   apiUploadAwardDocument, apiGenerateAwardDocument,
@@ -1299,6 +1300,12 @@ function SuppliersPage() {
                     <span className={`badge ${QUAL_CLS[s.qualification_status] || 'badge-gray'}`}>
                       {QUAL_LABEL[s.qualification_status] || (s.qualification_status || '').replace(/_/g, ' ')}
                     </span>
+                    {s.category_request_status === 'pending' && (
+                      <span className="badge badge-yellow" style={{ marginLeft: 6 }}
+                        title="This supplier asked to change their business categories">
+                        Category change
+                      </span>
+                    )}
                   </td>
                   <td><span className={`badge ${s.email_verified ? 'badge-green' : 'badge-gray'}`}>{s.email_verified ? 'Verified' : 'Unverified'}</span></td>
                   <td className="ad-muted">{s.registered}</td>
@@ -1715,6 +1722,25 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                 <Info2 label="Financial Year" value={supplier.financial_statement_year} />
               </div>
 
+              <CategoryRequestPanel
+                supplier={supplier}
+                busy={busy}
+                onApprove={() => setConfirm({
+                  title: 'Approve category change?',
+                  message: `${supplier.company} will be able to see and bid on procurements in the requested categories.`,
+                  tone: 'green',
+                  confirmLabel: 'Approve change',
+                  onConfirm: () => runAction(() => apiSupplierApproveCategories(supplierId), 'Category change approved.'),
+                })}
+                onReject={(reason) => setConfirm({
+                  title: 'Decline category change?',
+                  message: `${supplier.company} keeps their current categories.`,
+                  tone: 'red',
+                  confirmLabel: 'Decline change',
+                  onConfirm: () => runAction(() => apiSupplierRejectCategories(supplierId, reason), 'Category change declined.'),
+                })}
+              />
+
               <div className="ad-docs-head">
                 <FileText size={15} /> Uploaded Documents
               </div>
@@ -1855,12 +1881,12 @@ function supplierBusinessTypes(supplier) {
     .split(',').map(s => s.trim()).filter(Boolean)
 }
 
-// Shows every category the supplier registered for as chips (handles many).
+// Shows every category the supplier is APPROVED for as chips (handles many).
 function BusinessTypesInfo({ supplier }) {
   const types = supplierBusinessTypes(supplier)
   return (
     <div className="ad-info-item ad-info-full">
-      <span className="ad-info-label">Business Types</span>
+      <span className="ad-info-label">Business Types{supplier?.category_request_status === 'pending' ? ' (approved)' : ''}</span>
       {types.length === 0 ? (
         <span className="ad-info-value">—</span>
       ) : (
@@ -1868,6 +1894,56 @@ function BusinessTypesInfo({ supplier }) {
           {types.map(t => <span className="ad-chip" key={t}>{t}</span>)}
         </div>
       )}
+    </div>
+  )
+}
+
+// A verified supplier's pending category change: only an Admin decision here
+// changes which procurements they can bid on (enforced server-side by
+// approve-categories / reject-categories). Rendered whether or not the
+// supplier's registration has already been decided — category requests come
+// from VERIFIED suppliers.
+function CategoryRequestPanel({ supplier, busy, onApprove, onReject }) {
+  const [reason, setReason] = useState('')
+  if (supplier?.category_request_status !== 'pending') return null
+  const approved = supplierBusinessTypes(supplier)
+  const requested = supplier.pending_business_types || []
+  const added = requested.filter(c => !approved.includes(c))
+  const removed = approved.filter(c => !requested.includes(c))
+  return (
+    <div className="ad-field">
+      <label>Category change request</label>
+      <div className="ad-docs-hint">
+        <Info size={15} />
+        <span>
+          Requested {supplier.category_requested_at ? new Date(supplier.category_requested_at).toLocaleDateString() : ''}.
+          {' '}They keep bidding only in their approved categories until you decide.
+        </span>
+      </div>
+      {added.length > 0 && (
+        <div className="ad-chips" aria-label="Categories to add">
+          {added.map(t => <span className="ad-chip" key={`add-${t}`}>+ {t}</span>)}
+        </div>
+      )}
+      {removed.length > 0 && (
+        <div className="ad-chips" aria-label="Categories to remove">
+          {removed.map(t => <span className="ad-chip" key={`rm-${t}`}>− {t}</span>)}
+        </div>
+      )}
+      <textarea
+        rows={2}
+        placeholder="Reason (shown to the supplier if you decline)…"
+        value={reason}
+        onChange={e => setReason(e.target.value)}
+      />
+      <div className="ad-modal-footer-actions">
+        <button className="ad-btn-reject" disabled={busy} onClick={() => onReject(reason)}>
+          <XCircle size={14} /> Decline change
+        </button>
+        <button className="ad-btn-approve" disabled={busy} onClick={onApprove}>
+          <Check size={14} /> Approve change
+        </button>
+      </div>
     </div>
   )
 }

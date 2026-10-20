@@ -1834,6 +1834,56 @@ function profileBusinessTypes(profile) {
     .split(',').map(s => s.trim()).filter(Boolean)
 }
 
+// A verified supplier's category change is a REQUEST until an Admin approves it
+// (the server keeps the approved list in business_types and the request in
+// pending_business_types). Shows what is pending — or why it was declined —
+// so the supplier knows which categories they can actually bid in today.
+function CategoryRequestBanner({ profile, onWithdraw, withdrawing }) {
+  const status = profile?.category_request_status
+  if (!status) return null
+  const approved = profileBusinessTypes(profile)
+  const requested = profile.pending_business_types || []
+  const added = requested.filter(c => !approved.includes(c))
+  const removed = approved.filter(c => !requested.includes(c))
+  const changes = [
+    added.length ? `add ${added.join(', ')}` : '',
+    removed.length ? `remove ${removed.join(', ')}` : '',
+  ].filter(Boolean).join('; ')
+
+  if (status === 'rejected') {
+    return (
+      <div className="sd-verify-banner sd-verify-rejected" role="status">
+        <div className="sd-verify-icon"><X size={18} /></div>
+        <div className="sd-verify-text">
+          <span className="sd-bold">Category change not approved</span>
+          <span className="sd-muted sd-small">
+            Your request ({changes || 'no change'}) was declined. You can still bid in your approved
+            categories, and you can submit a new request below.
+          </span>
+          {profile.category_request_note && <span className="sd-verify-note">“{profile.category_request_note}”</span>}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="sd-verify-banner sd-verify-pending" role="status">
+      <div className="sd-verify-icon"><Clock size={18} /></div>
+      <div className="sd-verify-text">
+        <span className="sd-bold">Category change awaiting Admin approval</span>
+        <span className="sd-muted sd-small">
+          Requested: {changes || 'no change'}. Until it's approved you can only see and bid on
+          procurements in your current categories: {approved.join(', ') || '—'}.
+        </span>
+      </div>
+      {onWithdraw && (
+        <button type="button" className="sd-btn-cancel" disabled={withdrawing} onClick={onWithdraw}>
+          {withdrawing ? 'Withdrawing…' : 'Withdraw request'}
+        </button>
+      )}
+    </div>
+  )
+}
+
 // Maps a document's review state to a badge — "not uploaded" wins over any
 // stale review status, since a missing file can't meaningfully be "approved".
 function docStatusBadge(doc) {
@@ -1945,6 +1995,7 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry }) {
                 {businessTypes.map(t => <span className="sd-chip" key={t}>{t}</span>)}
               </div>
             )}
+            <CategoryRequestBanner profile={profile} />
           </div>
         </div>
       </div>
@@ -2025,14 +2076,37 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
   const [passwordError, setPasswordError] = useState('')
   const [savingPassword, setSavingPassword] = useState(false)
 
+  const [withdrawing, setWithdrawing] = useState(false)
+  const isVerified = profile?.qualification_status === 'verified'
+
   useEffect(() => {
     if (!profile) return
     setFullName(profile.full_name || profile.contact || '')
     setRepName(profile.representative_name || '')
     setPhone(profile.phone_number || '')
     setAddress(profile.company_address || '')
-    setBusinessTypes(profileBusinessTypes(profile))
+    // Show the pending request's selection while it awaits approval, so the
+    // supplier edits their request rather than silently reverting it.
+    setBusinessTypes(
+      profile.category_request_status === 'pending' && Array.isArray(profile.pending_business_types)
+        ? profile.pending_business_types
+        : profileBusinessTypes(profile)
+    )
   }, [profile])
+
+  // Re-sending the approved list withdraws a pending request (server-side rule).
+  const withdrawRequest = async () => {
+    setWithdrawing(true)
+    try {
+      await apiUpdateMySupplier({ business_types: profileBusinessTypes(profile) })
+      await onUpdated()
+      setToast({ type: 'success', message: 'Category change request withdrawn.' })
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Could not withdraw the request.' })
+    } finally {
+      setWithdrawing(false)
+    }
+  }
 
   const toggleBusinessType = (t) =>
     setBusinessTypes(list => list.includes(t) ? list.filter(x => x !== t) : [...list, t])
@@ -2046,7 +2120,8 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
     }
     setSavingProfile(true)
     try {
-      await apiUpdateMySupplier({
+      const before = profile?.category_request_status || ''
+      const saved = await apiUpdateMySupplier({
         full_name: fullName.trim(),
         representative_name: repName.trim(),
         phone_number: phone.trim(),
@@ -2054,7 +2129,14 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
         business_types: businessTypes,
       })
       await onUpdated()
-      setToast({ type: 'success', message: 'Profile updated successfully.' })
+      const filedRequest = saved?.category_request_status === 'pending' &&
+        (before !== 'pending' || saved?.category_requested_at !== profile?.category_requested_at)
+      setToast({
+        type: 'success',
+        message: filedRequest
+          ? 'Profile saved. Your category change was sent to the Admin for approval.'
+          : 'Profile updated successfully.',
+      })
     } catch (err) {
       setToast({ type: 'error', message: err.message || 'Could not update your profile.' })
     } finally {
@@ -2111,8 +2193,11 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
         <div className="sd-form-group sd-profile-field-full">
           <label>Business Types</label>
           <span className="sd-muted sd-small" style={{ marginBottom: 6 }}>
-            Controls which procurement categories you see and can bid on. Changes apply immediately.
+            {isVerified
+              ? 'Controls which procurement categories you see and can bid on. Changes are sent to the Admin for approval; your current categories stay active until then.'
+              : 'Controls which procurement categories you see and can bid on. They are reviewed together with your registration.'}
           </span>
+          <CategoryRequestBanner profile={profile} onWithdraw={withdrawRequest} withdrawing={withdrawing} />
           <div className="sd-chips">
             {CATEGORIES.map(t => (
               <button

@@ -66,6 +66,7 @@ from .serializers import (
     SupplierDetailSerializer,
     SupplierListSerializer,
     SupplierMeUpdateSerializer,
+    clean_business_types,
 )
 from .validators import validate_bid_upload, validate_product_image, validate_upload
 
@@ -1129,7 +1130,8 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     SUPPLIER_ACTIONS = {"me", "resubmit"}
 
     def get_serializer_class(self):
-        if self.action in {"retrieve", "me", "resubmit", "approve", "reject", "request_revision"}:
+        if self.action in {"retrieve", "me", "resubmit", "approve", "reject", "request_revision",
+                           "approve_categories", "reject_categories"}:
             return SupplierDetailSerializer
         return SupplierListSerializer
 
@@ -1181,14 +1183,155 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             return Response({"detail": "No supplier profile found."}, status=http_status.HTTP_404_NOT_FOUND)
 
         if request.method == "PATCH":
-            full_name = request.data.get("full_name")
-            if full_name is not None and supplier.user_id:
-                supplier.user.full_name = full_name
-                supplier.user.save(update_fields=["full_name"])
+            # Validate EVERYTHING before writing anything: full_name used to be
+            # saved first, so a request with a bad phone number still changed it.
+            categories = None
+            if "business_types" in request.data:
+                categories = clean_business_types(request.data.get("business_types"))
             serializer = SupplierMeUpdateSerializer(supplier, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
-            serializer.save()
 
+            with transaction.atomic():
+                supplier = Supplier.objects.select_for_update().select_related("user").get(pk=supplier.pk)
+                full_name = request.data.get("full_name")
+                if full_name is not None and supplier.user_id:
+                    supplier.user.full_name = str(full_name)[:150]
+                    supplier.user.save(update_fields=["full_name"])
+                serializer.instance = supplier
+                serializer.save()
+                if categories is not None:
+                    self._handle_category_change(request, supplier, categories)
+
+        return self._detail_response(supplier)
+
+    def _handle_category_change(self, request, supplier, requested):
+        """Apply or file a change to the supplier's business categories.
+
+        * Not yet verified (pending review, revision, rejected): the whole
+          profile — categories included — is still waiting for an Admin's
+          decision, and the supplier can't bid, so the list is updated directly.
+        * Verified: business_types is NOT touched. The new set is stored as a
+          pending request for an Admin to approve or reject; until then the
+          supplier keeps exactly the categories they were approved for.
+          Re-sending the approved set withdraws a pending request.
+        """
+        current = list(supplier.business_types or [])
+        if supplier.qualification_status != Supplier.Qualification.VERIFIED:
+            if set(requested) != set(current):
+                supplier.business_types = requested
+                supplier.business_type = ", ".join(requested)
+                supplier.save(update_fields=["business_types", "business_type"])
+                log_action(request, "supplier.categories_updated", entity_type="Supplier",
+                           entity_id=supplier.id,
+                           description=f"{supplier.company} changed categories before verification: "
+                                       f"{', '.join(requested)}.")
+            return
+
+        if set(requested) == set(current):
+            if supplier.category_request_status == Supplier.CategoryRequest.PENDING:
+                supplier.pending_business_types = None
+                supplier.category_request_status = Supplier.CategoryRequest.NONE
+                supplier.category_requested_at = None
+                supplier.save(update_fields=[
+                    "pending_business_types", "category_request_status", "category_requested_at"])
+                log_action(request, "supplier.category_change_withdrawn", entity_type="Supplier",
+                           entity_id=supplier.id,
+                           description=f"{supplier.company} withdrew their category change request.")
+            return
+
+        added = [c for c in requested if c not in current]
+        removed = [c for c in current if c not in requested]
+        supplier.pending_business_types = requested
+        supplier.category_request_status = Supplier.CategoryRequest.PENDING
+        supplier.category_request_note = ""
+        supplier.category_requested_at = timezone.now()
+        supplier.category_reviewed_at = None
+        supplier.save(update_fields=[
+            "pending_business_types", "category_request_status", "category_request_note",
+            "category_requested_at", "category_reviewed_at"])
+        summary = "; ".join(part for part in (
+            f"add {', '.join(added)}" if added else "",
+            f"remove {', '.join(removed)}" if removed else "",
+        ) if part)
+        log_action(request, "supplier.category_change_requested", entity_type="Supplier",
+                   entity_id=supplier.id,
+                   description=f"{supplier.company} requested a category change ({summary}).")
+        notify_admins(
+            f"{supplier.company} requested a business category change ({summary}).",
+            link="/admin/suppliers",
+        )
+
+    # ── Admin decisions on a category change request ─────────────────────
+    def _pending_category_request(self, pk):
+        """Lock the supplier and return (supplier, None), or (None, 400 Response)
+        when there is no pending request to decide on."""
+        supplier = Supplier.objects.select_for_update().select_related("user").get(pk=pk)
+        if supplier.category_request_status != Supplier.CategoryRequest.PENDING:
+            return None, Response(
+                {"detail": f"{supplier.company} has no pending category change request."},
+                status=http_status.HTTP_400_BAD_REQUEST)
+        return supplier, None
+
+    @action(detail=True, methods=["post"], url_path="approve-categories")
+    def approve_categories(self, request, pk=None):
+        """Admin approves the pending request: it becomes the approved set."""
+        target = self.get_object()
+        with transaction.atomic():
+            supplier, refusal = self._pending_category_request(target.pk)
+            if refusal:
+                return refusal
+            # Re-validated: a category could have been retired since the request.
+            approved = clean_business_types(supplier.pending_business_types)
+            previous = list(supplier.business_types or [])
+            supplier.business_types = approved
+            supplier.business_type = ", ".join(approved)
+            supplier.pending_business_types = None
+            supplier.category_request_status = Supplier.CategoryRequest.NONE
+            supplier.category_request_note = ""
+            supplier.category_reviewed_at = timezone.now()
+            supplier.save(update_fields=[
+                "business_types", "business_type", "pending_business_types",
+                "category_request_status", "category_request_note", "category_reviewed_at"])
+
+        log_action(request, "supplier.category_change_approved", entity_type="Supplier",
+                   entity_id=supplier.id,
+                   description=f"Approved {supplier.company}'s categories: "
+                               f"{', '.join(previous) or 'none'} → {', '.join(approved)}.")
+        notify_supplier(
+            supplier,
+            f"Your business category change was approved. You can now bid in: {', '.join(approved)}.",
+            link="/supplier/settings",
+            email_subject="Your business category change was approved",
+        )
+        return self._detail_response(supplier)
+
+    @action(detail=True, methods=["post"], url_path="reject-categories")
+    def reject_categories(self, request, pk=None):
+        """Admin rejects the pending request; the approved set is unchanged. The
+        rejected set is kept for the record but grants nothing."""
+        target = self.get_object()
+        note = str(request.data.get("note") or "").strip()[:500]
+        with transaction.atomic():
+            supplier, refusal = self._pending_category_request(target.pk)
+            if refusal:
+                return refusal
+            supplier.category_request_status = Supplier.CategoryRequest.REJECTED
+            supplier.category_request_note = note
+            supplier.category_reviewed_at = timezone.now()
+            supplier.save(update_fields=[
+                "category_request_status", "category_request_note", "category_reviewed_at"])
+
+        log_action(request, "supplier.category_change_rejected", entity_type="Supplier",
+                   entity_id=supplier.id,
+                   description=f"Rejected {supplier.company}'s category change request"
+                               + (f": {note}" if note else "."))
+        notify_supplier(
+            supplier,
+            "Your business category change was not approved." + (f" Reason: {note}" if note else "")
+            + " Your current categories are unchanged.",
+            link="/supplier/settings",
+            email_subject="Your business category change was not approved",
+        )
         return self._detail_response(supplier)
 
     @action(detail=False, methods=["post"])

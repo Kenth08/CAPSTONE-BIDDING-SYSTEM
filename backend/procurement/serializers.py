@@ -32,6 +32,7 @@ class SupplierListSerializer(serializers.ModelSerializer):
         fields = [
             "id", "company", "contact", "full_name", "email", "business_type",
             "business_types", "status", "qualification_status", "email_verified", "registered",
+            "category_request_status",
         ]
         # Output-only: verification state changes only through the approve /
         # reject / request-revision actions, which are audit-logged.
@@ -60,6 +61,9 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
             "status", "qualification_status", "email_verified", "registered",
             "declaration_accepted", "admin_notes", "document_reviews", "reviewed_at",
             "documents",
+            # category change request (business_types above = approved set)
+            "pending_business_types", "category_request_status", "category_request_note",
+            "category_requested_at", "category_reviewed_at",
         ]
         read_only_fields = fields   # output-only; see SupplierListSerializer
 
@@ -81,31 +85,40 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
         return result
 
 
+def clean_business_types(value):
+    """Validate a requested category list and return it de-duplicated, in the
+    canonical PROCUREMENT_CATEGORIES order (so the same set always compares and
+    stores identically). Raises serializers.ValidationError."""
+    if not isinstance(value, list) or not value:
+        raise serializers.ValidationError({"business_types": "Select at least one business type."})
+    if not all(isinstance(v, str) for v in value):
+        raise serializers.ValidationError({"business_types": "Invalid business type list."})
+    invalid = [v for v in value if v not in PROCUREMENT_CATEGORIES]
+    if invalid:
+        raise serializers.ValidationError(
+            {"business_types": f"Unknown business type(s): {', '.join(invalid)}."})
+    chosen = set(value)
+    return [c for c in PROCUREMENT_CATEGORIES if c in chosen]
+
+
 class SupplierMeUpdateSerializer(serializers.ModelSerializer):
-    """Fields a supplier may edit about their own profile from the Settings page.
+    """Contact fields a supplier may edit about their own profile.
 
     Company name and TIN are excluded — they were verified at registration and
     changing them silently would undermine that review. business_types is
-    editable: it only controls which procurement categories the supplier sees
-    and can bid on, it isn't a verified/audited fact like the company's legal
-    name, so a change takes effect immediately with no re-approval needed.
+    deliberately NOT here either: it decides which procurements a supplier can
+    see and bid on, so for a verified supplier a change is a request an Admin
+    must approve (SupplierViewSet.me / approve-categories). It used to be
+    writable here and took effect immediately.
     """
 
     class Meta:
         model = Supplier
-        fields = ["phone_number", "company_address", "representative_name", "business_types"]
+        fields = ["phone_number", "company_address", "representative_name"]
 
     def validate_phone_number(self, value):
         if value and not value.isdigit():
             raise serializers.ValidationError("Phone number must contain digits only.")
-        return value
-
-    def validate_business_types(self, value):
-        if not isinstance(value, list) or not value:
-            raise serializers.ValidationError("Select at least one business type.")
-        invalid = [v for v in value if v not in PROCUREMENT_CATEGORIES]
-        if invalid:
-            raise serializers.ValidationError(f"Unknown business type(s): {', '.join(invalid)}.")
         return value
 
 
