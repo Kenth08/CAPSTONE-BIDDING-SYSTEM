@@ -140,7 +140,8 @@ cp .env.example .env
 # Edit .env with your database credentials (or leave DB_* blank to use SQLite)
 
 python manage.py migrate
-python manage.py seed        # loads demo data and role accounts
+python manage.py seed        # loads demo data and role accounts (local SQLite only —
+                             # refuses remote DBs; add --wipe-local-data to replace existing data)
 python manage.py runserver   # http://127.0.0.1:8000
 ```
 

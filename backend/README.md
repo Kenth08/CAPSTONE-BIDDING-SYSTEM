@@ -11,7 +11,8 @@ py -m venv venv
 venv\Scripts\activate            # Windows
 pip install -r requirements.txt
 python manage.py migrate
-python manage.py seed            # loads demo data + role accounts
+python manage.py seed            # loads demo data + role accounts (local SQLite only;
+                                 # refuses remote DBs; add --wipe-local-data to replace existing data)
 python manage.py runserver       # http://127.0.0.1:8000
 ```
 

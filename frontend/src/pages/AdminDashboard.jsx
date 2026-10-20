@@ -1690,6 +1690,12 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
           <>
             <div className="ad-modal-body">
               {error && <div className="ad-modal-error"><AlertTriangle size={15} /> {error}</div>}
+              {!decided && !supplier.email_verified && (
+                <div className="ad-modal-error" role="status">
+                  <AlertTriangle size={15} /> Email not verified yet — this supplier can't be approved
+                  until they open the verification link sent to {supplier.email}.
+                </div>
+              )}
 
               <div className="ad-modal-badges">
                 <span className={`badge ${SUP_STATUS_CLS[supplier.status] || 'badge-gray'}`}>• {(supplier.status || '').toUpperCase()}</span>
@@ -1802,7 +1808,14 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                   <button className="ad-btn-revision" disabled={busy} onClick={handleRequestRevision}>
                     <AlertTriangle size={14} /> {busy ? 'Working…' : 'Request Revision'}
                   </button>
-                  <button className="ad-btn-approve" disabled={busy} onClick={handleApprove}>
+                  {/* The server refuses this too (SupplierViewSet.approve); the
+                      disabled state just explains why before the Admin tries. */}
+                  <button
+                    className="ad-btn-approve"
+                    disabled={busy || !supplier.email_verified}
+                    title={supplier.email_verified ? undefined : 'The supplier must verify their email address before approval.'}
+                    onClick={handleApprove}
+                  >
                     <Check size={14} /> {busy ? 'Working…' : 'Approve'}
                   </button>
                 </div>

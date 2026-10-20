@@ -84,6 +84,9 @@ class SupplierReviewTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_admin_approve_verifies_supplier_and_emails_them(self):
+        # Approval now requires a confirmed email (see EmailVerificationGateTests).
+        self.supplier.email_verified = True
+        self.supplier.save(update_fields=["email_verified"])
         self.client.force_authenticate(user=self.admin)
         res = self.client.post(f"/api/suppliers/{self.supplier.pk}/approve/")
         self.assertEqual(res.status_code, status.HTTP_200_OK)

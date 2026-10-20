@@ -6,43 +6,106 @@ Idempotent-ish: clears procurement tables first, then recreates.
 DESTRUCTIVE — this deletes every award, bid, document, project and supplier
 before rebuilding the demo rows, and resets the three role accounts to their
 well-known demo passwords. That is exactly what you want on a local dev
-database and never what you want on the deployed one, so the command refuses
-to run whenever DEBUG=False (i.e. anywhere configured like production) unless
---force is passed explicitly.
+database and never what you want on the deployed one.
+
+WHY THE GUARD LOOKS AT THE DATABASE, NOT JUST DEBUG
+---------------------------------------------------
+This command used to refuse only when DEBUG=False. But backend/.env points
+DB_HOST at the live Supabase instance and leaves DEBUG unset (so it defaults to
+True) — which meant `python manage.py seed` on a developer machine passed the
+guard and wiped PRODUCTION. The guard therefore inspects the connection Django
+is actually about to use, and refuses unconditionally (no flag overrides it)
+when:
+
+  * the database is anything other than SQLite on a local host — a remote
+    Postgres is treated as production, whatever DEBUG says;
+  * the process is running on the hosting platform (Render markers in env);
+  * DEBUG=False (a production-shaped configuration).
+
+On a safe local database that already contains data, wiping it still needs the
+explicit --wipe-local-data flag. A fresh, empty database seeds without one,
+because there is nothing to destroy.
 """
+import os
 from datetime import date
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
+from django.db import connections, transaction
 
 from procurement.models import Award, Bid, Document, Project, Supplier
 
 User = get_user_model()
 
+LOCAL_DB_HOSTS = {"", "localhost", "127.0.0.1", "::1"}
+# Set by Render on every service; any one of them means "this is the deployment".
+HOSTING_ENV_MARKERS = ("RENDER", "RENDER_SERVICE_ID", "RENDER_EXTERNAL_HOSTNAME")
+
+
+def database_settings():
+    """The settings of the connection this command would write to. A function
+    (not a module constant) so tests can substitute a production-shaped one."""
+    return connections["default"].settings_dict
+
+
+def unsafe_target_reason(db_settings, *, debug, environ):
+    """Why seeding this database must be refused outright, or None if it is a
+    local development database. Pure, so every refusal path is unit-testable."""
+    engine = db_settings.get("ENGINE", "")
+    host = str(db_settings.get("HOST") or "").strip().lower()
+    if not engine.endswith("sqlite3"):
+        if host not in LOCAL_DB_HOSTS:
+            return (f"the database is a remote server ({host}). Remote databases are treated "
+                    "as production and are never seeded")
+        # A local non-SQLite server could still be a tunnel to production; the
+        # demo data only needs SQLite, so refuse rather than guess.
+        return "the database is not SQLite. Seed only targets a local SQLite database"
+    for marker in HOSTING_ENV_MARKERS:
+        if environ.get(marker):
+            return f"this process is running on the hosting platform ({marker} is set)"
+    if not debug:
+        return "DEBUG=False, so this is a production-shaped configuration"
+    return None
+
+
+def has_existing_data():
+    return (User.objects.exists() or Project.objects.exists()
+            or Supplier.objects.exists() or Bid.objects.exists() or Award.objects.exists())
+
 
 class Command(BaseCommand):
-    help = "Load demo procurement data and role accounts (development only)."
+    help = "Load demo procurement data and role accounts (local SQLite development only)."
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--force",
+            "--wipe-local-data",
             action="store_true",
-            help="Run even when DEBUG=False. Wipes live procurement data — be certain.",
+            help="Confirm that the existing data in the LOCAL SQLite database may be deleted. "
+                 "Has no effect on a remote/production database, which is always refused.",
         )
 
     def handle(self, *args, **options):
-        # Fail closed: a production-shaped environment needs a deliberate opt-in.
-        # Checked before anything is read or written, so an accidental run in a
-        # deployed shell exits without touching a single row.
-        if not settings.DEBUG and not options["force"]:
+        # Every check runs before anything is written, so a refused run exits
+        # without touching a single row.
+        reason = unsafe_target_reason(database_settings(), debug=settings.DEBUG, environ=os.environ)
+        if reason:
             raise CommandError(
-                "Refusing to seed: DEBUG=False, so this looks like a deployed "
-                "environment and seeding would DELETE all procurement data and "
-                "reset the role accounts to demo passwords. Re-run with --force "
-                "if that is genuinely what you want."
+                f"Refusing to seed: {reason}. Seeding deletes all procurement data and resets "
+                "the role accounts to demo passwords. To seed locally, run with DB_HOST unset "
+                "(e.g. `DB_HOST= python manage.py seed`) so Django uses the local SQLite file."
+            )
+        if has_existing_data() and not options["wipe_local_data"]:
+            raise CommandError(
+                "Refusing to seed: the local database already contains data, which seeding "
+                "would delete. Re-run with --wipe-local-data to confirm."
             )
 
+        # All-or-nothing: a failure part-way must not leave half the demo data.
+        with transaction.atomic():
+            self._seed()
+
+    def _seed(self):
 
         # --- Role accounts -------------------------------------------------
         # Admin and Head can sign in with either their plain username
