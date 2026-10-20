@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell } from 'lucide-react'
+import { Bell, BellOff } from 'lucide-react'
 import { apiListNotifications, apiMarkNotificationsRead } from '../api'
 import './NotificationBell.css'
 
@@ -54,6 +54,14 @@ export default function NotificationBell() {
     }
   }
 
+  // Esc closes the panel.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
   const go = (link) => {
     setOpen(false)
     if (link) navigate(link)
@@ -61,28 +69,46 @@ export default function NotificationBell() {
 
   return (
     <div className="nbell-wrap">
-      <button className="nbell-btn" onClick={toggle} aria-label="Notifications">
+      <button
+        className={`nbell-btn${open ? ' is-open' : ''}`}
+        onClick={toggle}
+        aria-label={unread > 0 ? `Notifications, ${unread} unread` : 'Notifications'}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+      >
         <Bell size={18} />
-        {unread > 0 && <span className="nbell-badge">{unread > 9 ? '9+' : unread}</span>}
+        {unread > 0 && <span className="nbell-badge" aria-hidden="true">{unread > 9 ? '9+' : unread}</span>}
       </button>
       {open && (
         <>
           <div className="nbell-backdrop" onClick={() => setOpen(false)} />
-          <div className="nbell-dropdown">
-            <div className="nbell-head">Notifications</div>
+          <div className="nbell-dropdown" role="dialog" aria-label="Notifications">
+            <div className="nbell-head">
+              <span>Notifications</span>
+              {items.length > 0 && <span className="nbell-count">{items.length}</span>}
+            </div>
             {items.length === 0 ? (
-              <div className="nbell-empty">No notifications yet.</div>
+              <div className="nbell-empty">
+                <span className="nbell-empty-icon" aria-hidden="true"><BellOff size={18} /></span>
+                <span className="nbell-empty-title">You're all caught up</span>
+                <span>No notifications yet.</span>
+              </div>
             ) : (
-              items.map(n => (
-                <button
-                  key={n.id}
-                  className={`nbell-item${n.is_read ? '' : ' unread'}${n.link ? ' clickable' : ''}`}
-                  onClick={() => go(n.link)}
-                >
-                  <div className="nbell-msg">{highlightMessage(n.message)}</div>
-                  <div className="nbell-time">{new Date(n.created_at).toLocaleString()}</div>
-                </button>
-              ))
+              <div className="nbell-list">
+                {items.map(n => (
+                  <button
+                    key={n.id}
+                    className={`nbell-item${n.is_read ? '' : ' unread'}${n.link ? ' clickable' : ''}`}
+                    onClick={() => go(n.link)}
+                  >
+                    <span className="nbell-dot" aria-hidden="true" />
+                    <span className="nbell-body">
+                      <span className="nbell-msg">{highlightMessage(n.message)}</span>
+                      <span className="nbell-time">{new Date(n.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
             )}
           </div>
         </>

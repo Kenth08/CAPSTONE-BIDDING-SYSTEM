@@ -209,7 +209,27 @@ export default function PublicVerifier() {
         </button>
       </form>
 
-      {error && <div className="pv-error"><AlertCircle size={16} /> {error}</div>}
+      {!loading && !error && !result && (
+        <div className="pv-idle">
+          <ShieldCheck size={16} aria-hidden="true" />
+          <span>
+            Results show every recorded step with its status: <strong className="pv-idle-ok">Verified</strong>,{' '}
+            <strong className="pv-idle-pending">Pending</strong> or <strong className="pv-idle-bad">Altered</strong>.
+          </span>
+        </div>
+      )}
+
+      {loading && (
+        <div className="pv-loading" role="status" aria-live="polite">
+          <Loader2 size={18} className="pv-spin" aria-hidden="true" />
+          <div>
+            <div className="pv-loading-title">Reading the Sepolia ledger…</div>
+            <div className="pv-loading-sub">Replaying every anchored step for {code.trim().toUpperCase() || 'this reference'}.</div>
+          </div>
+        </div>
+      )}
+
+      {error && <div className="pv-error" role="alert"><AlertCircle size={16} /> {error}</div>}
 
       {result && (
         <>

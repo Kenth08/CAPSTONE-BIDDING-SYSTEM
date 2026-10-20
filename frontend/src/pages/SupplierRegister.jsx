@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import {
+import { Loader2,
   Shield, Eye, EyeOff, ArrowLeft, Check, Upload, FileText, X,
   CheckCircle2, AlertCircle,
 } from 'lucide-react'
@@ -220,7 +220,7 @@ export default function SupplierRegister() {
             {step < STEPS.length - 1
               ? <button className="sr-btn" onClick={next}>Continue</button>
               : <button className="sr-btn" onClick={submit} disabled={loading}>
-                  {loading ? 'Submitting…' : 'Submit Registration'}
+                  {loading ? <><Loader2 size={15} className="ui-spin" aria-hidden="true" /> Submitting…</> : 'Submit Registration'}
                 </button>}
           </div>
 
@@ -246,26 +246,28 @@ function StepBasic({ form, set, businessTypes, toggleType, showPass, setShowPass
     <>
       <Section title="Account Information" desc="Your login credentials">
         <Field label="Full Name" required>
-          <input value={form.full_name} onChange={e => set('full_name', e.target.value)} placeholder="Juan Dela Cruz" />
+          <input autoComplete="name" value={form.full_name} onChange={e => set('full_name', e.target.value)} placeholder="Juan Dela Cruz" />
         </Field>
         <Field label="Email Address" required>
-          <input type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="you@company.com" />
+          <input type="email" autoComplete="email" inputMode="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="you@company.com" />
         </Field>
         <div className="sr-row">
           <Field label="Password" required>
             <div className="sr-pass">
-              <input type={showPass ? 'text' : 'password'} value={form.password}
+              <input type={showPass ? 'text' : 'password'} autoComplete="new-password" value={form.password}
                 onChange={e => set('password', e.target.value)} placeholder="••••••••" />
-              <button type="button" onClick={() => setShowPass(!showPass)}>
+              <button type="button" onClick={() => setShowPass(!showPass)}
+                aria-label={showPass ? 'Hide password' : 'Show password'} aria-pressed={showPass}>
                 {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
           </Field>
           <Field label="Confirm Password" required>
             <div className="sr-pass">
-              <input type={showConfirm ? 'text' : 'password'} value={form.confirm_password}
+              <input type={showConfirm ? 'text' : 'password'} autoComplete="new-password" value={form.confirm_password}
                 onChange={e => set('confirm_password', e.target.value)} placeholder="••••••••" />
-              <button type="button" onClick={() => setShowConfirm(!showConfirm)}>
+              <button type="button" onClick={() => setShowConfirm(!showConfirm)}
+                aria-label={showConfirm ? 'Hide password' : 'Show password'} aria-pressed={showConfirm}>
                 {showConfirm ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
@@ -475,7 +477,7 @@ function Uploader({ doc, file, onFile, removeFile }) {
       {file ? (
         <div className="sr-file">
           <FileText size={16} /><span className="sr-file-name" title={file.name}>{file.name}</span>
-          <button type="button" onClick={() => removeFile(doc.key)}><X size={15} /></button>
+          <button type="button" onClick={() => removeFile(doc.key)} aria-label={`Remove ${doc.label}`}><X size={15} /></button>
         </div>
       ) : (
         <button type="button" className="sr-upload-btn" onClick={() => ref.current?.click()}>

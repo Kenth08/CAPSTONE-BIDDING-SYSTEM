@@ -1,0 +1,161 @@
+/* ── Head (approver) polish ───────────────────────────────────────────────────
+   Approval-queue layout on top of HeadDashboard.css. Loaded last. */
+
+.hd-small { font-size: var(--fs-caption); }
+.hd-nowrap { white-space: nowrap; }
+.hd-num { text-align: right !important; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.hd-num { font-weight: 600; color: var(--text-strong); }
+.hd-dot-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--border-strong); }
+.hd-bold { font-weight: 600; color: var(--text-strong); }
+.hd-view-all {
+  font-size: var(--fs-caption) !important; font-weight: 600 !important; color: var(--c-primary-700) !important;
+  padding: 6px 8px; border-radius: var(--r-sm);
+}
+.hd-view-all:hover { background: var(--c-primary-50); }
+.hd-inline-error {
+  display: flex; align-items: center; gap: 8px;
+  margin: 10px 0 0; padding: 8px 12px; border-radius: var(--r-btn);
+  background: var(--tone-danger-bg); border: 1px solid var(--tone-danger-border);
+  color: var(--tone-danger-fg); font-size: var(--fs-caption); font-weight: 500;
+}
+
+/* ── Approval queue card ─────────────────────────────────────────────────── */
+.hd-queue.has-items { border-color: var(--tone-warning-border) !important; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.08) !important; }
+.hd-queue.has-items > .hd-card-header { background: var(--tone-warning-bg); }
+.hd-queue-head { display: flex; align-items: center; gap: 12px; }
+.hd-queue-icon {
+  width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface); color: var(--tone-warning-fg); border: 1px solid var(--tone-warning-border);
+}
+.hd-queue:not(.has-items) .hd-queue-icon { color: var(--c-primary-600); border-color: var(--c-primary-200); background: var(--c-primary-50); }
+
+.hd-pending-list { max-height: none !important; overflow: visible !important; }
+.hd-pending-card { padding: var(--sp-4) var(--sp-5) !important; border-bottom: 1px solid var(--border) !important; }
+.hd-pending-card:hover { background: var(--surface-muted) !important; }
+.hd-pending-card.is-open { background: var(--surface-muted) !important; }
+.hd-pending-card-top { gap: var(--sp-4) !important; }
+.hd-proj-icon { background: var(--c-primary-50) !important; color: var(--c-primary-600) !important; }
+.hd-pending-info { min-width: 200px; }
+.hd-pending-title { font-size: var(--fs-card-title); font-weight: 600; color: var(--text-strong); }
+.hd-pending-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: var(--fs-caption); color: var(--text-subtle); margin-top: 2px; }
+.hd-pending-budget { font-size: 16px; font-weight: 700; color: var(--text-strong); font-variant-numeric: tabular-nums; }
+.hd-pending-actions { flex-wrap: wrap; justify-content: flex-end; }
+
+/* Review panel */
+.hd-pending-desc {
+  margin-top: var(--sp-4) !important;
+  padding: 0 !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--r-card) !important;
+  overflow: clip;
+}
+.hd-review-grid { display: grid; grid-template-columns: 280px minmax(0, 1fr); }
+.hd-summary {
+  padding: var(--sp-5);
+  border-right: 1px solid var(--border);
+  background: var(--surface-muted);
+  align-self: stretch;
+}
+.hd-summary-head { font-size: var(--fs-micro); font-weight: 700; color: var(--text-subtle); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: var(--sp-3); }
+.hd-summary-abc {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: var(--sp-3) var(--sp-4); margin-bottom: var(--sp-4);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-btn);
+}
+.hd-summary-abc strong { font-size: 22px; color: var(--text-strong); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.hd-summary-list { margin: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+.hd-summary-list dt { font-size: var(--fs-micro); font-weight: 600; color: var(--text-subtle); }
+.hd-summary-list dd { margin: 2px 0 0; font-size: var(--fs-small); color: var(--text-strong); }
+.hd-label { font-size: var(--fs-micro) !important; font-weight: 600 !important; color: var(--text-subtle) !important; }
+
+.hd-review-main { padding: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-5); min-width: 0; }
+.hd-section-title { display: flex; align-items: center; gap: 8px; font-size: var(--fs-small); font-weight: 700; color: var(--text-strong); margin-bottom: 4px; }
+.hd-section-count { font-size: var(--fs-micro); font-weight: 600; color: var(--text-subtle); background: var(--tone-neutral-bg); border-radius: var(--r-pill); padding: 0 8px; }
+.hd-desc-text { font-size: var(--fs-small); line-height: 1.65; color: var(--text-body); margin: 0; white-space: pre-line; }
+.hd-doc-review, .hd-refimg-section { margin-top: 0 !important; padding-top: 0 !important; border-top: none !important; }
+.hd-doc-review-row { border-radius: var(--r-btn) !important; padding: 10px 12px !important; background: var(--surface); }
+.hd-doc-review-row.flagged { background: var(--tone-warning-bg) !important; border-color: var(--tone-warning-border) !important; }
+.hd-doc-review-main input { accent-color: var(--tone-warning-solid); width: 16px; height: 16px; }
+.hd-doc-review-note { border-color: var(--tone-warning-border) !important; border-radius: var(--r-sm) !important; min-height: 36px; }
+.hd-doc-link {
+  color: var(--c-primary-700) !important; background: var(--c-primary-50) !important;
+  border-color: var(--c-primary-200) !important; border-radius: var(--r-sm) !important; padding: 4px 10px !important;
+}
+.hd-btn-revision { margin-top: 0 !important; }
+
+/* Sticky decision bar */
+.hd-decision-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-5);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(6px);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 16px rgba(15, 23, 42, 0.06);
+}
+.hd-decision-hint { font-size: var(--fs-caption); color: var(--text-subtle); }
+.hd-decision-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+.hd-decision-actions .hd-btn-approve, .hd-decision-actions .hd-btn-reject-sm { height: 36px; padding: 0 16px !important; font-size: var(--fs-small) !important; }
+
+/* Reject confirmation modal */
+.hd-modal-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.55);
+  animation: app-pop 140ms ease-out;
+}
+.hd-modal {
+  width: 100%; max-width: 460px;
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--sp-6);
+  display: flex; flex-direction: column;
+}
+.hd-modal-icon {
+  width: 44px; height: 44px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--tone-danger-bg); color: var(--tone-danger-fg); margin-bottom: var(--sp-3);
+}
+.hd-modal h3 { font-size: 18px; font-weight: 700; color: var(--text-strong); margin: 0 0 6px; }
+.hd-modal-text { font-size: var(--fs-small); color: var(--text-subtle); line-height: 1.55; margin: 0 0 var(--sp-4); }
+.hd-modal .hd-label { margin-bottom: 6px; display: block; }
+.hd-modal textarea {
+  width: 100%; resize: vertical;
+  padding: 10px 12px; font-size: var(--fs-small);
+  border: 1px solid var(--border-strong); border-radius: var(--r-btn);
+}
+.hd-modal textarea:focus-visible { outline: none; border-color: var(--c-primary-500); box-shadow: var(--focus-ring); }
+.hd-modal .hd-reject-form-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-5); }
+
+/* Tables */
+.hd-table-wrap { overflow-x: auto; }
+.hd-filter-pills { border-bottom: 1px solid var(--border); }
+.hd-pill-count { font-size: var(--fs-micro); opacity: 0.75; }
+
+@media (max-width: 1100px) {
+  .hd-review-grid { grid-template-columns: 1fr; }
+  .hd-summary { border-right: none; border-bottom: 1px solid var(--border); }
+  .hd-summary-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .hd-pending-meta { align-items: flex-start !important; }
+  .hd-pending-actions { width: 100%; justify-content: flex-start; }
+  .hd-decision-bar { padding: var(--sp-3); }
+  .hd-decision-actions { width: 100%; }
+  .hd-decision-actions button { flex: 1 1 auto; }
+  .hd-summary-list { grid-template-columns: 1fr; }
+  .hd-review-main, .hd-summary { padding: var(--sp-4); }
+}
+
+/* overflow:hidden would stop the decision bar from sticking; clip still rounds corners. */
+.hd-card { overflow: clip !important; }

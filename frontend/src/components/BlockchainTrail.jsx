@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import { CheckCircle2, ExternalLink, Info, Link2, RotateCw, ShieldCheck } from 'lucide-react'
+import { CheckCircle2, Clock, ExternalLink, Info, Link2, Loader2, RotateCw, ShieldCheck } from 'lucide-react'
+import CopyHash from './ui/CopyHash'
 
 import { isAnchorBusy, runAnchor, useAnchorActivity } from '../blockchain/anchorStore'
 import { txUrl } from '../blockchain/contract'
 import './Blockchain.css'
 
-const shortHash = (h) => (h ? `${h.slice(0, 12)}…${h.slice(-6)}` : '—')
 const shortTx = (h) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : '')
 const fmtWhen = (v) =>
   v ? new Date(v).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : '—'
@@ -67,9 +67,12 @@ export default function BlockchainTrail({ anchors = [], title = 'Blockchain Audi
     <div className="bc-panel">
       <div className="bc-panel-head">
         <div className="bc-panel-title">
-          <ShieldCheck size={14} /> {title}
-          <span className="bc-panel-sub">
-            {list.length === 0 ? 'nothing recorded yet' : `${done} of ${list.length} anchored on Sepolia`}
+          <span className="bc-panel-icon" aria-hidden="true"><ShieldCheck size={15} /></span>
+          <span>
+            <span className="bc-panel-name">{title}</span>
+            <span className="bc-panel-sub">
+              {list.length === 0 ? 'Nothing recorded yet' : `${done} of ${list.length} anchored on Sepolia`}
+            </span>
           </span>
         </div>
         <BlockchainBadge anchors={list} />
@@ -77,52 +80,65 @@ export default function BlockchainTrail({ anchors = [], title = 'Blockchain Audi
 
       {list.length === 0 ? (
         <div className="bc-panel-empty">
-          No lifecycle events have been recorded for {entityRef || 'this record'} yet.
+          <span className="bc-panel-empty-icon" aria-hidden="true"><Link2 size={18} /></span>
+          <span>No lifecycle events have been recorded for {entityRef || 'this record'} yet.</span>
         </div>
       ) : (
-        list.map((a) => (
-          <div key={a.id} className={`bc-row${a.anchored ? ' is-anchored' : ''}`}>
-            <span className="bc-row-dot" />
-            <div className="bc-row-main">
-              <div className="bc-row-stage">
-                {a.stage_label || a.stage}
-                {a.entity_type !== 'PROJECT' && (
-                  <span className="bc-panel-sub" style={{ marginLeft: 6 }}>{a.entity_type}</span>
-                )}
+        <ol className="bc-timeline">
+          {list.map((a) => (
+            <li key={a.id} className={`bc-row${a.anchored ? ' is-anchored' : ' is-pending'}`}>
+              <span className="bc-row-marker" aria-hidden="true">
+                {a.anchored ? <CheckCircle2 size={14} /> : <Clock size={13} />}
+              </span>
+              <div className="bc-row-main">
+                <div className="bc-row-top">
+                  <div className="bc-row-stage">
+                    {a.stage_label || a.stage}
+                    {a.entity_type !== 'PROJECT' && (
+                      <span className="bc-row-entity">{a.entity_type}</span>
+                    )}
+                  </div>
+                  <div className="bc-row-side">
+                    {a.anchored ? (
+                      <span className="bc-badge bc-badge-anchored"><ShieldCheck size={11} /> On-chain</span>
+                    ) : (
+                      <button
+                        className="bc-retry"
+                        onClick={() => retry(a)}
+                        disabled={retrying === a.id || isAnchorBusy(activity)}
+                      >
+                        {retrying === a.id
+                          ? <><Loader2 size={12} className="bc-spin" /> Anchoring…</>
+                          : <><RotateCw size={12} /> Anchor now</>}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="bc-row-meta">
+                  <time dateTime={a.created_at || undefined}>Recorded {fmtWhen(a.created_at)}</time>
+                  {a.block_number ? <span> · Block {a.block_number}</span> : null}
+                </div>
+                <div className="bc-row-hash">
+                  <span className="bc-row-hash-label">Hash</span>
+                  <CopyHash value={a.data_hash} head={12} tail={6} label="data hash" />
+                  {a.anchored ? (
+                    <a
+                      className="bc-txlink"
+                      href={a.explorer_url || txUrl(a.tx_hash)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={`View transaction ${a.tx_hash} on Etherscan`}
+                    >
+                      Tx {shortTx(a.tx_hash)} <ExternalLink size={11} />
+                    </a>
+                  ) : (
+                    <span className="bc-row-wait">Awaiting signature</span>
+                  )}
+                </div>
               </div>
-              <div className="bc-row-meta">
-                Recorded {fmtWhen(a.created_at)}
-                {a.block_number ? ` · block ${a.block_number}` : ''}
-              </div>
-              <div className="bc-row-hash">
-                <span className="bc-hash" title={a.data_hash}>{shortHash(a.data_hash)}</span>
-                {a.anchored ? (
-                  <a
-                    className="bc-txlink"
-                    href={a.explorer_url || txUrl(a.tx_hash)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {shortTx(a.tx_hash)} <ExternalLink size={11} />
-                  </a>
-                ) : null}
-              </div>
-            </div>
-            <div className="bc-row-side">
-              {a.anchored ? (
-                <span className="bc-badge bc-badge-anchored"><CheckCircle2 size={11} /> Anchored</span>
-              ) : (
-                <button
-                  className="bc-retry"
-                  onClick={() => retry(a)}
-                  disabled={retrying === a.id || isAnchorBusy(activity)}
-                >
-                  <RotateCw size={11} /> {retrying === a.id ? 'Anchoring…' : 'Anchor now'}
-                </button>
-              )}
-            </div>
-          </div>
-        ))
+            </li>
+          ))}
+        </ol>
       )}
 
       <div className="bc-note">

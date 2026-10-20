@@ -1,0 +1,132 @@
+/* ── Supplier polish ──────────────────────────────────────────────────────────
+   Supplier-only refinements on top of SupplierDashboard.css. Loaded last. */
+
+.sd-num { text-align: right !important; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.sd-num { font-weight: 600; color: var(--text-strong); }
+.sd-nowrap { white-space: nowrap; }
+.sd-small { font-size: var(--fs-caption) !important; }
+.sd-bold { font-weight: 600; color: var(--text-strong); }
+.sd-view-all {
+  font-size: var(--fs-caption) !important; font-weight: 600 !important; color: var(--c-primary-700) !important;
+  padding: 6px 8px; border-radius: var(--r-sm); white-space: nowrap;
+}
+.sd-view-all:hover { background: var(--c-primary-50); }
+.sd-deadline-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.sd-action-cell { text-align: right; white-space: nowrap; }
+.sd-stat-value-sm { font-size: 20px !important; }
+
+/* ── Banners: pending = info, needs revision = warning, rejected = danger ── */
+.sd-verify-banner {
+  align-items: center !important;
+  padding: var(--sp-4) var(--sp-5) !important;
+  margin-bottom: 0 !important;
+  border-radius: var(--r-card) !important;
+  border-left-width: 4px !important;
+}
+.sd-verify-pending  { background: var(--tone-info-bg) !important;    border-color: var(--tone-info-border) !important;    border-left-color: var(--tone-info-solid) !important; }
+.sd-verify-revision { background: var(--tone-warning-bg) !important; border-color: var(--tone-warning-border) !important; border-left-color: var(--tone-warning-solid) !important; }
+.sd-verify-rejected { background: var(--tone-danger-bg) !important;  border-color: var(--tone-danger-border) !important;  border-left-color: var(--tone-danger-solid) !important; }
+.sd-verify-icon { border-radius: 10px !important; background: var(--surface) !important; }
+.sd-verify-pending  .sd-verify-icon { color: var(--tone-info-fg) !important; border: 1px solid var(--tone-info-border); }
+.sd-verify-revision .sd-verify-icon { color: var(--tone-warning-fg) !important; border: 1px solid var(--tone-warning-border); }
+.sd-verify-rejected .sd-verify-icon { color: var(--tone-danger-fg) !important; border: 1px solid var(--tone-danger-border); }
+.sd-verify-text .sd-bold { font-size: var(--fs-body) !important; }
+.sd-verify-text .sd-muted { color: var(--text-body) !important; }
+
+/* ── Approval status tile ────────────────────────────────────────────────── */
+.sd-status-tile-badge { margin: 10px 0 8px; }
+.sd-status-tile.is-pending  { border-color: var(--tone-warning-border) !important; }
+.sd-status-tile.is-revision { border-color: var(--tone-warning-border) !important; }
+.sd-status-tile.is-rejected { border-color: var(--tone-danger-border) !important; }
+.sd-status-tile.is-approved { border-color: var(--tone-success-border) !important; }
+
+/* ── Onboarding tracker ──────────────────────────────────────────────────── */
+.sd-onboard-steps {
+  list-style: none; margin: 0;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: var(--sp-5);
+  gap: 0;
+}
+.sd-onboard-step { position: relative; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding-right: var(--sp-4); }
+/* connector to the next step */
+.sd-onboard-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 17px;
+  left: 44px;
+  right: 6px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--border);
+  z-index: 0;
+}
+.sd-onboard-step.is-done:not(:last-child)::after { background: var(--c-primary-500); }
+.sd-onboard-dot {
+  position: relative; z-index: 1;
+  width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--tone-neutral-bg); color: var(--text-faint);
+  border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--border);
+}
+.sd-onboard-step.is-done .sd-onboard-dot      { background: var(--c-primary-500); color: #fff; box-shadow: 0 0 0 1px var(--c-primary-500); }
+.sd-onboard-step.is-current .sd-onboard-dot   { background: var(--tone-warning-bg); color: var(--tone-warning-fg); box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18); }
+.sd-onboard-step.is-attention .sd-onboard-dot { background: var(--tone-warning-bg); color: var(--tone-warning-fg); box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18); }
+.sd-onboard-step.is-error .sd-onboard-dot     { background: var(--tone-danger-bg); color: var(--tone-danger-fg); box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.15); }
+.sd-onboard-text {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.sd-onboard-n { font-size: 10px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+.sd-onboard-next {
+  display: flex; gap: 10px; align-items: flex-start;
+  margin: 0 var(--sp-5) var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-btn);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  font-size: var(--fs-small);
+  color: var(--text-body);
+  line-height: 1.5;
+}
+.sd-onboard-next svg { color: var(--c-primary-600); flex-shrink: 0; margin-top: 3px; }
+.sd-onboard-next strong { color: var(--text-strong); }
+
+/* ── Opportunity / bid lists ─────────────────────────────────────────────── */
+.sd-project-row { padding: 12px 20px !important; flex-wrap: wrap; border-bottom: 1px solid var(--border) !important; }
+.sd-project-row:hover, .sd-bid-row:hover { background: var(--surface-muted); }
+.sd-proj-icon { background: var(--c-primary-50) !important; color: var(--c-primary-600) !important; }
+.sd-proj-info { min-width: 160px; }
+.sd-proj-sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--fs-caption); color: var(--text-subtle); }
+.sd-proj-budget { font-variant-numeric: tabular-nums; color: var(--text-strong) !important; }
+.sd-bid-row { padding: 12px 20px !important; border-bottom: 1px solid var(--border) !important; }
+
+/* ── Status page timeline ────────────────────────────────────────────────── */
+.sd-timeline { padding: var(--sp-5) var(--sp-6) var(--sp-3) !important; }
+.sd-tl-dot { background: var(--surface) !important; border-color: var(--border) !important; color: var(--text-faint) !important; }
+.sd-timeline-step.done .sd-tl-dot { background: var(--c-primary-500) !important; border-color: var(--c-primary-500) !important; color: #fff !important; }
+.sd-timeline-step.done .sd-tl-line { background: var(--c-primary-200) !important; }
+.sd-tl-title { font-size: var(--fs-body) !important; font-weight: 600 !important; color: var(--text-strong) !important; }
+.sd-timeline-step.pending .sd-tl-title { color: var(--text-subtle) !important; }
+.sd-tl-date { font-weight: 600; color: var(--text-body) !important; }
+
+/* Reports */
+.sd-report-bar { gap: var(--sp-3); flex-wrap: wrap; }
+.sd-report-stats .sd-stat-card { padding: var(--sp-4) !important; }
+
+/* Forms (bid modal, settings) */
+.sd-form-group input, .sd-form-group select, .sd-form-group textarea {
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--r-btn) !important;
+  background: var(--surface) !important;
+}
+
+@media (max-width: 900px) {
+  .sd-onboard-steps { grid-template-columns: 1fr; gap: var(--sp-4); }
+  .sd-onboard-step { flex-direction: row; }
+  .sd-onboard-step:not(:last-child)::after { top: 40px; bottom: -14px; left: 17px; right: auto; width: 2px; height: auto; }
+}
+@media (max-width: 640px) {
+  .sd-project-row { gap: 10px !important; }
+  .sd-proj-right { align-items: flex-start !important; }
+  .sd-verify-banner { flex-wrap: wrap; }
+}

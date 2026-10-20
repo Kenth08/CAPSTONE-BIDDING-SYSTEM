@@ -5,7 +5,7 @@ import {
   Search, ChevronRight, LogOut, Shield,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
   CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock, ArrowLeft,
-  Upload, ShieldCheck, Link2, Copy,
+  Upload, ShieldCheck, Link2, Copy, Loader2, Hash,
 } from 'lucide-react'
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
@@ -21,21 +21,33 @@ import {
 } from '../store/projectsStore'
 import { CATEGORIES } from '../constants/categories'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
-import NotificationBell from '../components/NotificationBell'
+import AppSidebar from '../components/shell/AppSidebar'
+import AppHeader, { storedUser } from '../components/shell/AppHeader'
+import StatusBadge from '../components/ui/StatusBadge'
+import EmptyState, { TableEmpty } from '../components/ui/EmptyState'
+import PageHeader from '../components/ui/PageHeader'
+import Stepper from '../components/ui/Stepper'
+import { expiryMeta } from '../utils/format'
 import AnchorActivity from '../components/AnchorActivity'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
 import { runAnchor } from '../blockchain/anchorStore'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import '../style/AdminDashboard.css'
 
-const NAV = [
-  { icon: LayoutDashboard, label: 'Dashboard', to: '/admin' },
-  { icon: FolderOpen,      label: 'Projects',  to: '/admin/projects' },
-  { icon: Calendar,        label: 'Planning',  to: '/admin/planning' },
-  { icon: Users,           label: 'Suppliers', to: '/admin/suppliers' },
-  { icon: Pencil,          label: 'Bids',      to: '/admin/bids' },
-  { icon: Award,           label: 'Awards',    to: '/admin/awards' },
-  { icon: BarChart2,       label: 'Reports',   to: '/admin/reports' },
+const NAV_SECTIONS = [
+  { label: 'Overview', items: [
+    { icon: LayoutDashboard, label: 'Dashboard', to: '/admin' },
+  ] },
+  { label: 'Procurement', items: [
+    { icon: Calendar,   label: 'Planning', to: '/admin/planning' },
+    { icon: FolderOpen, label: 'Projects', to: '/admin/projects' },
+    { icon: Pencil,     label: 'Bids',     to: '/admin/bids' },
+    { icon: Award,      label: 'Awards',   to: '/admin/awards' },
+  ] },
+  { label: 'Management', items: [
+    { icon: Users,     label: 'Suppliers', to: '/admin/suppliers' },
+    { icon: BarChart2, label: 'Reports',   to: '/admin/reports' },
+  ] },
 ]
 
 const STATUS_LABEL = {
@@ -82,95 +94,23 @@ function RefCode({ code, size = 'sm' }) {
   )
 }
 
-// ── Sidebar ───────────────────────────────────────────────────────────────────
-
-function Sidebar({ active, open, onClose }) {
-  return (
-    <aside className={`ad-sidebar${open ? ' open' : ''}`}>
-      <div className="ad-sidebar-logo">
-        <span className="ad-logo-icon"><Shield size={16} /></span>
-        <div>
-          <div className="ad-logo-name">E-Procurement</div>
-          <div className="ad-logo-sub">Admin Workspace</div>
-        </div>
-      </div>
-
-      <div className="ad-menu-section">
-        <span className="ad-menu-label">MENU</span>
-        <nav className="ad-sidebar-nav">
-          {NAV.map(({ icon: Icon, label, to }) => {
-            // "/admin/projects/history" is a sub-view of Projects, so it keeps
-            // the Projects nav item highlighted too.
-            const isActive = active === to || (to === '/admin/projects' && active.startsWith(`${to}/`))
-            return (
-              <Link key={to} to={to} className={`ad-nav-item${isActive ? ' active' : ''}`} onClick={onClose}>
-                <Icon size={18} />
-                <span>{label}</span>
-                {isActive && <span className="ad-nav-dot" />}
-              </Link>
-            )
-          })}
-        </nav>
-      </div>
-
-      <div className="ad-sidebar-footer">
-        <div className="ad-sidebar-user">
-          <div className="ad-sidebar-avatar">S</div>
-          <div className="ad-sidebar-user-info">
-            <span className="ad-sidebar-user-name">System Administr...</span>
-            <span className="ad-sidebar-user-email">admin@gmail.com</span>
-          </div>
-        </div>
-      </div>
-    </aside>
-  )
-}
-
-// ── Header ────────────────────────────────────────────────────────────────────
-
-function Header({ title, onMenu }) {
-  const navigate = useNavigate()
-  const [open, setOpen] = useState(false)
-  return (
-    <header className="ad-header">
-      <div className="ad-header-left">
-        <button className="ad-menu-btn" onClick={onMenu} aria-label="Open menu"><Menu size={20} /></button>
-        <div>
-          <div className="ad-workspace-label">ADMIN WORKSPACE</div>
-          <h1 className="ad-page-title">{title}</h1>
-        </div>
-      </div>
-      <div className="ad-header-right">
-        <NotificationBell />
-        <div className="ad-user-wrap">
-          <div className="ad-user" onClick={() => setOpen(o => !o)}>
-            <div className="ad-avatar">S</div>
-            <span className="ad-user-name">System Administrator</span>
-            <div className="ad-avatar-dark">N</div>
-          </div>
-          {open && (
-            <>
-              <div className="ad-dropdown-backdrop" onClick={() => setOpen(false)} />
-              <div className="ad-dropdown">
-                <div className="ad-dropdown-header">
-                  <div className="ad-avatar">S</div>
-                  <div>
-                    <div className="ad-dropdown-name">System Administrator</div>
-                    <div className="ad-dropdown-email">admin@gmail.com</div>
-                  </div>
-                </div>
-                <div className="ad-dropdown-divider" />
-                <button className="ad-dropdown-item ad-dropdown-logout"
-                  onClick={() => { apiLogout(); navigate('/login') }}>
-                  <LogOut size={15} /> Log out
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </header>
-  )
+// Deadline column: the real date once published; before that, a compact
+// "N-day period" chip whose tooltip explains the date is set on publish.
+function DeadlineCell({ project }) {
+  if (project.deadline) return <span className="ad-nowrap">{project.deadline}</span>
+  if (project.biddingPeriodDays) {
+    return (
+      <span
+        className="ui-badge ui-badge--neutral"
+        data-tip="Deadline is set automatically when the project is published"
+        title="Deadline is set automatically when the project is published"
+        tabIndex={0}
+      >
+        <Clock size={11} aria-hidden="true" /> {project.biddingPeriodDays}-day period
+      </span>
+    )
+  }
+  return <span className="ad-muted">—</span>
 }
 
 // ── Dashboard Home ────────────────────────────────────────────────────────────
@@ -196,11 +136,14 @@ function DashboardHome() {
   const activeBidding    = projects.filter(p => p.status === 'published' || p.status === 'active').length
   const awardedContracts = projects.filter(p => p.status === 'awarded').length
 
+  const awaitingPublish = projects.filter(p => p.status === 'approved').length
+  const awaitingHead    = projects.filter(p => p.status === 'pending_head' || p.status === 'needs_revision').length
+
   const STATS = [
-    { label: 'TOTAL PROJECTS',    value: totalProjects,    sub: 'All created procurement projects', icon: FolderOpen  },
-    { label: 'TOTAL BIDS',        value: totalBids,        sub: 'Submitted bid entries',            icon: FileText    },
-    { label: 'ACTIVE BIDDING',    value: activeBidding,    sub: 'Projects currently open',          icon: Activity    },
-    { label: 'AWARDED CONTRACTS', value: awardedContracts, sub: 'Finalized awards',                 icon: UserCheck   },
+    { label: 'Total Projects',    value: totalProjects,    sub: 'All created procurement projects', icon: FolderOpen  },
+    { label: 'Total Bids',        value: totalBids,        sub: 'Submitted bid entries',            icon: FileText    },
+    { label: 'Active Bidding',    value: activeBidding,    sub: 'Projects currently open',          icon: Activity    },
+    { label: 'Awarded Contracts', value: awardedContracts, sub: 'Finalized awards',                 icon: UserCheck   },
   ]
 
   const filtered = projects.filter(p => {
@@ -211,17 +154,41 @@ function DashboardHome() {
     if (tab === 'Closed')  return p.status === 'closed'
     return true
   })
+  // The card promises the last 10; the full list lives on Projects / Planning.
+  const recent = filtered.slice(0, 10)
+
+  const NEXT_ACTIONS = [
+    {
+      to: '/admin/projects', icon: FolderOpen, title: 'Create or Manage Projects',
+      desc: 'Review draft, active, and awarded projects',
+      count: awaitingPublish, countLabel: 'ready to publish',
+    },
+    {
+      to: '/admin/planning', icon: Calendar, title: 'Track Planning',
+      desc: 'Projects waiting on the Head or needing revision',
+      count: awaitingHead, countLabel: 'in review',
+    },
+    {
+      to: '/admin/suppliers', icon: Users, title: 'Review Suppliers',
+      desc: 'Check supplier profiles and approvals',
+    },
+    {
+      to: '/admin/bids', icon: Pencil, title: 'Evaluate Bids',
+      desc: 'Open bid evaluation for submitted projects',
+      count: activeBidding, countLabel: 'open for bidding',
+    },
+  ]
 
   return (
-    <div className="ad-content">
+    <div className="ad-content ad-dash-page">
       <div className="ad-stats">
         {STATS.map(({ label, value, sub, icon: Icon }) => (
           <div className="ad-stat-card" key={label}>
             <div className="ad-stat-top">
               <span className="ad-stat-label">{label}</span>
-              <div className="ad-stat-icon-wrap"><Icon size={18} /></div>
+              <div className="ad-stat-icon-wrap" aria-hidden="true"><Icon size={18} /></div>
             </div>
-            <div className="ad-stat-value">{value}</div>
+            <div className="ad-stat-value">{loading && projects.length === 0 ? <Skeleton width={48} height={26} /> : value}</div>
             <div className="ad-stat-sub">{sub}</div>
           </div>
         ))}
@@ -235,11 +202,14 @@ function DashboardHome() {
                 <h2>Recent Projects</h2>
                 <p>Last 10 projects by status</p>
               </div>
+              <Link to="/admin/projects" className="ad-view-all">View all <ChevronRight size={14} /></Link>
             </div>
-            <div className="ad-filter-pills">
+            <div className="ad-filter-pills" role="tablist" aria-label="Filter recent projects">
               {TABS.map(t => (
                 <button
                   key={t}
+                  role="tab"
+                  aria-selected={tab === t}
                   className={`ad-pill${tab === t ? ' ad-pill-active' : ''}`}
                   onClick={() => setTab(t)}
                 >{t}</button>
@@ -247,18 +217,22 @@ function DashboardHome() {
             </div>
             <div className="ad-project-list">
               {loading && filtered.length === 0
-                ? <ListSkeleton rows={4} height={48} />
-                : filtered.length === 0
-                ? <div className="ad-empty-msg">No projects in this category.</div>
-                : filtered.map(p => (
+                ? <div style={{ padding: '12px 20px' }}><ListSkeleton rows={4} height={44} /></div>
+                : recent.length === 0
+                ? <EmptyState compact icon={FolderOpen} title="No projects here yet"
+                    description={tab === 'All' ? 'Projects you create in Planning will show up here.' : `No ${tab.toLowerCase()} projects right now.`} />
+                : recent.map(p => (
                   <div className="ad-project-row" key={p.id}>
-                    <div>
-                      <div className="ad-bold">{p.name}</div>
-                      <div className="ad-muted ad-small">{p.budget} · {deadlineLabel(p)}</div>
+                    <div className="ad-project-row-main">
+                      <div className="ad-bold ad-truncate">{p.name}</div>
+                      <div className="ad-project-row-meta">
+                        <RefCode code={p.code} />
+                        <span className="ad-muted ad-small">{p.budget}</span>
+                        <span className="ad-dot-sep" aria-hidden="true" />
+                        <span className="ad-muted ad-small">{deadlineLabel(p)}</span>
+                      </div>
                     </div>
-                    <span className={`badge ${STATUS_CLS[p.status] || 'badge-gray'}`}>
-                      • {STATUS_LABEL[p.status] || p.status}
-                    </span>
+                    <StatusBadge domain="project" status={p.status} />
                   </div>
                 ))
               }
@@ -267,24 +241,33 @@ function DashboardHome() {
 
           <div className="ad-card ad-card-mt">
             <div className="ad-card-header">
-              <h2>Expiring Documents (30 days)</h2>
+              <div>
+                <h2>Expiring Documents</h2>
+                <p>Supplier documents expiring within 30 days</p>
+              </div>
+              {!docsLoading && expiringDocs.length > 0 && (
+                <StatusBadge tone="warning" label={`${expiringDocs.length} to follow up`} />
+              )}
             </div>
             <div className="ad-expiring-list">
               {docsLoading
-                ? <ListSkeleton rows={2} height={40} />
+                ? <div style={{ padding: '12px 20px' }}><ListSkeleton rows={2} height={40} /></div>
                 : expiringDocs.length === 0
-                ? <div className="ad-empty-msg">No documents expiring soon.</div>
-                : expiringDocs.map(doc => (
-                  <div className="ad-expiring-row" key={doc.id}>
-                    <div>
-                      <div className="ad-bold">{doc.company}</div>
-                      <div className="ad-muted ad-small">{doc.doc_type}</div>
+                ? <EmptyState compact icon={CheckCircle2} title="Nothing expiring soon"
+                    description="No supplier documents expire in the next 30 days." />
+                : expiringDocs.map(doc => {
+                  const exp = expiryMeta(doc.expiry_date)
+                  return (
+                    <div className="ad-expiring-row" key={doc.id}>
+                      <div className="ad-expiring-icon" aria-hidden="true"><FileText size={15} /></div>
+                      <div className="ad-expiring-main">
+                        <div className="ad-bold ad-truncate">{doc.company}</div>
+                        <div className="ad-muted ad-small">{doc.doc_type} · {fmtDate(doc.expiry_date)}</div>
+                      </div>
+                      <StatusBadge tone={exp.tone} label={exp.label} icon={exp.tone === 'danger' ? AlertTriangle : Clock} />
                     </div>
-                    <span className="ad-expiring-date">
-                      {new Date(doc.expiry_date).toLocaleDateString()}
-                    </span>
-                  </div>
-                ))
+                  )
+                })
               }
             </div>
           </div>
@@ -293,30 +276,23 @@ function DashboardHome() {
         <div className="ad-dash-side">
           <div className="ad-card">
             <div className="ad-card-header">
-              <h2>Next Actions</h2>
+              <div>
+                <h2>Next Actions</h2>
+                <p>Where your attention is needed</p>
+              </div>
             </div>
             <div className="ad-next-actions">
-              <Link to="/admin/projects" className="ad-next-action">
-                <div>
-                  <div className="ad-bold">Create or Manage Projects</div>
-                  <div className="ad-muted ad-small">Review draft, active, and awarded projects</div>
-                </div>
-                <ChevronRight size={16} className="ad-action-arrow" />
-              </Link>
-              <Link to="/admin/suppliers" className="ad-next-action">
-                <div>
-                  <div className="ad-bold">Review Suppliers</div>
-                  <div className="ad-muted ad-small">Check supplier profiles and approvals</div>
-                </div>
-                <ChevronRight size={16} className="ad-action-arrow" />
-              </Link>
-              <Link to="/admin/bids" className="ad-next-action">
-                <div>
-                  <div className="ad-bold">Evaluate Bids</div>
-                  <div className="ad-muted ad-small">Open bid evaluation for submitted projects</div>
-                </div>
-                <ChevronRight size={16} className="ad-action-arrow" />
-              </Link>
+              {NEXT_ACTIONS.map(({ to, icon: Icon, title, desc, count, countLabel }) => (
+                <Link to={to} className="ad-next-action" key={to}>
+                  <span className="ad-next-icon" aria-hidden="true"><Icon size={17} /></span>
+                  <div className="ad-next-body">
+                    <div className="ad-bold">{title}</div>
+                    <div className="ad-muted ad-small">{desc}</div>
+                    {count > 0 && <span className="ad-next-count">{count} {countLabel}</span>}
+                  </div>
+                  <ChevronRight size={16} className="ad-action-arrow" aria-hidden="true" />
+                </Link>
+              ))}
             </div>
           </div>
         </div>
@@ -364,50 +340,51 @@ function ProjectsPage() {
     <div className="ad-content">
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
       <div className="ad-card">
-        <div className="ad-card-header">
-          <div className="ad-filter-pills">
+        <div className="ad-card-header ad-toolbar-row">
+          <div className="ad-filter-pills ad-filter-pills-inline" role="tablist" aria-label="Filter projects">
             {FILTER_TABS.map(t => (
-              <button key={t} className={`ad-pill${filterTab === t ? ' ad-pill-active' : ''}`} onClick={() => setFilterTab(t)}>{t}</button>
+              <button key={t} role="tab" aria-selected={filterTab === t} className={`ad-pill${filterTab === t ? ' ad-pill-active' : ''}`} onClick={() => setFilterTab(t)}>{t}</button>
             ))}
           </div>
           <div className="ad-toolbar">
-            <div className="ad-search-inline">
-              <Search size={14} />
+            <label className="ad-search-inline">
+              <Search size={14} aria-hidden="true" />
+              <span className="sr-only">Search projects</span>
               <input placeholder="Search by title or ref code" value={search} onChange={e => setSearch(e.target.value)} />
-            </div>
+            </label>
             <button className="ad-btn-history" onClick={() => navigate('/admin/projects/history')}>
-              <Clock size={12} /> History{historyCount > 0 ? ` (${historyCount})` : ''}
+              <Clock size={13} /> History{historyCount > 0 ? ` (${historyCount})` : ''}
             </button>
           </div>
         </div>
 
-        <div className="ad-table-scroll">
+        <div className="ad-table-scroll ad-x-scroll">
         <table className="ad-table">
           <thead>
             <tr>
-              <th>REF CODE</th><th>TITLE</th><th>BUDGET</th><th>DEADLINE</th><th>TYPE</th>
-              <th>ELIGIBLE TYPES</th><th>STATUS</th><th>ACTIONS</th>
+              <th>Ref Code</th><th>Title</th><th className="ad-num">Budget</th><th>Deadline</th><th>Type</th>
+              <th>Eligible Types</th><th>Status</th><th className="ad-actions-col">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading && filtered.length === 0
               ? <TableSkeleton rows={4} cols={8} />
               : filtered.length === 0
-              ? <tr><td colSpan={8} className="ad-empty-row">No approved projects yet.</td></tr>
+              ? <TableEmpty colSpan={8} icon={FolderOpen}
+                  title={search || filterTab !== 'All' ? 'No projects match your filters' : 'No approved projects yet'}
+                  description={search || filterTab !== 'All'
+                    ? 'Try a different search or filter.'
+                    : 'Projects appear here once the Head approves them in Planning.'} />
               : filtered.map(p => (
                 <tr key={p.id}>
                   <td><RefCode code={p.code} /></td>
-                  <td className="ad-bold">{p.name}</td>
-                  <td>{p.budget}</td>
-                  <td className="ad-muted">{deadlineLabel(p)}</td>
-                  <td>{p.type}</td>
-                  <td><span className="badge badge-gray">{p.eligibleTypes}</span></td>
-                  <td>
-                    <span className={`badge ${STATUS_CLS[p.status] || 'badge-gray'}`}>
-                      • {STATUS_LABEL[p.status] || p.status}
-                    </span>
-                  </td>
-                  <td>
+                  <td className="ad-bold ad-cell-title">{p.name}</td>
+                  <td className="ad-num">{p.budget}</td>
+                  <td><DeadlineCell project={p} /></td>
+                  <td className="ad-nowrap">{p.type}</td>
+                  <td><span className="ui-badge ui-badge--neutral">{p.eligibleTypes}</span></td>
+                  <td><StatusBadge domain="project" status={p.status} /></td>
+                  <td className="ad-actions-col">
                     <div className="ad-actions">
                       {p.status === 'approved' && (
                         <PublishButton
@@ -419,7 +396,7 @@ function ProjectsPage() {
                         />
                       )}
                       <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/bids/${p.id}`)}>
-                        <Eye size={12} /> View Bids
+                        <Eye size={13} /> View Bids
                       </button>
                     </div>
                   </td>
@@ -471,42 +448,43 @@ function ProjectHistoryPage() {
             <ArrowLeft size={12} /> Back to Projects
           </button>
           <div className="ad-toolbar">
-            <div className="ad-search-inline">
-              <Search size={14} />
+            <label className="ad-search-inline">
+              <Search size={14} aria-hidden="true" />
+              <span className="sr-only">Search closed biddings</span>
               <input placeholder="Search closed biddings by title or ref code" value={search} onChange={e => setSearch(e.target.value)} />
-            </div>
+            </label>
           </div>
         </div>
 
-        <div className="ad-table-scroll">
+        <div className="ad-table-scroll ad-x-scroll">
         <table className="ad-table">
           <thead>
             <tr>
-              <th>REF CODE</th><th>TITLE</th><th>BUDGET</th><th>CLOSED ON</th><th>TYPE</th>
-              <th>ELIGIBLE TYPES</th><th>STATUS</th><th>ACTIONS</th>
+              <th>Ref Code</th><th>Title</th><th className="ad-num">Budget</th><th>Closed On</th><th>Type</th>
+              <th>Eligible Types</th><th>Status</th><th className="ad-actions-col">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading && sorted.length === 0
               ? <TableSkeleton rows={4} cols={8} />
               : sorted.length === 0
-              ? <tr><td colSpan={8} className="ad-empty-row">No closed biddings yet.</td></tr>
+              ? <TableEmpty colSpan={8} icon={Clock}
+                  title={search ? 'No closed biddings match your search' : 'No closed biddings yet'}
+                  description="Projects move here automatically once their bid deadline passes." />
               : sorted.map(p => (
                 <tr key={p.id}>
                   <td><RefCode code={p.code} /></td>
-                  <td className="ad-bold">{p.name}</td>
-                  <td>{p.budget}</td>
-                  <td className="ad-muted">{deadlineLabel(p)}</td>
-                  <td>{p.type}</td>
-                  <td><span className="badge badge-gray">{p.eligibleTypes}</span></td>
+                  <td className="ad-bold ad-cell-title">{p.name}</td>
+                  <td className="ad-num">{p.budget}</td>
+                  <td className="ad-nowrap">{deadlineLabel(p)}</td>
+                  <td className="ad-nowrap">{p.type}</td>
+                  <td><span className="ui-badge ui-badge--neutral">{p.eligibleTypes}</span></td>
                   <td>
-                    <span className={`badge ${closedCls(p)}`}>
-                      • {closedLabel(p)}
-                    </span>
+                    <StatusBadge tone={p.status === 'awarded' ? 'success' : 'neutral'} label={closedLabel(p)} />
                   </td>
-                  <td>
+                  <td className="ad-actions-col">
                     <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/bids/${p.id}`)}>
-                      <Eye size={12} /> View Bids
+                      <Eye size={13} /> View Bids
                     </button>
                   </td>
                 </tr>
@@ -748,14 +726,12 @@ function ProjectDetailModal({ project, onClose, setToast }) {
               <span className="ad-muted ad-small">{project.category || '—'}</span>
             </div>
           </div>
-          <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
+          <button className="ad-modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
         </div>
 
         <div className="ad-modal-body">
           <div className="ad-modal-badges">
-            <span className={`badge ${STATUS_CLS[project.status] || 'badge-gray'}`}>
-              • {STATUS_LABEL[project.status] || project.status}
-            </span>
+            <StatusBadge domain="project" status={project.status} />
           </div>
 
           {project.status === 'rejected' && project.rejectReason && (
@@ -924,10 +900,11 @@ function PlanningPage() {
       )}
       <div className="ad-card">
         <div className="ad-card-header">
-          <div className="ad-search-inline">
-            <Search size={14} />
+          <label className="ad-search-inline">
+            <Search size={14} aria-hidden="true" />
+            <span className="sr-only">Search planning requests</span>
             <input placeholder="Search by title, type, or ref code" value={search} onChange={e => setSearch(e.target.value)} />
-          </div>
+          </label>
           <button className="ad-btn-primary" onClick={() => setShowForm(v => !v)}>
             <Plus size={14} /> {showForm ? 'Cancel' : 'Create Project'}
           </button>
@@ -938,11 +915,11 @@ function PlanningPage() {
             <div className="ad-form-title">Create New Procurement</div>
             <form onSubmit={handleSubmit} className="ad-form-grid">
               <div className="ad-form-group ad-form-full">
-                <label>Project Title</label>
+                <label>Project Title<span className="ui-req" aria-hidden="true">*</span></label>
                 <input value={form.name} onChange={e => set('name', e.target.value)} required />
               </div>
               <div className="ad-form-group">
-                <label>Procurement Category</label>
+                <label>Procurement Category<span className="ui-req" aria-hidden="true">*</span></label>
                 <select value={form.category} onChange={e => set('category', e.target.value)} required>
                   <option value="" disabled>Select a category…</option>
                   {CATEGORIES.map(c => <option key={c}>{c}</option>)}
@@ -955,15 +932,15 @@ function PlanningPage() {
                 </select>
               </div>
               <div className="ad-form-group">
-                <label>Approved Budget (ABC)</label>
+                <label>Approved Budget (ABC)<span className="ui-req" aria-hidden="true">*</span></label>
                 <input value={form.budget} onChange={e => set('budget', e.target.value)} placeholder="e.g. ₱50,000" required />
               </div>
               <div className="ad-form-group">
-                <label>Delivery Location</label>
+                <label>Delivery Location<span className="ui-req" aria-hidden="true">*</span></label>
                 <input value={form.delivery_location} onChange={e => set('delivery_location', e.target.value)} placeholder="e.g. Main Campus" required />
               </div>
               <div className="ad-form-group">
-                <label>Bidding Period</label>
+                <label>Bidding Period<span className="ui-req" aria-hidden="true">*</span></label>
                 <select value={form.bidding_period_days} onChange={e => set('bidding_period_days', e.target.value)} required>
                   <option value="" disabled>Select a period…</option>
                   {BIDDING_PERIOD_OPTIONS.map(n => <option key={n} value={n}>{n} days</option>)}
@@ -973,7 +950,7 @@ function PlanningPage() {
                 </span>
               </div>
               <div className="ad-form-group">
-                <label>Delivery Period</label>
+                <label>Delivery Period<span className="ui-req" aria-hidden="true">*</span></label>
                 <select value={form.delivery_period_days} onChange={e => set('delivery_period_days', e.target.value)} required>
                   <option value="" disabled>Select a period…</option>
                   {DELIVERY_PERIOD_OPTIONS.map(n => <option key={n} value={n}>{n} days</option>)}
@@ -983,7 +960,7 @@ function PlanningPage() {
                 </span>
               </div>
               <div className="ad-form-group ad-form-full">
-                <label>Project Description</label>
+                <label>Project Description<span className="ui-req" aria-hidden="true">*</span></label>
                 <textarea value={form.description} onChange={e => set('description', e.target.value)} rows={3} required />
               </div>
 
@@ -1041,8 +1018,8 @@ function PlanningPage() {
               </div>
 
               {submitErr && (
-                <div className="ad-form-full" style={{ color: '#ef4444', fontSize: 13, fontWeight: 500 }}>
-                  {submitErr}
+                <div className="ad-form-full ad-inline-error" role="alert">
+                  <AlertTriangle size={15} aria-hidden="true" /> {submitErr}
                 </div>
               )}
               <div className="ad-form-actions">
@@ -1055,19 +1032,28 @@ function PlanningPage() {
           </div>
         )}
 
-        <div className="ad-table-scroll">
+        <div className="ad-table-scroll ad-x-scroll">
         <table className="ad-table">
           <thead>
             <tr>
-              <th>REF CODE</th><th>PROJECT TITLE</th><th>BUDGET</th><th>TYPE</th>
-              <th>BIDDING PERIOD</th><th>STATUS</th><th>ACTIONS</th>
+              <th>Ref Code</th><th>Project Title</th><th className="ad-num">Budget</th><th>Type</th>
+              <th>Bidding Period</th><th>Status</th><th className="ad-actions-col">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading && filtered.length === 0
               ? <TableSkeleton rows={4} cols={7} />
               : filtered.length === 0
-              ? <tr><td colSpan={7} className="ad-empty-row">No planning requests yet. Click “Create Project” to add one.</td></tr>
+              ? <TableEmpty colSpan={7} icon={Calendar}
+                  title={search ? 'No planning requests match your search' : 'No planning requests yet'}
+                  description={search
+                    ? 'Try a different title, type, or ref code.'
+                    : 'Create a procurement project to start the approval workflow. It goes to the Head for review before it can be published.'}
+                  action={!search && !showForm && (
+                    <button className="ad-btn-primary" onClick={() => setShowForm(true)}>
+                      <Plus size={14} /> Create Project
+                    </button>
+                  )} />
               : filtered.map(p => (
                 <tr key={p.id}>
                   <td><RefCode code={p.code} /></td>
@@ -1084,15 +1070,13 @@ function PlanningPage() {
                       </div>
                     )}
                   </td>
-                  <td>{p.budget}</td>
-                  <td>{p.type}</td>
-                  <td className="ad-muted">{deadlineLabel(p)}</td>
+                  <td className="ad-num">{p.budget}</td>
+                  <td className="ad-nowrap">{p.type}</td>
+                  <td><DeadlineCell project={p} /></td>
                   <td>
-                    <span className={`badge ${STATUS_CLS[p.status] || 'badge-gray'}`}>
-                      • {STATUS_LABEL[p.status] || p.status}
-                    </span>
+                    <StatusBadge domain="project" status={p.status} />
                   </td>
-                  <td>
+                  <td className="ad-actions-col">
                     <div className="ad-actions">
                       <button className="ad-btn-view-sm" onClick={() => setViewProject(p)}>
                         <Eye size={12} /> View Details
@@ -1245,20 +1229,21 @@ function SuppliersPage() {
       )}
 
       <div className="ad-card">
-        <div className="ad-card-header" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: 12 }}>
-            <div className="ad-filter-pills">
-              {TABS.map(t => (
-                <button key={t} className={`ad-pill${filterTab === t ? ' ad-pill-active' : ''}`} onClick={() => setFilterTab(t)}>{t}</button>
-              ))}
-            </div>
-            <button className="ad-btn-primary-sm" onClick={() => setShowRegisterForm(true)}>
-              <Plus size={12} /> Register Supplier
-            </button>
+        <div className="ad-card-header ad-toolbar-row">
+          <div className="ad-filter-pills ad-filter-pills-inline" role="tablist" aria-label="Filter suppliers">
+            {TABS.map(t => (
+              <button key={t} role="tab" aria-selected={filterTab === t} className={`ad-pill${filterTab === t ? ' ad-pill-active' : ''}`} onClick={() => setFilterTab(t)}>{t}</button>
+            ))}
           </div>
-          <div className="ad-search-inline">
-            <Search size={14} />
-            <input placeholder="Search by company or name" value={search} onChange={e => setSearch(e.target.value)} />
+          <div className="ad-toolbar">
+            <label className="ad-search-inline">
+              <Search size={14} aria-hidden="true" />
+              <span className="sr-only">Search suppliers</span>
+              <input placeholder="Search by company or name" value={search} onChange={e => setSearch(e.target.value)} />
+            </label>
+            <button className="ad-btn-primary" onClick={() => setShowRegisterForm(true)}>
+              <Plus size={14} /> Register Supplier
+            </button>
           </div>
         </div>
 
@@ -1271,47 +1256,45 @@ function SuppliersPage() {
           />
         )}
 
-        <div className="ad-table-scroll">
+        <div className="ad-table-scroll ad-x-scroll">
         <table className="ad-table">
           <thead>
             <tr>
-              <th>COMPANY</th><th>CONTACT</th><th>BUSINESS TYPE</th><th>STATUS</th>
-              <th>QUALIFICATION STATUS</th><th>EMAIL VERIFIED</th><th>REGISTERED</th><th>ACTIONS</th>
+              <th>Company</th><th>Contact</th><th>Business Type</th><th>Status</th>
+              <th>Qualification Status</th><th>Email Verified</th><th>Registered</th><th className="ad-actions-col">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading
               ? Array.from({ length: 5 }).map((_, i) => <SupplierRowSkeleton key={i} />)
               : error
-              ? <tr><td colSpan={8} className="ad-empty-row">{error}</td></tr>
+              ? <TableEmpty colSpan={8} icon={AlertTriangle} title="Could not load suppliers" description={error} />
               : filtered.length === 0
-              ? <tr><td colSpan={8} className="ad-empty-row">No suppliers found.</td></tr>
+              ? <TableEmpty colSpan={8} icon={Users}
+                  title={search || filterTab !== 'All' ? 'No suppliers match your filters' : 'No suppliers yet'}
+                  description={search || filterTab !== 'All'
+                    ? 'Try a different search or filter.'
+                    : 'Suppliers appear here when they self-register or you register one in person.'} />
               : filtered.map(s => (
                 <tr key={s.id}>
                   <td className="ad-bold">{s.company}</td>
                   <td>{s.contact || s.full_name}</td>
                   <td className="ad-muted" style={{ maxWidth: 200, wordBreak: 'break-word', fontSize: 12 }}>{s.business_type}</td>
+                  <td><StatusBadge domain="supplier" status={s.status} /></td>
                   <td>
-                    <span className={`badge ${SUP_STATUS_CLS[s.status] || 'badge-gray'}`}>
-                      • {(s.status || '').toUpperCase()}
-                    </span>
+                    <div className="ad-badge-stack">
+                      <StatusBadge domain="qualification" status={s.qualification_status} />
+                      {s.category_request_status === 'pending' && (
+                        <StatusBadge tone="warning" dot={false} label="Category change"
+                          title="This supplier asked to change their business categories" />
+                      )}
+                    </div>
                   </td>
-                  <td>
-                    <span className={`badge ${QUAL_CLS[s.qualification_status] || 'badge-gray'}`}>
-                      {QUAL_LABEL[s.qualification_status] || (s.qualification_status || '').replace(/_/g, ' ')}
-                    </span>
-                    {s.category_request_status === 'pending' && (
-                      <span className="badge badge-yellow" style={{ marginLeft: 6 }}
-                        title="This supplier asked to change their business categories">
-                        Category change
-                      </span>
-                    )}
-                  </td>
-                  <td><span className={`badge ${s.email_verified ? 'badge-green' : 'badge-gray'}`}>{s.email_verified ? 'Verified' : 'Unverified'}</span></td>
-                  <td className="ad-muted">{s.registered}</td>
-                  <td>
+                  <td><StatusBadge domain="email" status={!!s.email_verified} /></td>
+                  <td className="ad-muted ad-nowrap">{s.registered}</td>
+                  <td className="ad-actions-col">
                     <button className="ad-btn-view-sm" onClick={() => setViewId(s.id)}>
-                      <Eye size={12} /> View
+                      <Eye size={13} /> View
                     </button>
                   </td>
                 </tr>
@@ -1328,6 +1311,20 @@ function SuppliersPage() {
 // Walk-in supplier registration, filled out by the Admin on the supplier's
 // behalf. Same fields/validation as the public self-registration form — only
 // who fills it in differs. Opens as a modal so it never pushes the table down.
+// Label + input pair with a proper htmlFor link, required marker and hint.
+// Module-level (not inside the modal) so inputs keep focus while typing.
+function FormField({ id, label, required = true, hint, full, children }) {
+  return (
+    <div className={`ad-form-group${full ? ' ad-form-full' : ''}`}>
+      <label htmlFor={id}>
+        {label}{required && <span className="ui-req" aria-hidden="true">*</span>}
+      </label>
+      {children}
+      {hint && <span className="ui-hint">{hint}</span>}
+    </div>
+  )
+}
+
 const ASSISTED_STEPS = ['Basic Info', 'Documents', 'Declaration', 'Review']
 
 function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, removeFile, error, setError, submitting, onSubmit, onClose }) {
@@ -1368,71 +1365,81 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
 
   return (
     <div className="ad-modal-overlay" onClick={onClose}>
-      <div className="ad-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 680 }}>
+      <div
+        className="ad-modal ad-modal-wizard"
+        onClick={e => e.stopPropagation()}
+        style={{ maxWidth: 720 }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="assisted-reg-title"
+      >
         <div className="ad-modal-header">
           <div>
-            <h3>Assisted Supplier Registration</h3>
-            <p className="ad-muted ad-small">
+            <h3 id="assisted-reg-title">Assisted Supplier Registration</h3>
+            <p className="ad-muted ad-small" style={{ marginTop: 4, maxWidth: 560 }}>
               For a supplier who came in person with physical documents — their account is created the
               same way as a self-registration and still needs your approval before they can bid.
             </p>
           </div>
-          <button type="button" className="ad-modal-close" onClick={onClose}><X size={18} /></button>
+          <button type="button" className="ad-modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
+        </div>
+
+        <div className="ad-wizard-steps">
+          <Stepper steps={ASSISTED_STEPS} current={step} label="Registration steps" />
         </div>
 
         <div className="ad-modal-body">
-          <div className="ad-filter-pills" style={{ marginBottom: 20 }}>
-            {ASSISTED_STEPS.map((label, i) => (
-              <span key={label} className={`ad-pill${i === step ? ' ad-pill-active' : ''}`} style={{ cursor: 'default' }}>
-                {i + 1}. {label}
-              </span>
-            ))}
-          </div>
-
-          {error && <div className="ad-modal-error"><AlertTriangle size={15} /> {error}</div>}
+          {error && <div className="ad-modal-error" role="alert"><AlertTriangle size={15} /> {error}</div>}
 
           {step === 0 && (
-            <div className="ad-form-grid">
-              <div className="ad-form-group">
-                <label>Full Name</label>
-                <input value={form.full_name} onChange={e => set('full_name', e.target.value)} />
-              </div>
-              <div className="ad-form-group">
-                <label>Email Address</label>
-                <input type="email" value={form.email} onChange={e => set('email', e.target.value)} />
-              </div>
-              <div className="ad-form-group">
-                <label>Password</label>
-                <input type="password" value={form.password} onChange={e => set('password', e.target.value)} />
-              </div>
-              <div className="ad-form-group">
-                <label>Confirm Password</label>
-                <input type="password" value={form.confirm_password} onChange={e => set('confirm_password', e.target.value)} />
-              </div>
+            <div>
+              <section className="ui-form-section">
+                <div className="ui-form-section-title">Account login</div>
+                <div className="ad-form-grid">
+                  <FormField id="ar-full-name" label="Full Name">
+                    <input id="ar-full-name" autoComplete="off" value={form.full_name} onChange={e => set('full_name', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-email" label="Email Address" hint="The supplier signs in with this and receives the verification link.">
+                    <input id="ar-email" type="email" autoComplete="off" inputMode="email" value={form.email} onChange={e => set('email', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-password" label="Password" hint="At least 8 characters.">
+                    <input id="ar-password" type="password" autoComplete="new-password" value={form.password} onChange={e => set('password', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-confirm" label="Confirm Password">
+                    <input id="ar-confirm" type="password" autoComplete="new-password" value={form.confirm_password} onChange={e => set('confirm_password', e.target.value)} />
+                  </FormField>
+                </div>
+              </section>
 
-              <div className="ad-form-group ad-form-full">
-                <label>Company Name</label>
-                <input value={form.company_name} onChange={e => set('company_name', e.target.value)} />
-              </div>
-              <div className="ad-form-group ad-form-full">
-                <label>Company Address</label>
-                <input value={form.company_address} onChange={e => set('company_address', e.target.value)} />
-              </div>
-              <div className="ad-form-group">
-                <label>Phone Number</label>
-                <input value={form.phone_number} onChange={e => set('phone_number', e.target.value.replace(/[^\d]/g, ''))} />
-              </div>
-              <div className="ad-form-group">
-                <label>TIN</label>
-                <input value={form.tin} onChange={e => set('tin', e.target.value.replace(/[^\d-]/g, ''))} />
-              </div>
-              <div className="ad-form-group ad-form-full">
-                <label>Representative Name</label>
-                <input value={form.representative_name} onChange={e => set('representative_name', e.target.value)} />
-              </div>
-              <div className="ad-form-group ad-form-full">
-                <label>Business Type</label>
-                <div className="ad-checks">
+              <section className="ui-form-section">
+                <div className="ui-form-section-title">Company details</div>
+                <div className="ad-form-grid">
+                  <FormField id="ar-company" label="Company Name" full>
+                    <input id="ar-company" autoComplete="off" value={form.company_name} onChange={e => set('company_name', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-address" label="Company Address" full>
+                    <input id="ar-address" autoComplete="off" value={form.company_address} onChange={e => set('company_address', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-phone" label="Phone Number" hint="Digits only.">
+                    <input id="ar-phone" autoComplete="off" inputMode="numeric" value={form.phone_number} onChange={e => set('phone_number', e.target.value.replace(/[^\d]/g, ''))} />
+                  </FormField>
+                  <FormField id="ar-tin" label="TIN" hint="Digits and dashes only.">
+                    <input id="ar-tin" autoComplete="off" inputMode="numeric" value={form.tin} onChange={e => set('tin', e.target.value.replace(/[^\d-]/g, ''))} />
+                  </FormField>
+                  <FormField id="ar-rep" label="Representative Name" full>
+                    <input id="ar-rep" autoComplete="off" value={form.representative_name} onChange={e => set('representative_name', e.target.value)} />
+                  </FormField>
+                </div>
+              </section>
+
+              <section className="ui-form-section">
+                <div className="ui-form-section-title">
+                  Business type<span className="ui-req" aria-hidden="true">*</span>
+                </div>
+                <p className="ui-hint" style={{ marginTop: -6, marginBottom: 10 }}>
+                  Select every category the supplier can bid on. At least one is required.
+                </p>
+                <div className="ad-checks" role="group" aria-label="Business type">
                   {CATEGORIES.map(t => (
                     <label key={t} className={types.includes(t) ? 'on' : ''}>
                       <input type="checkbox" checked={types.includes(t)} onChange={() => toggleType(t)} />
@@ -1440,75 +1447,87 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                     </label>
                   ))}
                 </div>
-              </div>
+              </section>
             </div>
           )}
 
           {step === 1 && (
-            <div className="ad-form-grid">
-              <div className="ad-form-full">
-                <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-dark)' }}>Required Documents</label>
-                <div className="ad-muted ad-small" style={{ marginBottom: 10 }}>
+            <div>
+              <section className="ui-form-section">
+                <div className="ui-form-section-title ad-section-title-row">
+                  <span>Required documents<span className="ui-req" aria-hidden="true">*</span></span>
+                  <StatusBadge
+                    tone={requiredUploaded === ASSISTED_REQUIRED_DOCS.length ? 'success' : 'neutral'}
+                    label={`${requiredUploaded} / ${ASSISTED_REQUIRED_DOCS.length} uploaded`}
+                  />
+                </div>
+                <p className="ui-hint" style={{ marginTop: -6, marginBottom: 12 }}>
                   Upload a clear scanned copy or photo of the document. Make sure the full document is readable.
                   PDF, JPG, or PNG · max 5 MB each.
-                </div>
+                </p>
                 <div className="ad-doc-grid">
                   {ASSISTED_REQUIRED_DOCS.map(d => (
                     <DocUploader key={d.key} doc={d} file={files[d.key]} onFile={onFile}
                       onRemove={() => removeFile(d.key)} />
                   ))}
                 </div>
-              </div>
-              <div className="ad-form-group">
-                <label>Mayor's Permit Expiry</label>
-                <input type="date" value={form.mayors_permit_expiry} onChange={e => set('mayors_permit_expiry', e.target.value)} />
-              </div>
-              <div className="ad-form-group">
-                <label>Tax Clearance Expiry</label>
-                <input type="date" value={form.tax_clearance_expiry} onChange={e => set('tax_clearance_expiry', e.target.value)} />
-              </div>
-              <div className="ad-form-group">
-                <label>Financial Statement Year</label>
-                <input value={form.financial_statement_year}
-                  onChange={e => set('financial_statement_year', e.target.value.replace(/[^\d]/g, '').slice(0, 4))}
-                  placeholder="e.g. 2026" />
-              </div>
+              </section>
 
-              <div className="ad-form-full">
-                <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-dark)' }}>Optional Documents</label>
+              <section className="ui-form-section">
+                <div className="ui-form-section-title">Validity &amp; financials</div>
+                <div className="ad-form-grid">
+                  <FormField id="ar-mp-exp" label="Mayor's Permit Expiry" required={false}>
+                    <input id="ar-mp-exp" type="date" value={form.mayors_permit_expiry} onChange={e => set('mayors_permit_expiry', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-tc-exp" label="Tax Clearance Expiry" required={false}>
+                    <input id="ar-tc-exp" type="date" value={form.tax_clearance_expiry} onChange={e => set('tax_clearance_expiry', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-fs-year" label="Financial Statement Year" required={false} hint="Four-digit year, e.g. 2026.">
+                    <input id="ar-fs-year" inputMode="numeric" autoComplete="off" value={form.financial_statement_year}
+                      onChange={e => set('financial_statement_year', e.target.value.replace(/[^\d]/g, '').slice(0, 4))}
+                      placeholder="e.g. 2026" />
+                  </FormField>
+                </div>
+              </section>
+
+              <section className="ui-form-section">
+                <div className="ui-form-section-title">Optional documents</div>
                 <div className="ad-doc-grid">
                   {ASSISTED_OPTIONAL_DOCS.map(d => (
                     <DocUploader key={d.key} doc={d} file={files[d.key]} onFile={onFile}
                       onRemove={() => removeFile(d.key)} optional />
                   ))}
                 </div>
-              </div>
-              <div className="ad-form-group ad-form-full">
-                <label>Track Record Description</label>
-                <textarea rows={2} value={form.track_record_description}
-                  onChange={e => set('track_record_description', e.target.value)}
-                  placeholder="Brief description of similar projects" />
-              </div>
+                <div className="ad-form-grid" style={{ marginTop: 14 }}>
+                  <FormField id="ar-track" label="Track Record Description" required={false} full>
+                    <textarea id="ar-track" rows={2} value={form.track_record_description}
+                      onChange={e => set('track_record_description', e.target.value)}
+                      placeholder="Brief description of similar projects" />
+                  </FormField>
+                </div>
+              </section>
             </div>
           )}
 
           {step === 2 && (
-            <div>
-              <p className="ad-small" style={{ lineHeight: 1.6 }}>
+            <section className="ui-form-section">
+              <div className="ui-form-section-title">Declaration</div>
+              <p className="ad-small" style={{ lineHeight: 1.6, color: 'var(--text-body)' }}>
                 Before submitting, confirm with the supplier (present in person) that all information and
                 documents provided are true, accurate, and authentic. Any false statement or falsified
                 document is grounds for disqualification.
               </p>
-              <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, fontWeight: 500, marginTop: 12 }}>
+              <label className={`ad-declare${form.declaration_accepted ? ' on' : ''}`}>
                 <input type="checkbox" checked={form.declaration_accepted}
-                  onChange={e => set('declaration_accepted', e.target.checked)} style={{ marginTop: 3 }} />
-                <span>The supplier confirms the information and documents provided are true, accurate, and authentic to the best of their knowledge.</span>
+                  onChange={e => set('declaration_accepted', e.target.checked)} />
+                <span>The supplier confirms the information and documents provided are true, accurate, and authentic to the best of their knowledge.<span className="ui-req" aria-hidden="true">*</span></span>
               </label>
-            </div>
+            </section>
           )}
 
           {step === 3 && (
-            <div>
+            <section className="ui-form-section">
+              <div className="ui-form-section-title">Review before submitting</div>
               <div className="ad-info-grid">
                 <Info2 label="Company" value={form.company_name} />
                 <Info2 label="Representative" value={form.representative_name} />
@@ -1518,23 +1537,31 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                 <Info2 label="Optional Docs Uploaded" value={`${optionalUploaded}`} />
                 <Info2 label="Status After Submission" value="Pending Verification" />
               </div>
-              <p className="ad-muted ad-small" style={{ marginTop: 8 }}>
-                The supplier account is created now and queued the same as any self-registration — review
-                and approve it from this Suppliers list before they can bid.
-              </p>
-            </div>
+              <div className="ui-callout ui-callout--neutral" style={{ marginTop: 12 }}>
+                <Info size={16} className="ui-callout-icon" />
+                <span>
+                  The supplier account is created now and queued the same as any self-registration — review
+                  and approve it from this Suppliers list before they can bid.
+                </span>
+              </div>
+            </section>
           )}
         </div>
 
         <div className="ad-modal-footer">
-          {step > 0
-            ? <button type="button" className="ad-btn-cancel" onClick={back}>Back</button>
-            : <button type="button" className="ad-btn-cancel" onClick={onClose}>Cancel</button>}
-          {step < ASSISTED_STEPS.length - 1
-            ? <button type="button" className="ad-btn-primary" onClick={next}>Continue</button>
-            : <button type="button" className="ad-btn-primary" disabled={submitting} onClick={onSubmit}>
-                {submitting ? 'Registering…' : 'Register Supplier'}
-              </button>}
+          <button type="button" className="ui-btn ui-btn--ghost" onClick={onClose}>Cancel</button>
+          <div className="ad-modal-footer-actions">
+            {step > 0 && (
+              <button type="button" className="ad-btn-cancel" onClick={back}>
+                <ArrowLeft size={14} /> Back
+              </button>
+            )}
+            {step < ASSISTED_STEPS.length - 1
+              ? <button type="button" className="ad-btn-primary" onClick={next}>Continue <ChevronRight size={14} /></button>
+              : <button type="button" className="ad-btn-primary" disabled={submitting} onClick={onSubmit}>
+                  {submitting ? <><Loader2 size={14} className="ui-spin" /> Registering…</> : <><Check size={14} /> Register Supplier</>}
+                </button>}
+          </div>
         </div>
       </div>
     </div>
@@ -1686,7 +1713,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
               <p className="ad-muted ad-small">{supplier.full_name || supplier.contact} · {supplier.email}</p>
             )}
           </div>
-          <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
+          <button className="ad-modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
         </div>
 
         {loading ? (
@@ -1705,10 +1732,9 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
               )}
 
               <div className="ad-modal-badges">
-                <span className={`badge ${SUP_STATUS_CLS[supplier.status] || 'badge-gray'}`}>• {(supplier.status || '').toUpperCase()}</span>
-                <span className={`badge ${QUAL_CLS[supplier.qualification_status] || 'badge-gray'}`}>
-                  {QUAL_LABEL[supplier.qualification_status] || supplier.qualification_status}
-                </span>
+                <StatusBadge domain="supplier" status={supplier.status} />
+                <StatusBadge domain="qualification" status={supplier.qualification_status} />
+                <StatusBadge domain="email" status={!!supplier.email_verified} label={supplier.email_verified ? 'Email Verified' : 'Email Unverified'} />
               </div>
 
               <div className="ad-info-grid">
@@ -2037,48 +2063,50 @@ function BidsPage() {
 
   return (
     <div className="ad-content">
-      <div>
-        <h2 className="ad-bids-title">Select a Project to Evaluate</h2>
-        <p className="ad-bids-sub">Click a project below to review and evaluate submitted bids.</p>
-      </div>
+      <PageHeader
+        title="Select a Project to Evaluate"
+        description="Click a project below to review and evaluate submitted bids."
+      />
 
-      <div className="ad-bids-toolbar">
-        <div className="ad-search-inline">
-          <Search size={14} />
-          <input
-            placeholder="Search by project name or code"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-        </div>
-        <div className="ad-bids-toolbar-right">
-          <label className="ad-select-wrap">
-            <span>Status</span>
-            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-              {Object.entries(BID_STATUS_FILTERS).map(([key, { label }]) => (
-                <option key={key} value={key}>{label}</option>
-              ))}
-            </select>
+      <div className="ad-card ad-bids-toolbar-card">
+        <div className="ad-bids-toolbar">
+          <label className="ad-search-inline">
+            <Search size={14} aria-hidden="true" />
+            <span className="sr-only">Search projects</span>
+            <input
+              placeholder="Search by project name or code"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
           </label>
-          <label className="ad-select-wrap">
-            <span>Sort</span>
-            <select value={sort} onChange={e => setSort(e.target.value)}>
-              {Object.entries(BID_SORTS).map(([key, { label }]) => (
-                <option key={key} value={key}>{label}</option>
-              ))}
-            </select>
-          </label>
+          <div className="ad-filter-pills ad-filter-pills-inline" role="tablist" aria-label="Filter by type">
+            {TABS.map(t => (
+              <button key={t} role="tab" aria-selected={filterTab === t} className={`ad-pill${filterTab === t ? ' ad-pill-active' : ''}`} onClick={() => setFilterTab(t)}>{t}</button>
+            ))}
+          </div>
+          <div className="ad-bids-toolbar-right">
+            <label className="ad-select-wrap">
+              <span>Status</span>
+              <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+                {Object.entries(BID_STATUS_FILTERS).map(([key, { label }]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="ad-select-wrap">
+              <span>Sort</span>
+              <select value={sort} onChange={e => setSort(e.target.value)}>
+                {Object.entries(BID_SORTS).map(([key, { label }]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
-      </div>
-
-      <div className="ad-filter-pills">
-        {TABS.map(t => (
-          <button key={t} className={`ad-pill${filterTab === t ? ' ad-pill-active' : ''}`} onClick={() => setFilterTab(t)}>{t}</button>
-        ))}
       </div>
 
       {!loading && (
-        <div className="ad-bids-count">
+        <div className="ad-bids-count" aria-live="polite">
           Showing {filtered.length} of {biddable.length} project{biddable.length !== 1 ? 's' : ''}
         </div>
       )}
@@ -2094,29 +2122,44 @@ function BidsPage() {
               </div>
             ))
           : filtered.length === 0
-          ? <div className="ad-empty-msg">
-              {biddable.length === 0
-                ? 'No projects available for bidding yet.'
-                : 'No projects match your search or filters.'}
+          ? <div className="ad-card ad-bid-cards-empty">
+              <EmptyState
+                icon={biddable.length === 0 ? FolderOpen : Search}
+                title={biddable.length === 0 ? 'No projects available for bidding yet' : 'No projects match your search or filters'}
+                description={biddable.length === 0
+                  ? 'Projects appear here once the Head approves them and you publish them for bidding.'
+                  : 'Try a different search term, type, or status filter.'}
+                action={biddable.length === 0 && (
+                  <Link to="/admin/projects" className="ad-btn-cancel">Go to Projects</Link>
+                )}
+              />
             </div>
           : filtered.map(p => (
-            <div className="ad-bid-card" key={p.id} onClick={() => navigate(`/admin/bids/${p.id}`)} role="button" tabIndex={0}>
+            <div
+              className="ad-bid-card"
+              key={p.id}
+              onClick={() => navigate(`/admin/bids/${p.id}`)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/admin/bids/${p.id}`) } }}
+              role="button"
+              tabIndex={0}
+              aria-label={`Evaluate bids for ${p.name}`}
+            >
               <div className="ad-bid-card-top">
-                <div className="ad-bid-card-icon"><FolderOpen size={18} /></div>
-                <ChevronRight size={16} className="ad-bid-card-arrow" />
+                <div className="ad-bid-card-icon" aria-hidden="true"><FolderOpen size={18} /></div>
+                <StatusBadge domain="project" status={p.status} />
               </div>
               <div className="ad-bid-card-name">{p.name}</div>
               <div className="ad-ref-line"><RefCode code={p.code} /></div>
-              <div className="ad-bid-card-budget">{p.budget} budget</div>
-              <span className="badge badge-blue ad-bid-card-type">{p.type}</span>
-              <div className="ad-muted ad-small ad-bid-card-desc">
-                Click to open the project, review submitted bids, and mark the winning supplier.
-              </div>
+              <dl className="ad-bid-card-meta">
+                <div><dt>Budget (ABC)</dt><dd className="ad-bid-card-budget">{p.budget}</dd></div>
+                <div><dt>Type</dt><dd>{p.type}</dd></div>
+                {p.category && <div className="ad-bid-card-meta-full"><dt>Category</dt><dd>{p.category}</dd></div>}
+              </dl>
               <div className="ad-bid-card-footer">
-                <span className="ad-bid-card-count">{p.bids} bid{p.bids !== 1 ? 's' : ''}</span>
-                <span className={`badge ${STATUS_CLS[p.status] || 'badge-gray'}`}>
-                  • {STATUS_LABEL[p.status] || p.status}
+                <span className="ad-bid-card-count">
+                  <FileText size={13} aria-hidden="true" /> {p.bids} bid{p.bids !== 1 ? 's' : ''}
                 </span>
+                <span className="ad-bid-card-cta">Evaluate <ChevronRight size={14} className="ad-bid-card-arrow" aria-hidden="true" /></span>
               </div>
             </div>
           ))
@@ -2264,9 +2307,10 @@ function BidTimelineRow({ row }) {
       </div>
       <div className="ad-timeline-bidrow-meta">
         <span className="ad-muted ad-small">Submitted {fmtDateTime(row.submittedAt)}</span>
-        <span className={`badge badge-${row.decisionTone === 'gray' ? 'gray' : row.decisionTone === 'red' ? 'red' : 'green'}`}>
-          {row.decision}{row.decisionAt ? ` · ${fmtDateTime(row.decisionAt)}` : ''}
-        </span>
+        <StatusBadge
+          tone={row.decisionTone === 'gray' ? 'neutral' : row.decisionTone === 'red' ? 'danger' : 'success'}
+          label={`${row.decision}${row.decisionAt ? ` · ${fmtDateTime(row.decisionAt)}` : ''}`}
+        />
       </div>
     </div>
   )
@@ -2291,7 +2335,7 @@ function TimelineModal({ project, bids, onClose }) {
               <span className="ad-muted ad-small">{project.name}</span>
             </div>
           </div>
-          <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
+          <button className="ad-modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
         </div>
         <div className="ad-modal-body">
           <div className="ad-timeline">
@@ -2423,14 +2467,14 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
             <h3>{bid.supplier_name}</h3>
             <p className="ad-muted ad-small">{peso(bid.amount)} · Submitted {fmtDate(bid.submitted_at)}</p>
           </div>
-          <button className="ad-modal-close" onClick={onClose}><X size={18} /></button>
+          <button className="ad-modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
         </div>
 
         <div className="ad-modal-body">
           <div className="ad-modal-badges">
-            <span className={`badge ${QUAL_BID_CLS[bid.status] || 'badge-gray'}`}>
-              {bid.status === 'winner' ? '• Winning Bidder' : (QUAL_BID_LABEL[bid.status] || bid.status)}
-            </span>
+            {bid.status === 'winner'
+              ? <StatusBadge tone="success" icon={Award} label="Winning Bidder" />
+              : <StatusBadge domain="bid" status={bid.status} />}
             <BlockchainBadge anchors={bid.anchors} />
           </div>
 
@@ -2639,18 +2683,9 @@ function evalStepIndex(status, bids) {
 }
 
 function EvalProgressBar({ status, bids }) {
-  const current = evalStepIndex(status, bids)
   return (
-    <div className="ad-stepper">
-      {EVAL_STEPS.map((label, i) => {
-        const state = i < current ? 'done' : i === current ? 'active' : ''
-        return (
-          <div className={`ad-step ${state}`} key={label}>
-            <div className="ad-step-dot">{i < current ? <Check size={15} /> : i + 1}</div>
-            <div className="ad-step-label">{label}</div>
-          </div>
-        )
-      })}
+    <div className="ad-eval-stepper">
+      <Stepper steps={EVAL_STEPS} current={evalStepIndex(status, bids)} label="Procurement progress" />
     </div>
   )
 }
@@ -2759,7 +2794,7 @@ function BidEvaluationPage() {
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
 
       <button className="ad-back-link" onClick={() => navigate('/admin/projects')}>
-        <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} /> Back to projects
+        <ArrowLeft size={14} /> Back to projects
       </button>
 
       {loadingProject && !project ? (
@@ -2776,21 +2811,28 @@ function BidEvaluationPage() {
           </div>
         </div>
       ) : !project ? (
-        <div className="ad-card"><div className="ad-empty-row">Procurement not found.</div></div>
+        <div className="ad-card">
+          <EmptyState icon={Search} title="Procurement not found"
+            description="It may have been removed, or the link is incorrect."
+            action={<button className="ad-btn-cancel" onClick={() => navigate('/admin/projects')}><ArrowLeft size={14} /> Back to projects</button>} />
+        </div>
       ) : (
         <>
           <div className="ad-card" style={{ padding: '20px 24px' }}>
             <div className="ad-eval-head-row">
-              <div>
-                <h2 style={{ margin: 0 }}>{project.name}</h2>
-                <div className="ad-ref-line" style={{ marginTop: 6 }}>
+              <div style={{ minWidth: 0 }}>
+                <div className="ad-eval-title-row">
+                  <h2 className="ad-eval-title">{project.name}</h2>
+                  <StatusBadge domain="project" status={project.status} />
+                </div>
+                <div className="ad-ref-line" style={{ marginTop: 8 }}>
                   <RefCode code={project.code} size="lg" />
                   <span className="ad-muted ad-small">
-                    {project.category || '—'} · ABC {peso(project.budget)}
+                    {project.category || '—'} · ABC <strong className="ad-eval-abc">{peso(project.budget)}</strong>
                   </span>
                 </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div className="ad-eval-head-actions">
                 <BlockchainBadge anchors={project.anchors} />
                 <button className="ad-btn-timeline" onClick={() => setShowTimeline(true)}>
                   <Clock size={14} /> View Timeline
@@ -2814,39 +2856,46 @@ function BidEvaluationPage() {
                 <h2>Submitted Bids</h2>
                 <p className="ad-muted ad-small">Suppliers who submitted a bid for this procurement</p>
               </div>
-              {awarded && <span className="badge badge-awarded">• Awarded</span>}
+              {awarded
+                ? <StatusBadge domain="project" status="awarded" />
+                : !loadingBids && bids.length > 0 && <StatusBadge tone="neutral" dot={false} label={`${bids.length} bid${bids.length !== 1 ? 's' : ''}`} />}
             </div>
+            <div className="ad-x-scroll">
             <table className="ad-table">
               <thead>
-                <tr><th>PRODUCT</th><th>SUPPLIER</th><th>BID AMOUNT</th><th>SUBMITTED</th><th>QUALIFICATION STATUS</th><th>ACTIONS</th></tr>
+                <tr><th>Product</th><th>Supplier</th><th className="ad-num">Bid Amount</th><th>Submitted</th><th>Qualification Status</th><th className="ad-actions-col">Actions</th></tr>
               </thead>
               <tbody>
                 {loadingBids
                   ? <TableSkeleton rows={3} cols={6} />
                   : bids.length === 0
-                  ? <tr><td colSpan={6} className="ad-empty-row">No bids submitted yet.</td></tr>
+                  ? <TableEmpty colSpan={6} icon={FileText}
+                      title="No bids submitted yet"
+                      description={project.status === 'published'
+                        ? 'Eligible suppliers can bid until the deadline. New bids will appear here automatically.'
+                        : 'Bids open once this project is published.'} />
                   : bids.map(b => (
                     <tr key={b.id} className="ad-bid-row" onClick={() => setViewBid(b)}>
                       <td><BidProductCell bid={b} /></td>
                       <td className="ad-bold ad-bid-supplier-cell">{b.supplier_name}</td>
-                      <td>{peso(b.amount)}</td>
-                      <td className="ad-muted">{fmtDate(b.submitted_at)}</td>
+                      <td className="ad-num">{peso(b.amount)}</td>
+                      <td className="ad-muted ad-nowrap">{fmtDate(b.submitted_at)}</td>
                       <td>
-                        <span className={`badge ${QUAL_BID_CLS[b.status] || 'badge-gray'}`}>
-                          {QUAL_BID_LABEL[b.status] || b.status}
-                        </span>
-                        {(b.documents || []).some(d => d.review_status === 'needs_revision') && (
-                          <span className="badge badge-orange" style={{ marginLeft: 6 }}>Docs Flagged</span>
-                        )}
+                        <div className="ad-badge-stack">
+                          <StatusBadge domain="bid" status={b.status} />
+                          {(b.documents || []).some(d => d.review_status === 'needs_revision') && (
+                            <StatusBadge tone="warning" icon={AlertTriangle} label="Docs Flagged" />
+                          )}
+                        </div>
                       </td>
-                      <td onClick={e => e.stopPropagation()}>
+                      <td className="ad-actions-col" onClick={e => e.stopPropagation()}>
                         {b.status === 'winner' ? (
-                          <span className="badge badge-awarded">• Winning Bidder</span>
+                          <StatusBadge tone="success" icon={Award} label="Winning Bidder" />
                         ) : awarded ? (
                           <span className="ad-muted ad-small">—</span>
                         ) : (
                           <button className="ad-btn-review" onClick={() => setViewBid(b)}>
-                            <Eye size={12} /> Review
+                            <Eye size={13} /> Review
                           </button>
                         )}
                       </td>
@@ -2855,6 +2904,7 @@ function BidEvaluationPage() {
                 }
               </tbody>
             </table>
+            </div>
           </div>
 
           {/* The whole procurement's on-chain trail: submission, Head decision,
@@ -2907,8 +2957,10 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
     if (file) onUpload(award, doc, file)
   }
 
+  const issuedOn = doc.issued_at ? fmtDate(doc.issued_at) : ''
+
   return (
-    <div className="ad-award-doc">
+    <div className={`ad-award-doc${issued ? ' is-issued' : ''}${issued && doc.anchored ? ' is-onchain' : ''}`}>
       {/* Must match validate_upload on the backend (PDF/JPG/PNG, 5 MB) — an
           accept list that offers more than the server takes just invites an
           error at the end of the upload. */}
@@ -2918,24 +2970,15 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
         accept=".pdf,.jpg,.jpeg,.png"
         style={{ display: 'none' }}
         onChange={pick}
+        aria-hidden="true"
+        tabIndex={-1}
       />
       {issued ? (
         <>
-          <div className="ad-award-doc-row">
-            <a className="ad-doc-btn is-issued" href={doc.url} target="_blank" rel="noreferrer" title={`Issued ${fmtDate(doc.issued_at)} — click to open`}>
-              <FileText size={12} /> {shortLabel}
-            </a>
-            {/* Replace the generated notice with the signed scan once it comes
-                back. Appends a new anchor, so both versions stay in the trail. */}
-            <button
-              className="ad-doc-icon-btn"
-              disabled={busy}
-              onClick={() => inputRef.current?.click()}
-              title="Replace with the signed copy"
-            >
-              <Upload size={11} />
-            </button>
-          </div>
+          <a className="ad-award-doc-name" href={doc.url} target="_blank" rel="noreferrer"
+            title={`Issued ${issuedOn} — click to open`}>
+            <FileText size={13} aria-hidden="true" /> <span>{shortLabel}</span>
+          </a>
           {doc.anchored ? (
             <a
               className="ad-award-doc-chain is-anchored"
@@ -2943,6 +2986,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
               target="_blank"
               rel="noreferrer"
               title={`Anchored on-chain (tx ${doc.tx_hash})`}
+              aria-label={`${shortLabel} is anchored on-chain — view transaction`}
             >
               <ShieldCheck size={11} /> On-chain
             </a>
@@ -2959,24 +3003,40 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
               <Link2 size={11} /> {doc.anchor ? 'Anchor now' : 'Not anchored'}
             </button>
           )}
+          {/* Replace the generated notice with the signed scan once it comes
+              back. Appends a new anchor, so both versions stay in the trail. */}
+          <button
+            className="ui-icon-btn ad-award-doc-upload"
+            disabled={busy}
+            onClick={() => inputRef.current?.click()}
+            data-tip="Replace with signed copy"
+            aria-label={`Replace ${shortLabel} with the signed copy`}
+          >
+            {busy ? <Loader2 size={13} className="ui-spin" /> : <Upload size={13} />}
+          </button>
         </>
       ) : (
         // Not issued yet: generate it from the award record (the normal path —
         // nothing to retype, and the notice can't disagree with the award), or
         // upload an already-signed copy.
-        <div className="ad-award-doc-row">
-          <button className="ad-doc-btn" disabled={busy} onClick={() => onGenerate(award, doc)}>
-            <FileText size={12} /> {busy ? 'Working…' : `Generate ${shortLabel}`}
+        <>
+          <span className="ad-award-doc-name is-missing">
+            <FileText size={13} aria-hidden="true" /> <span>{shortLabel}</span>
+          </span>
+          <span className="ad-award-doc-chain is-pending">Pending</span>
+          <button className="ad-award-doc-gen" disabled={busy} onClick={() => onGenerate(award, doc)}>
+            {busy ? <><Loader2 size={12} className="ui-spin" /> Working…</> : <>Generate</>}
           </button>
           <button
-            className="ad-doc-icon-btn"
+            className="ui-icon-btn ad-award-doc-upload"
             disabled={busy}
             onClick={() => inputRef.current?.click()}
-            title="Upload a signed copy instead"
+            data-tip="Upload a signed copy instead"
+            aria-label={`Upload a signed copy of ${shortLabel}`}
           >
-            <Upload size={11} />
+            <Upload size={13} />
           </button>
-        </div>
+        </>
       )}
     </div>
   )
@@ -3050,47 +3110,63 @@ function AwardsPage() {
     <div className="ad-content">
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
       <div className="ad-stats">
-        <div className="ad-stat-card">
-          <div className="ad-stat-label">TOTAL AWARDS</div>
-          <div className="ad-stat-value ad-val-green">{awards.length}</div>
-        </div>
-        <div className="ad-stat-card">
-          <div className="ad-stat-label">TOTAL AWARDED AMOUNT</div>
-          <div className="ad-stat-value ad-val-blue">{peso(totalAmount)}</div>
-        </div>
-        <div className="ad-stat-card">
-          <div className="ad-stat-label">DOCUMENTS ISSUED</div>
-          <div className="ad-stat-value ad-val-purple">{documentsIssued}<span className="ad-stat-of">/{awards.length * 3}</span></div>
-        </div>
-        <div className="ad-stat-card">
-          <div className="ad-stat-label">LATEST AWARD DATE</div>
-          <div className="ad-stat-value ad-val-yellow" style={{ fontSize: 18 }}>{fmtDate(awards[0]?.awarded_at)}</div>
-        </div>
+        {[
+          { label: 'Total Awards', icon: Award, value: awards.length, sub: 'Contracts awarded' },
+          { label: 'Total Awarded Amount', icon: BarChart2, value: peso(totalAmount), sub: 'Sum of winning bids' },
+          {
+            label: 'Documents Issued', icon: FileText,
+            value: <>{documentsIssued}<span className="ad-stat-of">/{awards.length * 3}</span></>,
+            sub: 'BAC Resolution · NOA · NTP',
+          },
+          { label: 'Latest Award Date', icon: Calendar, value: fmtDate(awards[0]?.awarded_at), sub: 'Most recent award', small: true },
+        ].map(({ label, icon: Icon, value, sub, small }) => (
+          <div className="ad-stat-card" key={label}>
+            <div className="ad-stat-top">
+              <span className="ad-stat-label">{label}</span>
+              <div className="ad-stat-icon-wrap" aria-hidden="true"><Icon size={18} /></div>
+            </div>
+            <div className={`ad-stat-value${small ? ' ad-stat-value-sm' : ''}`}>
+              {loading ? <Skeleton width={70} height={24} /> : value}
+            </div>
+            <div className="ad-stat-sub">{sub}</div>
+          </div>
+        ))}
       </div>
 
       <div className="ad-card">
         <div className="ad-card-header">
-          <div className="ad-search-inline">
-            <Search size={14} />
+          <div>
+            <h2>Awarded Contracts</h2>
+            <p>Issue the post-award documents for each winning bid</p>
+          </div>
+          <label className="ad-search-inline">
+            <Search size={14} aria-hidden="true" />
+            <span className="sr-only">Search awards</span>
             <input
               placeholder="Search by supplier, project, or ref code"
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
-          </div>
+          </label>
         </div>
-        <table className="ad-table">
+        <div className="ad-x-scroll">
+        <table className="ad-table ad-awards-table">
           <thead>
             <tr>
-              <th>SUPPLIER</th><th>PROJECT</th><th>AWARD AMOUNT</th>
-              <th>AWARD DATE</th><th>STATUS</th><th>DOCUMENTS</th>
+              <th>Supplier</th><th>Project</th><th className="ad-num">Award Amount</th>
+              <th>Award Date</th><th>Status</th><th>Documents</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <TableSkeleton rows={3} cols={6} />
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={6} className="ad-empty-msg">No awards yet.</td></tr>
+              <TableEmpty colSpan={6} icon={Award}
+                title={search ? 'No awards match your search' : 'No awards yet'}
+                description={search
+                  ? 'Try a different supplier, project, or ref code.'
+                  : 'Awards appear here after you mark a winning bid in Bid Evaluation.'}
+                action={!search && <Link to="/admin/bids" className="ad-btn-cancel">Go to Bid Evaluation</Link>} />
             ) : filtered.map(a => (
               <tr key={a.id}>
                 <td className="ad-bold">{a.supplier_name}</td>
@@ -3100,9 +3176,9 @@ function AwardsPage() {
                     <RefCode code={a.project_code} />
                   </div>
                 </td>
-                <td className="ad-bold">{peso(a.amount)}</td>
-                <td className="ad-muted">{fmtDate(a.awarded_at)}</td>
-                <td><span className={`badge ${a.status === 'won' ? 'badge-green' : 'badge-gray'}`}>• {a.status === 'won' ? 'WON' : 'CANCELLED'}</span></td>
+                <td className="ad-num">{peso(a.amount)}</td>
+                <td className="ad-muted ad-nowrap">{fmtDate(a.awarded_at)}</td>
+                <td><StatusBadge domain="award" status={a.status === 'won' ? 'won' : 'cancelled'} /></td>
                 <td>
                   <div className="ad-doc-btns">
                     {(a.documents || []).map(d => (
@@ -3122,21 +3198,22 @@ function AwardsPage() {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
-      <div className="ad-award-info">
-        <Info size={18} className="ad-award-info-icon" />
+      <div className="ui-callout ad-award-callout">
+        <Info size={18} className="ui-callout-icon" />
         <div>
-          <div className="ad-bold" style={{ marginBottom: 6 }}>About Award Documents</div>
-          <p className="ad-muted ad-small" style={{ marginBottom: 8 }}>
+          <div className="ui-callout-title">About Award Documents</div>
+          <p style={{ marginBottom: 10 }}>
             Once a winning bid is selected, upload each signed document below. They are issued in this order:
           </p>
-          <ul className="ad-award-info-list">
-            <li><strong>BAC Resolution:</strong> Official resolution documenting the award decision</li>
-            <li><strong>NOA:</strong> Official notification to the winning supplier</li>
-            <li><strong>NTP:</strong> Authorization for the supplier to begin work</li>
-          </ul>
-          <p className="ad-muted ad-small" style={{ marginTop: 8 }}>
+          <ol className="ad-award-steps">
+            <li><span className="ad-award-step-n">1</span><div><strong>BAC Resolution</strong><span>Official resolution documenting the award decision</span></div></li>
+            <li><span className="ad-award-step-n">2</span><div><strong>NOA</strong><span>Official notification to the winning supplier</span></div></li>
+            <li><span className="ad-award-step-n">3</span><div><strong>NTP</strong><span>Authorization for the supplier to begin work</span></div></li>
+          </ol>
+          <p style={{ marginTop: 10 }}>
             Each upload is hashed together with its issue date and recorded on the blockchain, so a
             notice can never be swapped or backdated afterwards. Replacing a document adds a new
             entry to the trail rather than overwriting the original.
@@ -3255,25 +3332,29 @@ function ReportsPage() {
   return (
     <div className="ad-content">
       <div className="ad-report-bar">
-        <div className="ad-report-tabs">
+        <div className="ad-report-tabs" role="tablist" aria-label="Report type">
           <button
+            role="tab"
+            aria-selected={reportTab === 'procurement'}
             className={`ad-report-tab${reportTab === 'procurement' ? ' active' : ''}`}
             onClick={() => setReportTab('procurement')}
-          >Procurement Report</button>
+          ><FolderOpen size={14} aria-hidden="true" /> Procurement Report</button>
           <button
+            role="tab"
+            aria-selected={reportTab === 'supplier'}
             className={`ad-report-tab${reportTab === 'supplier' ? ' active' : ''}`}
             onClick={() => setReportTab('supplier')}
-          >Supplier Report</button>
+          ><Users size={14} aria-hidden="true" /> Supplier Report</button>
         </div>
         <div className="ad-export-btns">
           <button
             className="ad-btn-export-csv"
             onClick={() => exportReportCSV(activeReport, `${reportTab}-report-${new Date().toISOString().slice(0, 10)}.csv`)}
-          >Export CSV</button>
+          ><FileText size={14} aria-hidden="true" /> Export CSV</button>
           <button
             className="ad-btn-primary"
             onClick={() => exportReportPDF(activeReport, `${reportTab}-report-${new Date().toISOString().slice(0, 10)}.pdf`)}
-          >Export PDF</button>
+          ><FileText size={14} aria-hidden="true" /> Export PDF</button>
         </div>
       </div>
 
@@ -3283,7 +3364,7 @@ function ReportsPage() {
             {procurementStats.map(({ label, value, cls }) => (
               <div className="ad-stat-card" key={label}>
                 <div className="ad-stat-label">{label}</div>
-                <div className={`ad-stat-value ${cls}`} style={{ fontSize: 22 }}>{value}</div>
+                <div className="ad-stat-value ad-stat-value-sm">{value}</div>
               </div>
             ))}
           </div>
@@ -3291,12 +3372,12 @@ function ReportsPage() {
           <div className="ad-card">
             <div className="ad-card-header"><h2>By Procurement Type</h2></div>
             <table className="ad-table">
-              <thead><tr><th>TYPE</th><th>COUNT</th></tr></thead>
+              <thead><tr><th>Type</th><th className="ad-num">Count</th></tr></thead>
               <tbody>
                 {Object.keys(typeCount).length === 0 ? (
-                  <tr><td colSpan={2} className="ad-empty-msg">No data yet.</td></tr>
+                  <TableEmpty colSpan={2} icon={BarChart2} title="No data yet" description="Numbers appear here as projects and suppliers are added." />
                 ) : Object.entries(typeCount).map(([type, count]) => (
-                  <tr key={type}><td>{type}</td><td>{count}</td></tr>
+                  <tr key={type}><td>{type}</td><td className="ad-num">{count}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -3305,16 +3386,16 @@ function ReportsPage() {
           <div className="ad-card">
             <div className="ad-card-header"><h2>Recent Awards</h2></div>
             <table className="ad-table">
-              <thead><tr><th>PROJECT</th><th>WINNER</th><th>AMOUNT</th><th>DATE</th></tr></thead>
+              <thead><tr><th>Project</th><th>Winner</th><th className="ad-num">Amount</th><th>Date</th></tr></thead>
               <tbody>
                 {awards.length === 0 ? (
-                  <tr><td colSpan={4} className="ad-empty-msg">No awards yet.</td></tr>
+                  <TableEmpty colSpan={4} icon={Award} title="No awards yet" description="Awarded contracts will be summarised here." />
                 ) : awards.map(a => (
                   <tr key={a.id}>
                     <td>{a.project_name}</td>
                     <td>{a.supplier_name}</td>
-                    <td className="ad-bold">{peso(a.amount)}</td>
-                    <td className="ad-muted">{fmtDate(a.awarded_at)}</td>
+                    <td className="ad-num">{peso(a.amount)}</td>
+                    <td className="ad-muted ad-nowrap">{fmtDate(a.awarded_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -3329,7 +3410,7 @@ function ReportsPage() {
             {supplierStats.map(({ label, value, cls }) => (
               <div className="ad-stat-card" key={label}>
                 <div className="ad-stat-label">{label}</div>
-                <div className={`ad-stat-value ${cls}`} style={{ fontSize: 22 }}>{value}</div>
+                <div className="ad-stat-value ad-stat-value-sm">{value}</div>
               </div>
             ))}
           </div>
@@ -3337,12 +3418,12 @@ function ReportsPage() {
           <div className="ad-card">
             <div className="ad-card-header"><h2>By Business Category</h2></div>
             <table className="ad-table">
-              <thead><tr><th>CATEGORY</th><th>SUPPLIERS</th></tr></thead>
+              <thead><tr><th>Category</th><th className="ad-num">Suppliers</th></tr></thead>
               <tbody>
                 {Object.keys(categoryCount).length === 0 ? (
-                  <tr><td colSpan={2} className="ad-empty-msg">No data yet.</td></tr>
+                  <TableEmpty colSpan={2} icon={BarChart2} title="No data yet" description="Numbers appear here as projects and suppliers are added." />
                 ) : Object.entries(categoryCount).map(([cat, count]) => (
-                  <tr key={cat}><td>{cat}</td><td>{count}</td></tr>
+                  <tr key={cat}><td>{cat}</td><td className="ad-num">{count}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -3350,31 +3431,29 @@ function ReportsPage() {
 
           <div className="ad-card">
             <div className="ad-card-header"><h2>Supplier Directory</h2></div>
+            <div className="ad-x-scroll">
             <table className="ad-table">
               <thead>
                 <tr>
-                  <th>COMPANY</th><th>QUALIFICATION STATUS</th><th>REGISTERED</th>
-                  <th>CONTRACTS WON</th><th>AWARDED AMOUNT</th>
+                  <th>Company</th><th>Qualification Status</th><th>Registered</th>
+                  <th className="ad-num">Contracts Won</th><th className="ad-num">Awarded Amount</th>
                 </tr>
               </thead>
               <tbody>
                 {suppliers.length === 0 ? (
-                  <tr><td colSpan={5} className="ad-empty-msg">No suppliers yet.</td></tr>
+                  <TableEmpty colSpan={5} icon={Users} title="No suppliers yet" description="Registered suppliers will be listed here." />
                 ) : suppliers.map(s => (
                   <tr key={s.id}>
                     <td className="ad-bold">{s.company}</td>
-                    <td>
-                      <span className={`badge ${QUAL_CLS[s.qualification_status] || 'badge-gray'}`}>
-                        {QUAL_LABEL[s.qualification_status] || (s.qualification_status || '').replace(/_/g, ' ')}
-                      </span>
-                    </td>
+                    <td><StatusBadge domain="qualification" status={s.qualification_status} /></td>
                     <td className="ad-muted">{fmtDate(s.registered)}</td>
-                    <td>{supplierAwardStats[s.id]?.count || 0}</td>
-                    <td className="ad-bold">{peso(supplierAwardStats[s.id]?.amount || 0)}</td>
+                    <td className="ad-num">{supplierAwardStats[s.id]?.count || 0}</td>
+                    <td className="ad-num">{peso(supplierAwardStats[s.id]?.amount || 0)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         </>
       )}
@@ -3386,6 +3465,7 @@ function ReportsPage() {
 
 export default function AdminDashboard() {
   const loc = useLocation()
+  const navigate = useNavigate()
   const [navOpen, setNavOpen] = useState(false)
   // Close the mobile drawer whenever the route changes.
   useEffect(() => { setNavOpen(false) }, [loc.pathname])
@@ -3403,12 +3483,48 @@ export default function AdminDashboard() {
   const title = PAGE_TITLES[loc.pathname]
     || (loc.pathname.startsWith('/admin/bids/') ? 'Bid Evaluation' : 'Admin Dashboard')
 
+  // Breadcrumbs: Admin › Section › (sub-page)
+  const CRUMB_SECTIONS = {
+    projects: 'Projects', planning: 'Planning', suppliers: 'Suppliers',
+    bids: 'Bids', awards: 'Awards', reports: 'Reports',
+  }
+  const [, , section, sub] = loc.pathname.split('/')
+  const crumbs = [{ label: 'Admin', to: '/admin' }]
+  if (!section || !CRUMB_SECTIONS[section]) crumbs.push({ label: 'Dashboard' })
+  else {
+    crumbs.push({ label: CRUMB_SECTIONS[section], to: `/admin/${section}` })
+    if (sub) crumbs.push({ label: section === 'bids' ? 'Evaluation' : sub === 'history' ? 'History' : sub })
+  }
+
+  // "/admin/projects/history" and "/admin/bids/:id" keep their parent highlighted.
+  const isActive = (to) => to === '/admin' ? loc.pathname === '/admin' : loc.pathname === to || loc.pathname.startsWith(`${to}/`)
+
+  const u = storedUser()
+  const user = {
+    name: u.full_name || u.username || 'System Administrator',
+    email: u.email || '',
+    role: 'Administrator',
+  }
+
   return (
     <div className="ad-layout">
-      <Sidebar active={loc.pathname} open={navOpen} onClose={() => setNavOpen(false)} />
+      <AppSidebar
+        workspace="Admin Workspace"
+        logoIcon={Shield}
+        sections={NAV_SECTIONS}
+        isActive={isActive}
+        open={navOpen}
+        onClose={() => setNavOpen(false)}
+      />
       {navOpen && <div className="ad-nav-backdrop" onClick={() => setNavOpen(false)} />}
       <div className="ad-main">
-        <Header title={title} onMenu={() => setNavOpen(true)} />
+        <AppHeader
+          title={title}
+          breadcrumbs={crumbs}
+          onMenu={() => setNavOpen(true)}
+          user={user}
+          menu={[{ icon: LogOut, label: 'Log out', danger: true, onClick: () => { apiLogout(); navigate('/login') } }]}
+        />
         <div className="ad-body">
           <Routes>
             <Route index element={<DashboardHome />} />
