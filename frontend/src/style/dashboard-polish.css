@@ -1,0 +1,298 @@
+/* ── Dashboard polish layer ────────────────────────────────────────────────────
+   The three role dashboards grew their own copies of buttons, cards, tables and
+   stat tiles (ad-*, hd-*, sd-*). Rather than rename hundreds of class names in
+   the page components, this layer maps every legacy class onto the shared
+   tokens so they render as ONE design system. Loaded last (main.jsx). */
+
+/* ── Canvas + base card ───────────────────────────────────────────────────── */
+.ad-layout, .hd-layout, .sd-layout { background: var(--canvas) !important; }
+.ad-body, .hd-body, .sd-body { padding: var(--sp-6) var(--sp-8) var(--sp-8) !important; }
+.ad-content, .hd-content, .sd-content { gap: var(--sp-5) !important; font-size: var(--fs-body); color: var(--text-body); }
+.ad-modal, .sd-modal, .ad-confirm, .sd-confirm { font-size: var(--fs-body); }
+.ad-form-group label, .sd-form-group label { text-transform: none !important; letter-spacing: 0 !important; }
+
+.ad-card, .hd-card, .sd-card {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--r-card) !important;
+  box-shadow: var(--shadow-xs);
+}
+.ad-card-header, .hd-card-header, .sd-card-header {
+  padding: var(--sp-4) var(--sp-5) !important;
+  border-bottom: 1px solid var(--border) !important;
+  gap: var(--sp-3) !important;
+}
+.ad-card-header h2, .hd-card-header h2, .sd-card-header h2 {
+  font-size: var(--fs-card-title) !important;
+  font-weight: var(--fw-bold) !important;
+  color: var(--text-strong) !important;
+  margin: 0 0 2px !important;
+}
+.ad-card-header p, .hd-card-header p, .sd-card-header p {
+  font-size: var(--fs-caption) !important;
+  color: var(--text-subtle) !important;
+  margin: 0;
+}
+
+/* ── Buttons → ui-btn system ──────────────────────────────────────────────── */
+/* shared geometry */
+.ad-btn-primary, .ad-btn-primary-sm, .ad-btn-cancel, .ad-btn-view-sm, .ad-btn-history,
+.ad-btn-publish, .ad-btn-timeline, .ad-btn-export-csv, .ad-btn-review, .ad-btn-archive,
+.ad-btn-approve, .ad-btn-revision, .ad-btn-reject, .ad-btn-confirm,
+.hd-btn-approve, .hd-btn-cancel, .hd-btn-expand, .hd-btn-reject, .hd-btn-reject-sm,
+.hd-btn-reject-confirm, .hd-btn-review, .hd-btn-revision, .hd-btn-view, .hd-btn-outline,
+.sd-btn-primary, .sd-btn-cancel, .sd-btn-back, .sd-btn-view, .sd-btn-export-csv,
+.sd-btn-withdraw, .sd-bid-btn, .sd-bid-btn-table, .sd-reupload-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center;
+  gap: 6px !important;
+  height: 36px;
+  padding: 0 14px !important;
+  border-radius: var(--r-btn) !important;
+  font-size: var(--fs-small) !important;
+  font-weight: var(--fw-semibold) !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  border: 1px solid transparent !important;
+  box-shadow: none !important;
+  text-decoration: none !important;
+  cursor: pointer;
+  transition: background var(--ease), border-color var(--ease), color var(--ease), box-shadow var(--ease) !important;
+}
+/* small (in-row) sizes */
+.ad-btn-primary-sm, .ad-btn-view-sm, .ad-btn-publish, .ad-btn-review, .ad-btn-archive, .ad-btn-history,
+.hd-btn-expand, .hd-btn-view, .sd-btn-view, .sd-bid-btn, .sd-bid-btn-table, .sd-reupload-btn,
+.hd-btn-approve, .hd-btn-reject-sm {
+  height: 32px;
+  padding: 0 12px !important;
+  font-size: var(--fs-caption) !important;
+  gap: 5px !important;
+}
+
+/* primary */
+.ad-btn-primary, .ad-btn-primary-sm, .ad-btn-publish, .ad-btn-approve, .ad-btn-confirm.ad-confirm-green,
+.hd-btn-approve, .hd-btn-review, .sd-btn-primary, .sd-bid-btn, .sd-bid-btn-table {
+  background: var(--c-primary-600) !important;
+  color: #fff !important;
+  border-color: var(--c-primary-600) !important;
+}
+.ad-btn-primary:hover:not(:disabled), .ad-btn-primary-sm:hover:not(:disabled), .ad-btn-publish:hover:not(:disabled),
+.ad-btn-approve:hover:not(:disabled), .ad-btn-confirm.ad-confirm-green:hover:not(:disabled),
+.hd-btn-approve:hover:not(:disabled), .hd-btn-review:hover:not(:disabled), .sd-btn-primary:hover:not(:disabled),
+.sd-bid-btn:hover:not(:disabled), .sd-bid-btn-table:hover:not(:disabled) {
+  background: var(--c-primary-700) !important;
+  border-color: var(--c-primary-700) !important;
+}
+
+/* secondary */
+.ad-btn-cancel, .ad-btn-view-sm, .ad-btn-history, .ad-btn-timeline, .ad-btn-export-csv, .ad-btn-review, .ad-btn-archive,
+.hd-btn-cancel, .hd-btn-expand, .hd-btn-view, .hd-btn-outline,
+.sd-btn-cancel, .sd-btn-back, .sd-btn-view, .sd-btn-export-csv, .sd-reupload-btn {
+  background: var(--surface) !important;
+  color: var(--text-body) !important;
+  border-color: var(--border-strong) !important;
+}
+.ad-btn-cancel:hover:not(:disabled), .ad-btn-view-sm:hover:not(:disabled), .ad-btn-history:hover:not(:disabled),
+.ad-btn-timeline:hover:not(:disabled), .ad-btn-export-csv:hover:not(:disabled), .ad-btn-review:hover:not(:disabled),
+.ad-btn-archive:hover:not(:disabled),
+.hd-btn-cancel:hover:not(:disabled), .hd-btn-expand:hover:not(:disabled), .hd-btn-view:hover:not(:disabled), .hd-btn-outline:hover:not(:disabled),
+.sd-btn-cancel:hover:not(:disabled), .sd-btn-back:hover:not(:disabled), .sd-btn-view:hover:not(:disabled),
+.sd-btn-export-csv:hover:not(:disabled), .sd-reupload-btn:hover:not(:disabled) {
+  border-color: var(--c-primary-500) !important;
+  color: var(--c-primary-700) !important;
+  background: var(--c-primary-50) !important;
+}
+
+/* warning (request revision) */
+.ad-btn-revision, .hd-btn-revision, .ad-btn-confirm.ad-confirm-orange {
+  background: var(--surface) !important;
+  color: var(--tone-warning-fg) !important;
+  border-color: var(--tone-warning-border) !important;
+}
+.ad-btn-confirm.ad-confirm-orange { background: var(--tone-warning-solid) !important; color: #1f1300 !important; border-color: var(--tone-warning-solid) !important; }
+.ad-btn-revision:hover:not(:disabled), .hd-btn-revision:hover:not(:disabled) { background: var(--tone-warning-bg) !important; }
+
+/* danger outline (in-place reject) / solid (confirm) */
+.ad-btn-reject, .hd-btn-reject, .hd-btn-reject-sm, .sd-btn-withdraw {
+  background: var(--surface) !important;
+  color: var(--tone-danger-fg) !important;
+  border-color: var(--tone-danger-border) !important;
+}
+.ad-btn-reject:hover:not(:disabled), .hd-btn-reject:hover:not(:disabled), .hd-btn-reject-sm:hover:not(:disabled),
+.sd-btn-withdraw:hover:not(:disabled) { background: var(--tone-danger-bg) !important; }
+.hd-btn-reject-confirm, .ad-btn-confirm.ad-confirm-red {
+  background: var(--tone-danger-solid) !important;
+  color: #fff !important;
+  border-color: var(--tone-danger-solid) !important;
+}
+.hd-btn-reject-confirm:hover:not(:disabled), .ad-btn-confirm.ad-confirm-red:hover:not(:disabled) { background: #dc2626 !important; }
+
+/* shared states */
+.ad-btn-primary:focus-visible, .ad-btn-cancel:focus-visible, .ad-btn-view-sm:focus-visible, .ad-btn-approve:focus-visible,
+.ad-btn-reject:focus-visible, .ad-btn-revision:focus-visible, .ad-btn-publish:focus-visible, .ad-btn-review:focus-visible,
+.hd-btn-approve:focus-visible, .hd-btn-reject-sm:focus-visible, .hd-btn-expand:focus-visible, .hd-btn-revision:focus-visible,
+.sd-btn-primary:focus-visible, .sd-btn-cancel:focus-visible, .sd-btn-view:focus-visible, .sd-bid-btn:focus-visible,
+.sd-bid-btn-table:focus-visible { outline: none !important; box-shadow: var(--focus-ring) !important; }
+.ad-btn-primary:disabled, .ad-btn-approve:disabled, .ad-btn-reject:disabled, .ad-btn-revision:disabled,
+.ad-btn-publish:disabled, .ad-btn-confirm:disabled, .hd-btn-approve:disabled, .hd-btn-reject-sm:disabled,
+.hd-btn-revision:disabled, .hd-btn-reject-confirm:disabled, .sd-btn-primary:disabled, .sd-bid-btn:disabled {
+  opacity: 0.55 !important;
+  cursor: not-allowed !important;
+}
+/* "Locked" bid buttons read as disabled-neutral, not as a brand action */
+.sd-bid-btn.sd-bid-locked {
+  background: var(--tone-neutral-bg) !important;
+  color: var(--text-subtle) !important;
+  border-color: var(--border) !important;
+  opacity: 1 !important;
+}
+
+/* ── Filter pills / tabs ──────────────────────────────────────────────────── */
+.ad-pill, .hd-pill, .sd-pill {
+  height: 32px;
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px !important;
+  border-radius: var(--r-pill) !important;
+  font-size: var(--fs-small) !important;
+  font-weight: var(--fw-medium) !important;
+  color: var(--text-subtle) !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+}
+.ad-pill:hover, .hd-pill:hover, .sd-pill:hover { color: var(--text-strong) !important; border-color: var(--border-strong) !important; }
+.ad-pill.ad-pill-active, .hd-pill.hd-pill-active, .sd-pill.sd-pill-active {
+  background: var(--c-navy-900) !important;
+  border-color: var(--c-navy-900) !important;
+  color: #fff !important;
+  font-weight: var(--fw-semibold) !important;
+}
+.ad-pill:focus-visible, .hd-pill:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.ad-filter-pills, .hd-filter-pills { padding: var(--sp-3) var(--sp-5) !important; gap: var(--sp-2) !important; }
+
+/* ── Search ───────────────────────────────────────────────────────────────── */
+.ad-search-inline, .sd-search-inline, .hd-search-inline {
+  height: 36px;
+  padding: 0 12px !important;
+  gap: 8px !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--r-btn) !important;
+  color: var(--text-faint) !important;
+  transition: border-color var(--ease), box-shadow var(--ease);
+}
+.ad-search-inline:focus-within, .sd-search-inline:focus-within, .hd-search-inline:focus-within {
+  border-color: var(--c-primary-500) !important;
+  box-shadow: var(--focus-ring);
+}
+.ad-search-inline input, .sd-search-inline input { width: 220px; font-size: var(--fs-small) !important; color: var(--text-strong) !important; }
+.ad-search-inline input:focus-visible, .sd-search-inline input:focus-visible { outline: none; }
+
+/* ── Tables ───────────────────────────────────────────────────────────────── */
+.ad-table th, .hd-table th, .sd-table th {
+  font-size: var(--fs-micro) !important;
+  font-weight: var(--fw-semibold) !important;
+  color: var(--text-subtle) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.05em !important;
+  background: var(--surface-muted) !important;
+  border-bottom: 1px solid var(--border) !important;
+  padding: 10px 16px !important;
+  white-space: nowrap;
+}
+.ad-table td, .hd-table td, .sd-table td {
+  padding: 12px 16px !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--text-body);
+  font-size: var(--fs-small);
+}
+.ad-table tbody tr, .hd-table tbody tr, .sd-table tbody tr { transition: background var(--ease); }
+.ad-table tbody tr:hover td, .hd-table tbody tr:hover td, .sd-table tbody tr:hover td { background: var(--surface-muted) !important; }
+.ad-table tbody tr:last-child td, .hd-table tbody tr:last-child td, .sd-table tbody tr:last-child td { border-bottom: none !important; }
+.ad-num, .ad-table th.ad-num, .ad-table td.ad-num { text-align: right !important; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ad-table td.ad-num { font-weight: var(--fw-semibold); color: var(--text-strong); }
+.ad-actions { flex-wrap: nowrap !important; justify-content: flex-end; }
+.ad-table th.ad-actions-col, .ad-table td.ad-actions-col { text-align: right; width: 1%; white-space: nowrap; }
+/* tables scroll sideways in their card on narrow screens */
+.ad-table-scroll, .hd-table-wrap, .sd-table-scroll { overflow-x: auto; }
+.ad-x-scroll { overflow-x: auto; }
+.ad-x-scroll .ad-table { min-width: 720px; }
+
+/* ── Stat / KPI cards (all roles) ─────────────────────────────────────────── */
+.ad-stats, .hd-stats, .sd-stats { gap: var(--sp-4) !important; }
+.ad-stat-card, .hd-stat-card, .sd-stat-card {
+  position: relative;
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-left: 1px solid var(--border) !important;
+  border-radius: var(--r-card) !important;
+  padding: var(--sp-5) !important;
+  box-shadow: var(--shadow-xs) !important;
+  transition: box-shadow var(--ease), border-color var(--ease);
+}
+.ad-stat-card:hover, .hd-stat-card:hover, .sd-stat-card:hover { box-shadow: var(--shadow-sm) !important; }
+.ad-stat-label, .hd-stat-label, .sd-stat-label {
+  font-size: var(--fs-micro) !important;
+  font-weight: var(--fw-semibold) !important;
+  color: var(--text-subtle) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.06em !important;
+}
+.ad-stat-value, .hd-stat-value, .sd-stat-value {
+  font-size: 28px !important;
+  font-weight: var(--fw-bold) !important;
+  color: var(--text-strong) !important;
+  line-height: 1.1 !important;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  margin: 6px 0 4px !important;
+}
+.ad-stat-sub, .hd-stat-sub, .sd-stat-sub { font-size: var(--fs-caption) !important; color: var(--text-subtle) !important; }
+/* One accent: values are neutral; meaning lives in the icon tint only. */
+.ad-val-green, .ad-val-blue, .ad-val-purple, .ad-val-yellow, .ad-val-red,
+.sd-val-green, .sd-val-blue, .sd-val-purple, .sd-val-yellow, .sd-val-red { color: var(--text-strong) !important; }
+
+.ad-stat-icon-wrap, .hd-stat-icon, .sd-stat-icon, .ui-stat-icon {
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 10px !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--c-primary-50) !important;
+  color: var(--c-primary-600) !important;
+}
+.ui-stat-icon--warning, .hd-icon-yellow, .sd-icon-yellow { background: var(--tone-warning-bg) !important; color: var(--tone-warning-fg) !important; }
+.ui-stat-icon--danger, .hd-icon-red, .sd-icon-red { background: var(--tone-danger-bg) !important; color: var(--tone-danger-fg) !important; }
+.ui-stat-icon--info, .hd-icon-blue, .sd-icon-blue { background: var(--tone-info-bg) !important; color: var(--tone-info-fg) !important; }
+.hd-icon-green, .sd-icon-green, .hd-icon-purple, .sd-icon-purple { background: var(--c-primary-50) !important; color: var(--c-primary-600) !important; }
+.hd-stat-card::before, .sd-stat-card::before { display: none !important; }
+
+/* Stat tile used on Awards / Reports (label + icon row) */
+.ui-stat-top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); }
+
+/* ── Monospace ref codes everywhere ───────────────────────────────────────── */
+.ad-ref, .hd-id, .sd-mono { font-family: var(--font-mono) !important; }
+.hd-id, .sd-mono {
+  font-size: var(--fs-caption) !important;
+  color: var(--text-body) !important;
+  background: var(--tone-neutral-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+/* ── Helpers ──────────────────────────────────────────────────────────────── */
+.ad-muted, .hd-muted, .sd-muted { color: var(--text-subtle); }
+.ad-empty-msg, .ad-empty-row, .sd-empty-msg { color: var(--text-subtle) !important; }
+
+@media (max-width: 768px) {
+  .ad-body, .hd-body, .sd-body { padding: var(--sp-4) !important; }
+  .ad-content, .hd-content, .sd-content { padding: 0 !important; }
+  .ad-search-inline input, .sd-search-inline input { width: 100%; min-width: 0; }
+  .ad-search-inline, .sd-search-inline { flex: 1 1 200px; }
+}

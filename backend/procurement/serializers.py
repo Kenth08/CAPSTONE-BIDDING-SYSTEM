@@ -32,7 +32,11 @@ class SupplierListSerializer(serializers.ModelSerializer):
         fields = [
             "id", "company", "contact", "full_name", "email", "business_type",
             "business_types", "status", "qualification_status", "email_verified", "registered",
+            "category_request_status",
         ]
+        # Output-only: verification state changes only through the approve /
+        # reject / request-revision actions, which are audit-logged.
+        read_only_fields = fields
 
 
 # Backwards-compatible alias (other code/imports may still reference SupplierSerializer).
@@ -57,7 +61,11 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
             "status", "qualification_status", "email_verified", "registered",
             "declaration_accepted", "admin_notes", "document_reviews", "reviewed_at",
             "documents",
+            # category change request (business_types above = approved set)
+            "pending_business_types", "category_request_status", "category_request_note",
+            "category_requested_at", "category_reviewed_at",
         ]
+        read_only_fields = fields   # output-only; see SupplierListSerializer
 
     def get_documents(self, obj):
         request = self.context.get("request")
@@ -77,31 +85,40 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
         return result
 
 
+def clean_business_types(value):
+    """Validate a requested category list and return it de-duplicated, in the
+    canonical PROCUREMENT_CATEGORIES order (so the same set always compares and
+    stores identically). Raises serializers.ValidationError."""
+    if not isinstance(value, list) or not value:
+        raise serializers.ValidationError({"business_types": "Select at least one business type."})
+    if not all(isinstance(v, str) for v in value):
+        raise serializers.ValidationError({"business_types": "Invalid business type list."})
+    invalid = [v for v in value if v not in PROCUREMENT_CATEGORIES]
+    if invalid:
+        raise serializers.ValidationError(
+            {"business_types": f"Unknown business type(s): {', '.join(invalid)}."})
+    chosen = set(value)
+    return [c for c in PROCUREMENT_CATEGORIES if c in chosen]
+
+
 class SupplierMeUpdateSerializer(serializers.ModelSerializer):
-    """Fields a supplier may edit about their own profile from the Settings page.
+    """Contact fields a supplier may edit about their own profile.
 
     Company name and TIN are excluded — they were verified at registration and
     changing them silently would undermine that review. business_types is
-    editable: it only controls which procurement categories the supplier sees
-    and can bid on, it isn't a verified/audited fact like the company's legal
-    name, so a change takes effect immediately with no re-approval needed.
+    deliberately NOT here either: it decides which procurements a supplier can
+    see and bid on, so for a verified supplier a change is a request an Admin
+    must approve (SupplierViewSet.me / approve-categories). It used to be
+    writable here and took effect immediately.
     """
 
     class Meta:
         model = Supplier
-        fields = ["phone_number", "company_address", "representative_name", "business_types"]
+        fields = ["phone_number", "company_address", "representative_name"]
 
     def validate_phone_number(self, value):
         if value and not value.isdigit():
             raise serializers.ValidationError("Phone number must contain digits only.")
-        return value
-
-    def validate_business_types(self, value):
-        if not isinstance(value, list) or not value:
-            raise serializers.ValidationError("Select at least one business type.")
-        invalid = [v for v in value if v not in PROCUREMENT_CATEGORIES]
-        if invalid:
-            raise serializers.ValidationError(f"Unknown business type(s): {', '.join(invalid)}.")
         return value
 
 
@@ -184,34 +201,47 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
         return out
 
     def validate(self, attrs):
-        # Enforce the realistic "complete procurement" rules only when creating.
-        if self.instance is None:
-            if attrs.get("category") not in PROCUREMENT_CATEGORIES:
-                raise serializers.ValidationError({"category": "Select a valid procurement category."})
-            required_fields = {
-                "type": "Procurement Type", "delivery_location": "Delivery Location",
-            }
-            for field, label in required_fields.items():
-                if not attrs.get(field):
-                    raise serializers.ValidationError({field: f"{label} is required."})
-            # Neither the bid deadline nor the expected delivery date is chosen
-            # directly — only PERIODS are. The deadline is computed from
-            # bidding_period_days at publish time (ProjectViewSet.publish); the
-            # expected delivery date is computed from delivery_period_days at
-            # AWARD time (BidViewSet.select_winner), matching how real
-            # procurement counts delivery from Notice to Proceed, not bid close.
-            # Both guarantee the dates can never go stale while a project sits
-            # in approval, revision, or evaluation.
+        # The same field rules apply on create AND on update. They used to run
+        # on create only, so an edit could store a negative budget or a 0-day
+        # bidding period that publish then turned into a deadline of today.
+        # On create every rule applies; on an update only the fields actually
+        # being sent are checked (a partial PATCH leaves the rest as stored).
+        creating = self.instance is None
+
+        def sent(field):
+            return creating or field in attrs
+
+        if sent("category") and attrs.get("category") not in PROCUREMENT_CATEGORIES:
+            raise serializers.ValidationError({"category": "Select a valid procurement category."})
+        required_fields = {
+            "name": "Procurement Name", "type": "Procurement Type",
+            "delivery_location": "Delivery Location",
+        }
+        for field, label in required_fields.items():
+            if sent(field) and not str(attrs.get(field) or "").strip():
+                raise serializers.ValidationError({field: f"{label} is required."})
+        # Neither the bid deadline nor the expected delivery date is chosen
+        # directly — only PERIODS are. The deadline is computed from
+        # bidding_period_days at publish time (ProjectViewSet.publish); the
+        # expected delivery date is computed from delivery_period_days at
+        # AWARD time (BidViewSet.select_winner), matching how real
+        # procurement counts delivery from Notice to Proceed, not bid close.
+        # Both guarantee the dates can never go stale while a project sits
+        # in approval, revision, or evaluation.
+        if sent("bidding_period_days"):
             period = attrs.get("bidding_period_days")
             if not period or period < 1 or period > 180:
                 raise serializers.ValidationError(
                     {"bidding_period_days": "Enter a bidding period between 1 and 180 days."})
+        if sent("delivery_period_days"):
             delivery_period = attrs.get("delivery_period_days")
             if not delivery_period or delivery_period < 1 or delivery_period > 365:
                 raise serializers.ValidationError(
                     {"delivery_period_days": "Enter a delivery period between 1 and 365 days."})
-            if not attrs.get("budget") or attrs["budget"] <= 0:
-                raise serializers.ValidationError({"budget": "Enter the Approved Budget (ABC)."})
+        if sent("budget") and (attrs.get("budget") is None or attrs["budget"] <= 0):
+            raise serializers.ValidationError(
+                {"budget": "Enter the Approved Budget (ABC) as an amount greater than zero."})
+        if creating:
             missing = [label for key, label, req in PROCUREMENT_DOCUMENT_FIELDS if req and not attrs.get(key)]
             if missing:
                 raise serializers.ValidationError(
@@ -238,9 +268,12 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
         # actions, never by directly writing the field. `deadline` and
         # `expected_delivery_date` are likewise computed, not chosen — see the
         # `validate()` comment above.
+        # `document_reviews` is the Head's per-document verdict — written only by
+        # request-revision / resubmit-documents, never by a generic edit.
         read_only_fields = [
             "code", "created_at", "status", "reviewed_at", "reject_reason",
             "published_at", "awarded_at", "deadline", "expected_delivery_date",
+            "document_reviews",
         ]
         extra_kwargs = {
             **{
@@ -336,6 +369,10 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             "terms_accepted", "interest_declared", "scm_declared",
             "accuracy_confirmed", "specification_confirmed",
         ]
+        # Output-only. Bids are written by ProjectViewSet.bid (the supplier) and
+        # changed only by the evaluation actions — never by a generic edit, which
+        # used to let an amount or winner status be rewritten directly.
+        read_only_fields = fields
 
     def _abs_url(self, obj, field):
         return protected_file_url(self.context.get("request"), "bid", obj, field)
@@ -408,6 +445,8 @@ class AwardSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             "id", "project", "project_name", "project_code", "supplier", "supplier_name",
             "bid", "amount", "status", "awarded_at", "anchors", "documents",
         ]
+        # Output-only: awards are created by select-winner and never edited.
+        read_only_fields = fields
 
     def anchor_ref(self, obj):
         return obj.project.code

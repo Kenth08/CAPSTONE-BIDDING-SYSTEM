@@ -8,7 +8,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import status as http_status
-from rest_framework import viewsets
+from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -66,6 +66,7 @@ from .serializers import (
     SupplierDetailSerializer,
     SupplierListSerializer,
     SupplierMeUpdateSerializer,
+    clean_business_types,
 )
 from .validators import validate_bid_upload, validate_product_image, validate_upload
 
@@ -446,16 +447,115 @@ class ProjectViewSet(viewsets.ModelViewSet):
         Project.Status.PUBLISHED, Project.Status.AWARDED, Project.Status.CLOSED,
     }
 
+    # Fields inside the canonical project payload (blockchain.project_payload).
+    # Every procurement is anchored as SUBMITTED the moment it is created, so
+    # changing one of these afterwards — even honestly — makes that anchor and
+    # every later HEAD_* anchor verify as "altered" on the public page. They are
+    # therefore only editable on a DRAFT, which has never been anchored. A
+    # procurement whose fundamentals are wrong is rejected and filed again.
+    ANCHORED_FIELDS = (
+        "name", "category", "type", "budget", "bidding_period_days", "delivery_period_days",
+    )
+
     def update(self, request, *args, **kwargs):
-        project = self.get_object()
-        if project.status in self.LOCKED_STATUSES:
-            return Response(
-                {"detail": f"\"{project.name}\" is already {project.get_status_display().lower()} "
-                           "and can no longer be edited. Its details are part of the published "
-                           "record suppliers bid against."},
-                status=http_status.HTTP_400_BAD_REQUEST,
+        """Edit a procurement's details — only where the approval workflow allows.
+
+        Statuses (see AUDIT_REPORT.md H2 for why each rule exists):
+          * published / awarded / closed — locked: suppliers bid against it.
+          * pending_head — refused: the Head is reviewing this exact version; a
+            change mid-review would be approved without being seen.
+          * rejected — refused: the Head's decision is final; file a new one.
+          * approved — allowed, but the edit SENDS IT BACK to pending_head, so a
+            changed procurement is never published on the strength of an
+            approval given to something else.
+          * draft / needs_revision — allowed.
+        Procurement documents are never replaced here: that happens through
+        resubmit-documents, after the Head flags them.
+        """
+        with transaction.atomic():
+            # Locked so publish (which also locks) can't open bidding on a
+            # half-applied edit, and so the reapproval reset can't be lost.
+            project = self._lock(self.get_object())
+            refusal = self._edit_refusal(project, request.data)
+            if refusal:
+                return refusal
+            was_approved = project.status == Project.Status.APPROVED
+
+            partial = kwargs.pop("partial", False)
+            serializer = self.get_serializer(project, data=request.data, partial=partial)
+            serializer.is_valid(raise_exception=True)
+            changed = sorted(
+                field for field, value in serializer.validated_data.items()
+                if getattr(project, field, None) != value
             )
-        return super().update(request, *args, **kwargs)
+            project = serializer.save()
+            if was_approved:
+                project.status = Project.Status.PENDING_HEAD
+                project.reviewed_at = None
+                project.save(update_fields=["status", "reviewed_at"])
+
+        summary = ", ".join(changed) or "no field values"
+        if was_approved:
+            notify_heads(
+                f"\"{project.name}\" ({project.code}) was edited after your approval and needs "
+                "to be approved again.",
+                link="/head/pending",
+            )
+            log_action(
+                request, "project.edited_after_approval",
+                entity_type="Project", entity_id=project.id,
+                description=f"Edited approved procurement {project.code} ({summary}); "
+                            "returned to the Head for re-approval.",
+            )
+        else:
+            log_action(
+                request, "project.edited",
+                entity_type="Project", entity_id=project.id,
+                description=f"Edited procurement {project.code} ({summary}).",
+            )
+        return Response(self.get_serializer(project).data)
+
+    def _edit_refusal(self, project, data):
+        """Why this edit is not allowed, as a 400 Response — or None."""
+        def refuse(detail):
+            return Response({"detail": detail}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        state = project.get_status_display().lower()
+        if project.status in self.LOCKED_STATUSES:
+            return refuse(f"\"{project.name}\" is already {state} and can no longer be edited. "
+                          "Its details are part of the published record suppliers bid against.")
+        if project.status == Project.Status.PENDING_HEAD:
+            return refuse(f"\"{project.name}\" is awaiting the Head's review and cannot be edited "
+                          "until the Head decides or requests a revision.")
+        if project.status == Project.Status.REJECTED:
+            return refuse(f"\"{project.name}\" was rejected by the Head and cannot be edited. "
+                          "File a new procurement instead.")
+
+        documents = [key for key in PROCUREMENT_DOCUMENT_KEYS if key in data]
+        if documents:
+            return refuse("Procurement documents can't be replaced by editing. They are re-uploaded "
+                          "through Resubmit Documents after the Head flags them for revision.")
+        if project.status != Project.Status.DRAFT:
+            # Compare against the stored value through the serializer field, so
+            # resending an unchanged value (e.g. a full PUT) is not a change.
+            fields = self.get_serializer().fields
+            attempted = []
+            for name in self.ANCHORED_FIELDS:
+                if name not in data:
+                    continue
+                try:
+                    value = fields[name].to_internal_value(data[name])
+                except Exception:   # malformed → definitely a change attempt
+                    attempted.append(name)
+                    continue
+                if value != getattr(project, name):
+                    attempted.append(name)
+            if attempted:
+                return refuse(
+                    f"{', '.join(attempted)} cannot be changed once a procurement has been "
+                    "submitted: they are part of the record anchored on the blockchain at "
+                    "submission. Ask the Head to reject it and file a corrected procurement.")
+        return None
 
     def destroy(self, request, *args, **kwargs):
         """Delete a procurement — only before it has been opened for bidding.
@@ -472,7 +572,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
                            "deleted. Its bids and blockchain record depend on it."},
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
-        return super().destroy(request, *args, **kwargs)
+        project_id, label = project.id, f"{project.code} - {project.name}"
+        response = super().destroy(request, *args, **kwargs)
+        log_action(request, "project.deleted", entity_type="Project", entity_id=project_id,
+                   description=f"Deleted procurement {label} before it was opened for bidding.")
+        return response
 
     def list(self, request, *args, **kwargs):
         """Same as the default list, with every project's blockchain trail
@@ -768,14 +872,40 @@ class ProjectViewSet(viewsets.ModelViewSet):
         # its Purchase Request document. Picked up by create() above.
         self._create_anchor = anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
 
+    @staticmethod
+    def _lock(project):
+        """Re-read `project` with a row lock for the rest of the transaction, so
+        two concurrent transitions can't both pass the same status check."""
+        return Project.objects.select_for_update().get(pk=project.pk)
+
+    @staticmethod
+    def _require_pending_head(project, outcome):
+        """The Head's decisions apply ONLY to a procurement waiting for them.
+
+        Without this the Head could approve an AWARDED procurement (status
+        became `approved`, the Admin could publish it again and a second award
+        could follow) or reject one already open for bidding — and each of
+        those wrote a contradictory HEAD_* anchor to an append-only ledger."""
+        if project.status == Project.Status.PENDING_HEAD:
+            return None
+        return Response(
+            {"detail": f"Only a procurement awaiting the Head's review can be {outcome}. "
+                       f"\"{project.name}\" is {project.get_status_display().lower()}."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
         """Head approves a pending project — it then appears on the Admin Projects page."""
-        project = self.get_object()
-        project.status = Project.Status.APPROVED
-        project.reject_reason = ""
-        project.reviewed_at = timezone.now()
-        project.save()
+        with transaction.atomic():
+            project = self._lock(self.get_object())
+            refusal = self._require_pending_head(project, "approved")
+            if refusal:
+                return refusal
+            project.status = Project.Status.APPROVED
+            project.reject_reason = ""
+            project.reviewed_at = timezone.now()
+            project.save()
         notify_users(
             [project.created_by],
             f"Your procurement \"{project.name}\" ({project.code}) was approved by the Head.",
@@ -792,11 +922,15 @@ class ProjectViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
         """Head rejects a pending project, with an optional reason for the Admin."""
-        project = self.get_object()
-        project.status = Project.Status.REJECTED
-        project.reject_reason = request.data.get("reason", "") or ""
-        project.reviewed_at = timezone.now()
-        project.save()
+        with transaction.atomic():
+            project = self._lock(self.get_object())
+            refusal = self._require_pending_head(project, "rejected")
+            if refusal:
+                return refusal
+            project.status = Project.Status.REJECTED
+            project.reject_reason = request.data.get("reason", "") or ""
+            project.reviewed_at = timezone.now()
+            project.save()
         reason = project.reject_reason.strip()
         notify_users(
             [project.created_by],
@@ -820,7 +954,6 @@ class ProjectViewSet(viewsets.ModelViewSet):
         Approval queue and goes back to the Admin's Planning page; once the
         Admin re-uploads the flagged file(s) via resubmit-documents, it
         automatically returns to pending_head for a fresh look."""
-        project = self.get_object()
         documents = request.data.get("documents") or {}
         if not isinstance(documents, dict) or not documents:
             return Response(
@@ -831,21 +964,27 @@ class ProjectViewSet(viewsets.ModelViewSet):
             if key not in PROCUREMENT_DOCUMENT_KEYS:
                 return Response({"detail": f"Unknown document '{key}'."}, status=http_status.HTTP_400_BAD_REQUEST)
 
-        # Same approach as Supplier/Bid request_revision: flagged -> needs_revision
-        # (with the Head's note), every other uploaded document -> approved.
-        reviews = dict(project.document_reviews or {})
-        for key in PROCUREMENT_DOCUMENT_KEYS:
-            if key in documents:
-                reviews[key] = {"status": "needs_revision", "note": documents[key] or ""}
-            elif getattr(project, key, None):
-                reviews[key] = {"status": "approved", "note": ""}
-            else:
-                reviews.pop(key, None)
+        with transaction.atomic():
+            project = self._lock(self.get_object())
+            refusal = self._require_pending_head(project, "sent back for revision")
+            if refusal:
+                return refusal
 
-        project.document_reviews = reviews
-        project.status = Project.Status.NEEDS_REVISION
-        project.reviewed_at = timezone.now()
-        project.save()
+            # Same approach as Supplier/Bid request_revision: flagged -> needs_revision
+            # (with the Head's note), every other uploaded document -> approved.
+            reviews = dict(project.document_reviews or {})
+            for key in PROCUREMENT_DOCUMENT_KEYS:
+                if key in documents:
+                    reviews[key] = {"status": "needs_revision", "note": documents[key] or ""}
+                elif getattr(project, key, None):
+                    reviews[key] = {"status": "approved", "note": ""}
+                else:
+                    reviews.pop(key, None)
+
+            project.document_reviews = reviews
+            project.status = Project.Status.NEEDS_REVISION
+            project.reviewed_at = timezone.now()
+            project.save()
 
         flagged = ", ".join(label for key, label, _ in PROCUREMENT_DOCUMENT_FIELDS if key in documents)
         notify_users(
@@ -866,13 +1005,6 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def resubmit_documents(self, request, pk=None):
         """Admin re-uploads just the document(s) the Head flagged. The project
         automatically returns to pending_head so the Head sees it again."""
-        project = self.get_object()
-        if project.status != Project.Status.NEEDS_REVISION:
-            return Response(
-                {"detail": "This procurement is not awaiting a document revision."},
-                status=http_status.HTTP_400_BAD_REQUEST,
-            )
-
         for key in PROCUREMENT_DOCUMENT_KEYS:
             uploaded = request.FILES.get(key)
             if uploaded is not None:
@@ -881,29 +1013,42 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 except DjangoValidationError as exc:
                     return Response({key: exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
 
-        reviews = dict(project.document_reviews or {})
-        updated = []
-        for key in PROCUREMENT_DOCUMENT_KEYS:
-            uploaded = request.FILES.get(key)
-            if uploaded:
-                setattr(project, key, uploaded)
-                prev_note = (reviews.get(key) or {}).get("note", "")
-                reviews[key] = {"status": "resubmitted", "note": prev_note}
-                updated.append(key)
+        with transaction.atomic():
+            project = self._lock(self.get_object())
+            if project.status != Project.Status.NEEDS_REVISION:
+                return Response(
+                    {"detail": "This procurement is not awaiting a document revision."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
 
-        if not updated:
-            return Response(
-                {"detail": "Upload at least one document to resubmit."},
-                status=http_status.HTTP_400_BAD_REQUEST,
-            )
+            reviews = dict(project.document_reviews or {})
+            updated = []
+            for key in PROCUREMENT_DOCUMENT_KEYS:
+                uploaded = request.FILES.get(key)
+                if uploaded:
+                    setattr(project, key, uploaded)
+                    prev_note = (reviews.get(key) or {}).get("note", "")
+                    reviews[key] = {"status": "resubmitted", "note": prev_note}
+                    updated.append(key)
 
-        project.document_reviews = reviews
-        project.status = Project.Status.PENDING_HEAD
-        project.save()
+            if not updated:
+                return Response(
+                    {"detail": "Upload at least one document to resubmit."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+            project.document_reviews = reviews
+            project.status = Project.Status.PENDING_HEAD
+            project.save()
 
         notify_heads(
             f"\"{project.name}\" ({project.code}) re-submitted {len(updated)} document(s) for review.",
             link="/head/pending",
+        )
+        log_action(
+            request, "project.documents_resubmitted",
+            entity_type="Project", entity_id=project.id,
+            description=f"Re-submitted {', '.join(updated)} on {project.code} for the Head's review.",
         )
         return Response(self.get_serializer(project).data)
 
@@ -913,21 +1058,24 @@ class ProjectViewSet(viewsets.ModelViewSet):
         from the stored bidding period — never chosen ahead of time — so the
         bidding window is always real no matter how long this project sat
         waiting in approval (see Project.bidding_period_days)."""
-        project = self.get_object()
-        # The Head's approval is the gate this whole workflow exists to enforce,
-        # so it is checked HERE and not only in the Admin UI. Without this an
-        # admin could POST straight to this endpoint and put a draft — or a
-        # procurement the Head had explicitly REJECTED — out to bidding.
-        if project.status != Project.Status.APPROVED:
-            return Response(
-                {"detail": "Only a procurement approved by the Head can be published for bidding."},
-                status=http_status.HTTP_400_BAD_REQUEST,
-            )
-        if project.bidding_period_days:
-            project.deadline = timezone.localdate() + timedelta(days=project.bidding_period_days)
-        project.status = Project.Status.PUBLISHED
-        project.published_at = timezone.now()
-        project.save()
+        with transaction.atomic():
+            # Locked so a double-click can't publish twice (two deadlines, two
+            # BIDDING_OPEN anchors) and an edit can't land mid-publish.
+            project = self._lock(self.get_object())
+            # The Head's approval is the gate this whole workflow exists to enforce,
+            # so it is checked HERE and not only in the Admin UI. Without this an
+            # admin could POST straight to this endpoint and put a draft — or a
+            # procurement the Head had explicitly REJECTED — out to bidding.
+            if project.status != Project.Status.APPROVED:
+                return Response(
+                    {"detail": "Only a procurement approved by the Head can be published for bidding."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            if project.bidding_period_days:
+                project.deadline = timezone.localdate() + timedelta(days=project.bidding_period_days)
+            project.status = Project.Status.PUBLISHED
+            project.published_at = timezone.now()
+            project.save()
         # Notify verified suppliers whose categories match — the ones who can bid.
         # Filtered in Python (mirrors get_queryset) to avoid JSONField lookup quirks.
         if project.category:
@@ -965,7 +1113,14 @@ class ProjectViewSet(viewsets.ModelViewSet):
         })
 
 
-class SupplierViewSet(viewsets.ModelViewSet):
+# Bids, awards and supplier profiles deliberately get NO generic create/update.
+# As ModelViewSets they accepted e.g. PATCH /bids/{id}/ {amount, status: winner},
+# PATCH /awards/{id}/ {amount} and PATCH /suppliers/{id}/ {qualification_status}
+# from an Admin — skipping evaluation, the award procedure and supplier review,
+# with no audit entry and no anchor. Every legitimate change to these records
+# goes through a named @action that validates, notifies, logs and anchors.
+class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
+                      mixins.DestroyModelMixin, viewsets.GenericViewSet):
     queryset = Supplier.objects.select_related("user").all()
     serializer_class = SupplierListSerializer
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -975,7 +1130,8 @@ class SupplierViewSet(viewsets.ModelViewSet):
     SUPPLIER_ACTIONS = {"me", "resubmit"}
 
     def get_serializer_class(self):
-        if self.action in {"retrieve", "me", "resubmit", "approve", "reject", "request_revision"}:
+        if self.action in {"retrieve", "me", "resubmit", "approve", "reject", "request_revision",
+                           "approve_categories", "reject_categories"}:
             return SupplierDetailSerializer
         return SupplierListSerializer
 
@@ -1010,7 +1166,11 @@ class SupplierViewSet(viewsets.ModelViewSet):
                            "bidding."},
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
-        return super().destroy(request, *args, **kwargs)
+        supplier_id, company = supplier.id, supplier.company
+        response = super().destroy(request, *args, **kwargs)
+        log_action(request, "supplier.deleted", entity_type="Supplier", entity_id=supplier_id,
+                   description=f"Deleted supplier {company} (no bids or awards on record).")
+        return response
 
     # ── Supplier's own profile ────────────────────────────────────────────
     def _own_supplier(self, request):
@@ -1023,14 +1183,155 @@ class SupplierViewSet(viewsets.ModelViewSet):
             return Response({"detail": "No supplier profile found."}, status=http_status.HTTP_404_NOT_FOUND)
 
         if request.method == "PATCH":
-            full_name = request.data.get("full_name")
-            if full_name is not None and supplier.user_id:
-                supplier.user.full_name = full_name
-                supplier.user.save(update_fields=["full_name"])
+            # Validate EVERYTHING before writing anything: full_name used to be
+            # saved first, so a request with a bad phone number still changed it.
+            categories = None
+            if "business_types" in request.data:
+                categories = clean_business_types(request.data.get("business_types"))
             serializer = SupplierMeUpdateSerializer(supplier, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
-            serializer.save()
 
+            with transaction.atomic():
+                supplier = Supplier.objects.select_for_update().select_related("user").get(pk=supplier.pk)
+                full_name = request.data.get("full_name")
+                if full_name is not None and supplier.user_id:
+                    supplier.user.full_name = str(full_name)[:150]
+                    supplier.user.save(update_fields=["full_name"])
+                serializer.instance = supplier
+                serializer.save()
+                if categories is not None:
+                    self._handle_category_change(request, supplier, categories)
+
+        return self._detail_response(supplier)
+
+    def _handle_category_change(self, request, supplier, requested):
+        """Apply or file a change to the supplier's business categories.
+
+        * Not yet verified (pending review, revision, rejected): the whole
+          profile — categories included — is still waiting for an Admin's
+          decision, and the supplier can't bid, so the list is updated directly.
+        * Verified: business_types is NOT touched. The new set is stored as a
+          pending request for an Admin to approve or reject; until then the
+          supplier keeps exactly the categories they were approved for.
+          Re-sending the approved set withdraws a pending request.
+        """
+        current = list(supplier.business_types or [])
+        if supplier.qualification_status != Supplier.Qualification.VERIFIED:
+            if set(requested) != set(current):
+                supplier.business_types = requested
+                supplier.business_type = ", ".join(requested)
+                supplier.save(update_fields=["business_types", "business_type"])
+                log_action(request, "supplier.categories_updated", entity_type="Supplier",
+                           entity_id=supplier.id,
+                           description=f"{supplier.company} changed categories before verification: "
+                                       f"{', '.join(requested)}.")
+            return
+
+        if set(requested) == set(current):
+            if supplier.category_request_status == Supplier.CategoryRequest.PENDING:
+                supplier.pending_business_types = None
+                supplier.category_request_status = Supplier.CategoryRequest.NONE
+                supplier.category_requested_at = None
+                supplier.save(update_fields=[
+                    "pending_business_types", "category_request_status", "category_requested_at"])
+                log_action(request, "supplier.category_change_withdrawn", entity_type="Supplier",
+                           entity_id=supplier.id,
+                           description=f"{supplier.company} withdrew their category change request.")
+            return
+
+        added = [c for c in requested if c not in current]
+        removed = [c for c in current if c not in requested]
+        supplier.pending_business_types = requested
+        supplier.category_request_status = Supplier.CategoryRequest.PENDING
+        supplier.category_request_note = ""
+        supplier.category_requested_at = timezone.now()
+        supplier.category_reviewed_at = None
+        supplier.save(update_fields=[
+            "pending_business_types", "category_request_status", "category_request_note",
+            "category_requested_at", "category_reviewed_at"])
+        summary = "; ".join(part for part in (
+            f"add {', '.join(added)}" if added else "",
+            f"remove {', '.join(removed)}" if removed else "",
+        ) if part)
+        log_action(request, "supplier.category_change_requested", entity_type="Supplier",
+                   entity_id=supplier.id,
+                   description=f"{supplier.company} requested a category change ({summary}).")
+        notify_admins(
+            f"{supplier.company} requested a business category change ({summary}).",
+            link="/admin/suppliers",
+        )
+
+    # ── Admin decisions on a category change request ─────────────────────
+    def _pending_category_request(self, pk):
+        """Lock the supplier and return (supplier, None), or (None, 400 Response)
+        when there is no pending request to decide on."""
+        supplier = Supplier.objects.select_for_update().select_related("user").get(pk=pk)
+        if supplier.category_request_status != Supplier.CategoryRequest.PENDING:
+            return None, Response(
+                {"detail": f"{supplier.company} has no pending category change request."},
+                status=http_status.HTTP_400_BAD_REQUEST)
+        return supplier, None
+
+    @action(detail=True, methods=["post"], url_path="approve-categories")
+    def approve_categories(self, request, pk=None):
+        """Admin approves the pending request: it becomes the approved set."""
+        target = self.get_object()
+        with transaction.atomic():
+            supplier, refusal = self._pending_category_request(target.pk)
+            if refusal:
+                return refusal
+            # Re-validated: a category could have been retired since the request.
+            approved = clean_business_types(supplier.pending_business_types)
+            previous = list(supplier.business_types or [])
+            supplier.business_types = approved
+            supplier.business_type = ", ".join(approved)
+            supplier.pending_business_types = None
+            supplier.category_request_status = Supplier.CategoryRequest.NONE
+            supplier.category_request_note = ""
+            supplier.category_reviewed_at = timezone.now()
+            supplier.save(update_fields=[
+                "business_types", "business_type", "pending_business_types",
+                "category_request_status", "category_request_note", "category_reviewed_at"])
+
+        log_action(request, "supplier.category_change_approved", entity_type="Supplier",
+                   entity_id=supplier.id,
+                   description=f"Approved {supplier.company}'s categories: "
+                               f"{', '.join(previous) or 'none'} → {', '.join(approved)}.")
+        notify_supplier(
+            supplier,
+            f"Your business category change was approved. You can now bid in: {', '.join(approved)}.",
+            link="/supplier/settings",
+            email_subject="Your business category change was approved",
+        )
+        return self._detail_response(supplier)
+
+    @action(detail=True, methods=["post"], url_path="reject-categories")
+    def reject_categories(self, request, pk=None):
+        """Admin rejects the pending request; the approved set is unchanged. The
+        rejected set is kept for the record but grants nothing."""
+        target = self.get_object()
+        note = str(request.data.get("note") or "").strip()[:500]
+        with transaction.atomic():
+            supplier, refusal = self._pending_category_request(target.pk)
+            if refusal:
+                return refusal
+            supplier.category_request_status = Supplier.CategoryRequest.REJECTED
+            supplier.category_request_note = note
+            supplier.category_reviewed_at = timezone.now()
+            supplier.save(update_fields=[
+                "category_request_status", "category_request_note", "category_reviewed_at"])
+
+        log_action(request, "supplier.category_change_rejected", entity_type="Supplier",
+                   entity_id=supplier.id,
+                   description=f"Rejected {supplier.company}'s category change request"
+                               + (f": {note}" if note else "."))
+        notify_supplier(
+            supplier,
+            "Your business category change was not approved." + (f" Reason: {note}" if note else "")
+            + " Your current categories are unchanged.",
+            link="/supplier/settings",
+            email_subject="Your business category change was not approved",
+        )
         return self._detail_response(supplier)
 
     @action(detail=False, methods=["post"])
@@ -1091,6 +1392,18 @@ class SupplierViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
         supplier = self.get_object()
+        # Verifying a supplier is what lets them bid, and every notice about
+        # their bids is emailed to this address — so it must be proven to be
+        # theirs first. Enforced here, not by hiding the button: the UI badge
+        # alone let an Admin (or a direct API call) verify an address nobody
+        # had ever confirmed.
+        if not supplier.email_verified:
+            return Response(
+                {"detail": f"{supplier.company} has not verified their email address yet, so they "
+                           "can't be approved. Ask them to open the verification link (they can "
+                           "resend it from their dashboard)."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
         supplier.status = Supplier.Status.APPROVED
         supplier.qualification_status = Supplier.Qualification.VERIFIED
         supplier.document_reviews = {}  # clear any outstanding revision flags
@@ -1184,7 +1497,8 @@ class SupplierViewSet(viewsets.ModelViewSet):
         return self._detail_response(supplier)
 
 
-class BidViewSet(viewsets.ModelViewSet):
+class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
+                 mixins.DestroyModelMixin, viewsets.GenericViewSet):
     queryset = Bid.objects.select_related("project", "supplier").all()
     serializer_class = BidSerializer
 
@@ -1229,9 +1543,18 @@ class BidViewSet(viewsets.ModelViewSet):
         evaluation record, it is referenced by the Award, and its BID_SUBMITTED
         anchor is on-chain — deleting the row leaves that anchor pointing at
         nothing, so the public verifier reports a real contract as
-        "unavailable". Admins keep the unrestricted delete for cleanup.
+        "unavailable". Admins keep delete for cleanup of an un-awarded
+        procurement, but never for the winning bid or an awarded procurement's
+        bids: those are the evidence behind the Award and its anchors.
         """
         bid = self.get_object()
+        if bid.status == Bid.Status.WINNER or bid.project.status == Project.Status.AWARDED:
+            if getattr(request.user, "role", None) != "supplier":
+                return Response(
+                    {"detail": "Bids on an awarded procurement are part of the award record and "
+                               "cannot be deleted."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
         if getattr(request.user, "role", None) == "supplier":
             if bid.status == Bid.Status.WINNER:
                 return Response(
@@ -1245,7 +1568,12 @@ class BidViewSet(viewsets.ModelViewSet):
                                "be withdrawn."},
                     status=http_status.HTTP_400_BAD_REQUEST,
                 )
-        return super().destroy(request, *args, **kwargs)
+        description = (f"{bid.supplier.company}'s bid on {bid.project.code} ({bid.amount}) "
+                       f"{'withdrawn by the supplier' if request.user.role == 'supplier' else 'deleted by an admin'}.")
+        bid_id = bid.id
+        response = super().destroy(request, *args, **kwargs)
+        log_action(request, "bid.deleted", entity_type="Bid", entity_id=bid_id, description=description)
+        return response
 
     def get_queryset(self):
         qs = Bid.objects.select_related(
@@ -1513,8 +1841,43 @@ class BidViewSet(viewsets.ModelViewSet):
         """Select this bid as the winner: records the Award, marks the project
         Awarded, and notifies the participating suppliers."""
         bid = self.get_object()
-        project = bid.project
+        with transaction.atomic():
+            # Locking the PROJECT row serialises every award attempt on it: two
+            # concurrent requests (a double-click, or two bids clicked at once)
+            # would otherwise both pass the "already awarded" check below and
+            # create two winners. The DB-level guarantee (one WON award per
+            # project) is tracked separately as audit item M1.
+            project = Project.objects.select_for_update().get(pk=bid.project_id)
+            supplier = bid.supplier
+            bid = Bid.objects.select_for_update().get(pk=bid.pk)
+            # Share the locked project instance, so the response and the anchors
+            # see the status this transaction sets rather than a stale copy.
+            bid.project, bid.supplier = project, supplier
+            refusal = self._check_can_award(bid, project)
+            if refusal:
+                return refusal
+            award = self._award(bid, project)
 
+        self._announce_award(request, bid, project)
+        # The winning bid reaches the ledger here and nowhere else. Bids are not
+        # anchored on submission or on qualification, because that would publish
+        # every losing supplier's amount; only the bid that actually won the
+        # contract is public business. Anchored BEFORE the award so the trail
+        # reads in the order the events happened: the offer, then the award.
+        anchor_bid(bid, BlockchainAnchor.Stage.BID_SUBMITTED)
+
+        # Final link in the chain: the award itself, hashed with the winning
+        # quotation. Anchored as AWARD (not BID) so the public trail ends with an
+        # unambiguous "this contract went to this bid at this amount".
+        anchor = anchor_award(award)
+        return anchored_response(self.get_serializer(bid).data, anchor)
+
+    # Bidding must have been opened (and not undone) for there to be anything to
+    # award; anything earlier or later in the lifecycle is refused.
+    AWARDABLE_PROJECT_STATUSES = {Project.Status.PUBLISHED, Project.Status.CLOSED}
+
+    def _check_can_award(self, bid, project):
+        """The preconditions for select-winner, or None when they all hold."""
         # A procurement is awarded ONCE. Without this check a second call for a
         # different supplier passed straight through: get_or_create keys on
         # (project, supplier), so it created a SECOND Award row rather than
@@ -1528,6 +1891,12 @@ class BidViewSet(viewsets.ModelViewSet):
             return Response(
                 {"detail": f"\"{project.name}\" has already been awarded to {winner}. "
                            "An award cannot be reassigned once it has been made."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if project.status not in self.AWARDABLE_PROJECT_STATUSES:
+            return Response(
+                {"detail": f"\"{project.name}\" is {project.get_status_display().lower()}, so it "
+                           "cannot be awarded. Only a procurement that went out to bidding can be."},
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1552,7 +1921,12 @@ class BidViewSet(viewsets.ModelViewSet):
                            f"selected as the winner until they're fixed: {labels}."},
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
+        return None
 
+    @staticmethod
+    def _award(bid, project):
+        """Record the decision: winning bid, Award row, project AWARDED. Runs
+        inside select_winner's transaction, under the project row lock."""
         bid.status = Bid.Status.WINNER
         bid.save(update_fields=["status"])
 
@@ -1571,7 +1945,11 @@ class BidViewSet(viewsets.ModelViewSet):
             project.expected_delivery_date = timezone.localdate() + timedelta(days=project.delivery_period_days)
             update_fields.append("expected_delivery_date")
         project.save(update_fields=update_fields)
+        return award
 
+    @staticmethod
+    def _announce_award(request, bid, project):
+        """Side effects after the award has committed: tell every bidder, log it."""
         # Notify the winner and the other bidders (skip suppliers with no account).
         for other in project.bids.select_related("supplier__user"):
             user = getattr(other.supplier, "user", None)
@@ -1591,25 +1969,15 @@ class BidViewSet(viewsets.ModelViewSet):
             entity_type="Project", entity_id=project.id,
             description=f"Awarded {project.code} to {bid.supplier.company} for {bid.amount}.",
         )
-        # The winning bid reaches the ledger here and nowhere else. Bids are not
-        # anchored on submission or on qualification, because that would publish
-        # every losing supplier's amount; only the bid that actually won the
-        # contract is public business. Anchored BEFORE the award so the trail
-        # reads in the order the events happened: the offer, then the award.
-        anchor_bid(bid, BlockchainAnchor.Stage.BID_SUBMITTED)
-
-        # Final link in the chain: the award itself, hashed with the winning
-        # quotation. Anchored as AWARD (not BID) so the public trail ends with an
-        # unambiguous "this contract went to this bid at this amount".
-        anchor = anchor_award(award)
-        return anchored_response(self.get_serializer(bid).data, anchor)
 
 
-class AwardViewSet(viewsets.ModelViewSet):
-    """Admin-only: contract amounts and award records. Awards are normally
-    created by BidViewSet.select_winner — this CRUD API exists for the Admin
-    Awards/Reports pages, never for suppliers (a supplier could otherwise
-    award themselves a project or read every other supplier's contract value)."""
+class AwardViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """Award records — read-only apart from the post-award document actions.
+
+    Awards are created ONLY by BidViewSet.select_winner. There is no generic
+    create/update/delete: an award's amount and winner are what the AWARDED
+    anchor attests to, so editing one would both falsify the contract and brand
+    the on-chain record as altered."""
 
     queryset = Award.objects.select_related("project", "supplier").all()
     serializer_class = AwardSerializer

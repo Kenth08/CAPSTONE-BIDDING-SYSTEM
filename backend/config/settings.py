@@ -272,10 +272,10 @@ REST_FRAMEWORK = {
     # Rate limiting (throttling) applied to EVERY endpoint:
     #  - anonymous callers are limited by IP, authenticated users by account.
     # The login route additionally enforces a much stricter 5-per-15-minutes
-    # limit via accounts.throttling.LoginRateThrottle (see LoginView), and the
-    # two registration routes enforce a 10-per-hour limit via
-    # accounts.throttling.RegisterRateThrottle (see RegisterView /
-    # SupplierRegisterView) to stop scripted mass account creation.
+    # limit via accounts.throttling.LoginRateThrottle (see LoginView), and
+    # supplier registration enforces a 10-per-hour limit via
+    # accounts.throttling.RegisterRateThrottle (see SupplierRegisterView) to
+    # stop scripted mass account creation.
     'DEFAULT_THROTTLE_CLASSES': (
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',

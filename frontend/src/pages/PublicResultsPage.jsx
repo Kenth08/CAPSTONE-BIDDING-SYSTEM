@@ -88,8 +88,10 @@ export default function PublicResultsPage() {
             </div>
           ) : biddings.length === 0 ? (
             <div className="pub-empty">
-              <Inbox size={28} />
+              <span className="pub-empty-icon" aria-hidden="true"><Inbox size={22} /></span>
+              <strong className="pub-empty-title">No open biddings right now</strong>
               <p>No procurements are open for bidding right now. Check back soon.</p>
+              <Link to="/register" className="pub-empty-link">Register as a supplier</Link>
             </div>
           ) : (
             <div className="pub-cards">
@@ -97,7 +99,7 @@ export default function PublicResultsPage() {
                 <article className="pub-card" key={b.code}>
                   <div className="pub-card-top">
                     <span className="pub-card-code">{b.code}</span>
-                    <span className="badge badge-green">Open</span>
+                    <span className="pub-open-chip"><span className="ui-badge-dot" aria-hidden="true" /> Open for Bidding</span>
                   </div>
                   <h3 className="pub-card-name">{b.name}</h3>
                   <div className="pub-card-meta">
@@ -140,7 +142,8 @@ export default function PublicResultsPage() {
             </div>
           ) : winners.length === 0 ? (
             <div className="pub-empty">
-              <Trophy size={28} />
+              <span className="pub-empty-icon" aria-hidden="true"><Trophy size={22} /></span>
+              <strong className="pub-empty-title">No awarded contracts yet</strong>
               <p>No contracts have been awarded yet.</p>
             </div>
           ) : (

@@ -91,41 +91,6 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         return user
 
 
-class RegisterSerializer(serializers.ModelSerializer):
-    """Plain self-registration (currently unused by the frontend, which uses
-    SupplierRegisterSerializer instead, but the route is public so it must be
-    safe to call directly). `role` is read-only — every account created here
-    gets the model default ('supplier'); without this, any caller could pass
-    role=admin and grant themselves full admin access with no verification.
-
-    Password strength is enforced with Django's configured validators, the same
-    as SupplierRegisterSerializer. This route previously accepted anything six
-    characters long — no strength check at all — so it was a public back door
-    around the password policy the real registration form applies.
-    """
-
-    password = serializers.CharField(write_only=True, max_length=128)
-
-    class Meta:
-        model = User
-        fields = ["id", "username", "email", "password", "role", "full_name"]
-        read_only_fields = ["role"]
-
-    def validate_password(self, value):
-        try:
-            validate_password(value)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError(list(exc.messages))
-        return value
-
-    def create(self, validated_data):
-        password = validated_data.pop("password")
-        user = User(**validated_data)
-        user.set_password(password)
-        user.save()
-        return user
-
-
 class SupplierRegisterSerializer(serializers.ModelSerializer):
     """Creates a supplier User + Supplier profile from the multi-step form.
 

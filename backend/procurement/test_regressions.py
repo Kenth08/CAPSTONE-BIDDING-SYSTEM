@@ -5,16 +5,33 @@ fixed. The docstrings record what actually went wrong, so a future change that
 reintroduces the behaviour fails here with an explanation rather than just a red
 assertion.
 """
+import contextlib
+import io
+import re
+from urllib.parse import parse_qs, urlparse
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase, override_settings
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from accounts.emails import email_verification_token
+from accounts.models import AuditLog
 from accounts.serializers import RoleTokenObtainPairSerializer
+from accounts.tests import registration_payload
 
-from .models import Award, Bid, BidAttachment, Project, Supplier
+from .management.commands import seed as seed_cmd
+from .models import Award, Bid, BidAttachment, BlockchainAnchor, Project, Supplier
 from .tests import dummy_pdf, make_admin, make_head, make_project, make_supplier
 
 User = get_user_model()
@@ -426,11 +443,18 @@ class ProjectImmutabilityTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertTrue(Project.objects.filter(pk=project.pk).exists())
 
-    def test_a_draft_can_still_be_edited_and_deleted(self):
-        project = make_project(status=Project.Status.PENDING_HEAD)
+    def test_a_procurement_under_revision_can_still_be_edited_and_deleted(self):
+        # Was: edited while PENDING_HEAD. Editing mid-review is now refused (see
+        # ProjectEditWorkflowTests) — the Head must see the version they approve.
+        project = make_project(status=Project.Status.NEEDS_REVISION)
         edit = self.client.patch(
             f"/api/projects/{project.pk}/", {"description": "clarified"}, format="json")
         self.assertEqual(edit.status_code, status.HTTP_200_OK)
+        delete = self.client.delete(f"/api/projects/{project.pk}/")
+        self.assertEqual(delete.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_a_procurement_awaiting_the_head_can_still_be_deleted(self):
+        project = make_project(status=Project.Status.PENDING_HEAD)
         delete = self.client.delete(f"/api/projects/{project.pk}/")
         self.assertEqual(delete.status_code, status.HTTP_204_NO_CONTENT)
 
@@ -497,29 +521,6 @@ class RegistrationAtomicityTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
         user = User.objects.get(email="new@example.com")
         self.assertTrue(Supplier.objects.filter(user=user).exists())
-
-
-class RegisterPasswordStrengthTests(APITestCase):
-    """/auth/register/ accepted any six-character password with no strength
-    check — a public back door around the policy the real form enforces."""
-
-    def setUp(self):
-        cache.clear()
-
-    def test_a_weak_password_is_rejected(self):
-        res = self.client.post("/api/auth/register/", {
-            "username": "weakling", "email": "weak@example.com", "password": "123456",
-        }, format="json")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("password", res.data)
-
-    def test_a_strong_password_is_accepted_and_role_stays_supplier(self):
-        res = self.client.post("/api/auth/register/", {
-            "username": "strongling", "email": "strong@example.com",
-            "password": "Str0ng!Passphrase1", "role": "admin",
-        }, format="json")
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
-        self.assertEqual(User.objects.get(username="strongling").role, User.Role.SUPPLIER)
 
 
 class UploadContentValidationTests(APITestCase):
@@ -620,3 +621,757 @@ class AwardDocumentAccessTests(APITestCase):
         self.client.force_authenticate(user=self.loser.user)
         res = self.client.get(f"/api/files/award/{self.award.pk}/notice_of_award/")
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class SeedCommandSafetyTests(TestCase):
+    """`manage.py seed` refused only when DEBUG=False. backend/.env points DB_HOST
+    at the live Supabase database and leaves DEBUG unset (True), so running the
+    documented setup command on a developer machine passed the guard and would
+    have deleted every production procurement and reset the role accounts to
+    demo passwords. The guard now inspects the actual database connection."""
+
+    SQLITE = {"ENGINE": "django.db.backends.sqlite3", "NAME": "db.sqlite3", "HOST": ""}
+    SUPABASE = {"ENGINE": "django.db.backends.postgresql", "NAME": "postgres",
+                "HOST": "aws-0-ap-southeast-1.pooler.supabase.com"}
+
+    def _seed(self, *args, db=None, environ=None):
+        patches = [mock.patch.object(seed_cmd, "database_settings", return_value=db or self.SQLITE)]
+        if environ is not None:
+            patches.append(mock.patch.dict(seed_cmd.os.environ, environ, clear=True))
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            call_command("seed", *args, stdout=io.StringIO())
+
+    def _assert_untouched(self, project):
+        self.assertTrue(Project.objects.filter(pk=project.pk).exists())
+        self.assertEqual(Project.objects.count(), 1)
+
+    # ── unconditional refusals: no flag gets past these ──────────────────────
+    @override_settings(DEBUG=True)
+    def test_remote_postgres_is_refused_even_with_debug_and_the_wipe_flag(self):
+        project = make_project()
+        with self.assertRaisesMessage(CommandError, "remote server"):
+            self._seed("--wipe-local-data", db=self.SUPABASE, environ={})
+        self._assert_untouched(project)
+
+    @override_settings(DEBUG=True)
+    def test_local_non_sqlite_server_is_refused(self):
+        db = {"ENGINE": "django.db.backends.postgresql", "HOST": "localhost"}
+        with self.assertRaisesMessage(CommandError, "not SQLite"):
+            self._seed("--wipe-local-data", db=db, environ={})
+
+    @override_settings(DEBUG=True)
+    def test_running_on_render_is_refused(self):
+        with self.assertRaisesMessage(CommandError, "hosting platform"):
+            self._seed("--wipe-local-data", environ={"RENDER": "true"})
+
+    @override_settings(DEBUG=False)
+    def test_debug_false_is_refused_even_with_the_wipe_flag(self):
+        with self.assertRaisesMessage(CommandError, "DEBUG=False"):
+            self._seed("--wipe-local-data", environ={})
+
+    def test_the_old_force_flag_no_longer_exists(self):
+        with self.assertRaises(CommandError):
+            self._seed("--force", environ={})
+
+    # ── local SQLite: deliberate opt-in before destroying data ───────────────
+    @override_settings(DEBUG=True)
+    def test_local_database_with_data_needs_the_explicit_flag(self):
+        project = make_project()
+        with self.assertRaisesMessage(CommandError, "--wipe-local-data"):
+            self._seed(environ={})
+        self._assert_untouched(project)
+
+    @override_settings(DEBUG=True)
+    def test_local_database_seeds_with_the_explicit_flag(self):
+        make_project()
+        self._seed("--wipe-local-data", environ={})
+        self.assertEqual(Project.objects.count(), 4)
+        self.assertTrue(User.objects.filter(username="admin").exists())
+
+    @override_settings(DEBUG=True)
+    def test_empty_local_database_seeds_without_a_flag(self):
+        self._seed(environ={})
+        self.assertEqual(Project.objects.count(), 4)
+
+
+class HeadDecisionStateTests(APITestCase):
+    """Approve / reject / request-revision had no status check. The Head could
+    approve an AWARDED procurement — it became `approved`, the Admin could
+    publish it again and award it a second time — and each such call wrote a
+    contradictory HEAD_* anchor to the append-only ledger."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.head = make_head()
+        self.client.force_authenticate(user=self.head)
+
+    def _decide(self, project, action):
+        body = {"documents": {"purchase_request": "blurry"}} if action == "request-revision" else {}
+        return self.client.post(f"/api/projects/{project.pk}/{action}/", body, format="json")
+
+    def test_no_head_decision_applies_outside_pending_head(self):
+        for state in (Project.Status.AWARDED, Project.Status.PUBLISHED, Project.Status.CLOSED,
+                      Project.Status.APPROVED, Project.Status.REJECTED,
+                      Project.Status.NEEDS_REVISION, Project.Status.DRAFT):
+            for action in ("approve", "reject", "request-revision"):
+                with self.subTest(state=state, action=action):
+                    project = make_project(status=state)
+                    res = self._decide(project, action)
+                    self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+                    project.refresh_from_db()
+                    self.assertEqual(project.status, state)
+                    self.assertFalse(BlockchainAnchor.objects.filter(entity_id=str(project.pk)).exists())
+
+    def test_an_awarded_procurement_can_never_be_reopened_for_bidding(self):
+        project = make_project(status=Project.Status.AWARDED)
+        self._decide(project, "approve")
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(f"/api/projects/{project.pk}/publish/")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        project.refresh_from_db()
+        self.assertEqual(project.status, Project.Status.AWARDED)
+
+    def test_each_decision_still_works_on_a_pending_procurement(self):
+        expected = {"approve": Project.Status.APPROVED, "reject": Project.Status.REJECTED,
+                    "request-revision": Project.Status.NEEDS_REVISION}
+        for action, outcome in expected.items():
+            with self.subTest(action=action):
+                project = make_project(status=Project.Status.PENDING_HEAD)
+                res = self._decide(project, action)
+                self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+                project.refresh_from_db()
+                self.assertEqual(project.status, outcome)
+
+    def test_a_procurement_cannot_be_published_twice(self):
+        project = make_project(status=Project.Status.APPROVED)
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/projects/{project.pk}/publish/").status_code, 200)
+        self.assertEqual(self.client.post(f"/api/projects/{project.pk}/publish/").status_code, 400)
+        self.assertEqual(BlockchainAnchor.objects.filter(
+            entity_id=str(project.pk), stage=BlockchainAnchor.Stage.BIDDING_OPEN).count(), 1)
+
+
+class AwardPreconditionTests(APITestCase):
+    """select-winner only checked "not already AWARDED", so a bid on a project
+    in any other state (approved, rejected, ...) could be turned into an award."""
+
+    def setUp(self):
+        cache.clear()
+        self.client.force_authenticate(user=make_admin())
+
+    def test_cannot_award_a_procurement_that_never_went_to_bidding(self):
+        for state in (Project.Status.APPROVED, Project.Status.PENDING_HEAD, Project.Status.REJECTED):
+            with self.subTest(state=state):
+                bid = qualified_bid(make_project(status=state), make_supplier())
+                res = self.client.post(f"/api/bids/{bid.pk}/select-winner/")
+                self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+                self.assertFalse(Award.objects.filter(project=bid.project).exists())
+
+    def test_award_response_reports_the_new_project_status(self):
+        bid = qualified_bid(make_project(status=Project.Status.CLOSED), make_supplier())
+        res = self.client.post(f"/api/bids/{bid.pk}/select-winner/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(res.data["project_status"], Project.Status.AWARDED)
+        self.assertEqual(res.data["status"], Bid.Status.WINNER)
+
+
+class ProjectEditWorkflowTests(APITestCase):
+    """An Admin could PATCH a Head-APPROVED procurement (budget, periods,
+    documents) and publish it on an approval given to a different version, and
+    edits skipped validation entirely — a budget of -5 and a 0-day bidding
+    period were stored."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.head = make_head()
+        self.client.force_authenticate(user=self.admin)
+
+    def _patch(self, project, data, fmt="json"):
+        return self.client.patch(f"/api/projects/{project.pk}/", data, format=fmt)
+
+    def test_editing_an_approved_procurement_sends_it_back_for_reapproval(self):
+        project = make_project(status=Project.Status.APPROVED)
+        res = self._patch(project, {"description": "Updated delivery notes"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        project.refresh_from_db()
+        self.assertEqual(project.status, Project.Status.PENDING_HEAD)
+        self.assertIsNone(project.reviewed_at)
+        # ...so it can't be published until the Head approves it again.
+        self.assertEqual(self.client.post(f"/api/projects/{project.pk}/publish/").status_code, 400)
+        self.assertTrue(self.head.notifications.filter(message__contains="approved again").exists())
+        self.assertTrue(AuditLog.objects.filter(action="project.edited_after_approval",
+                                                entity_id=str(project.pk)).exists())
+
+    def test_cannot_edit_while_the_head_is_reviewing_or_after_rejection(self):
+        for state in (Project.Status.PENDING_HEAD, Project.Status.REJECTED):
+            with self.subTest(state=state):
+                project = make_project(status=state)
+                res = self._patch(project, {"description": "sneaky change"})
+                self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+                project.refresh_from_db()
+                self.assertEqual(project.description, "")
+
+    def test_anchored_fields_are_immutable_after_submission(self):
+        for field, value in (("budget", "1"), ("name", "Renamed"), ("category", "Furniture"),
+                             ("bidding_period_days", 30), ("delivery_period_days", 90), ("type", "Works")):
+            with self.subTest(field=field):
+                project = make_project(status=Project.Status.APPROVED)
+                res = self._patch(project, {field: value})
+                self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+                project.refresh_from_db()
+                self.assertEqual(project.status, Project.Status.APPROVED)
+
+    def test_resending_an_unchanged_anchored_value_is_not_a_change(self):
+        project = make_project(status=Project.Status.NEEDS_REVISION)
+        res = self._patch(project, {"budget": "50000.00", "description": "ok"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def test_documents_cannot_be_swapped_by_a_generic_edit(self):
+        project = make_project(status=Project.Status.APPROVED)
+        res = self._patch(project, {"purchase_request": dummy_pdf()}, fmt="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_head_review_state_is_not_writable(self):
+        project = make_project(status=Project.Status.NEEDS_REVISION)
+        project.document_reviews = {"purchase_request": {"status": "needs_revision", "note": "x"}}
+        project.save()
+        self._patch(project, {"document_reviews": {}})
+        project.refresh_from_db()
+        self.assertIn("purchase_request", project.document_reviews)
+
+    def test_invalid_values_are_rejected_on_edit_too(self):
+        cases = [("budget", "-5"), ("budget", "0"), ("bidding_period_days", 0),
+                 ("bidding_period_days", 181), ("delivery_period_days", 0),
+                 ("delivery_period_days", 366), ("category", "Not a category"), ("name", "  ")]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                project = make_project(status=Project.Status.DRAFT)
+                project.bidding_period_days, project.delivery_period_days = 10, 30
+                project.save()
+                res = self._patch(project, {field: value})
+                self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, res.data)
+        self.assertFalse(Project.objects.filter(budget__lte=0).exists())
+
+    def test_a_draft_may_still_correct_its_anchored_fields(self):
+        project = make_project(status=Project.Status.DRAFT)
+        res = self._patch(project, {"budget": "75000"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        project.refresh_from_db()
+        self.assertEqual(int(project.budget), 75000)
+
+    def test_create_rejects_a_negative_budget(self):
+        res = self.client.post("/api/projects/", {
+            "name": "X", "type": "Goods", "category": "IT Equipment", "delivery_location": "HQ",
+            "budget": "-1", "bidding_period_days": 10, "delivery_period_days": 30,
+            "purchase_request": dummy_pdf(), "technical_specifications": dummy_pdf(),
+            "terms_of_reference": dummy_pdf(), "approved_budget_document": dummy_pdf(),
+            "bid_evaluation_criteria": dummy_pdf(),
+        }, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("budget", res.data)
+
+
+class GenericWriteBypassTests(APITestCase):
+    """Bids, awards and suppliers were ModelViewSets, so an Admin could PATCH a
+    bid's amount and set it to "winner", PATCH an award's amount, or PATCH a
+    supplier straight to "verified" — bypassing evaluation, the award
+    procedure and supplier review, with no audit entry and no anchor."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.supplier = make_supplier(verified=False)
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.bid = Bid.objects.create(project=self.project, supplier=self.supplier, amount=1000)
+        self.client.force_authenticate(user=self.admin)
+
+    def test_bid_amount_and_status_cannot_be_rewritten(self):
+        for method in ("patch", "put"):
+            with self.subTest(method=method):
+                res = getattr(self.client, method)(
+                    f"/api/bids/{self.bid.pk}/", {"amount": "1.00", "status": "winner"}, format="json")
+                self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.bid.refresh_from_db()
+        self.assertEqual((int(self.bid.amount), self.bid.status), (1000, Bid.Status.UNDER_REVIEW))
+
+    def test_bids_and_awards_cannot_be_created_directly(self):
+        res = self.client.post("/api/bids/", {"project": self.project.pk, "supplier": self.supplier.pk,
+                                              "amount": "1"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        res = self.client.post("/api/awards/", {"project": self.project.pk, "supplier": self.supplier.pk,
+                                                "amount": "1"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertFalse(Award.objects.exists())
+
+    def test_award_cannot_be_edited_or_deleted(self):
+        award = Award.objects.create(project=self.project, supplier=self.supplier, amount=1000)
+        self.assertEqual(self.client.patch(f"/api/awards/{award.pk}/", {"amount": "5"}, format="json")
+                         .status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(self.client.delete(f"/api/awards/{award.pk}/").status_code,
+                         status.HTTP_405_METHOD_NOT_ALLOWED)
+        award.refresh_from_db()
+        self.assertEqual(int(award.amount), 1000)
+
+    def test_supplier_cannot_be_verified_by_a_generic_edit(self):
+        res = self.client.patch(f"/api/suppliers/{self.supplier.pk}/",
+                                {"qualification_status": "verified", "email_verified": True}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        res = self.client.post("/api/suppliers/", {"company": "Ghost Co", "contact": "x",
+                                                   "qualification_status": "verified"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.PENDING)
+
+    def test_the_winning_bid_cannot_be_deleted_even_by_an_admin(self):
+        self.bid.status = Bid.Status.WINNER
+        self.bid.save()
+        res = self.client.delete(f"/api/bids/{self.bid.pk}/")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Bid.objects.filter(pk=self.bid.pk).exists())
+
+    def test_deletions_are_audit_logged(self):
+        self.project.status = Project.Status.CLOSED
+        self.project.save()
+        self.assertEqual(self.client.delete(f"/api/bids/{self.bid.pk}/").status_code, 204)
+        self.assertTrue(AuditLog.objects.filter(action="bid.deleted", entity_id=str(self.bid.pk)).exists())
+        lone = make_supplier()
+        self.assertEqual(self.client.delete(f"/api/suppliers/{lone.pk}/").status_code, 204)
+        self.assertTrue(AuditLog.objects.filter(action="supplier.deleted", entity_id=str(lone.pk)).exists())
+
+    def test_supplier_self_service_still_works(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.patch("/api/suppliers/me/", {"phone_number": "09171234567"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertEqual(self.client.delete(f"/api/bids/{self.bid.pk}/").status_code, 204)
+
+
+class EmailVerificationGateTests(APITestCase):
+    """An Admin could approve a supplier whose email address had never been
+    confirmed — the UI showed an "Unverified" badge but nothing stopped the
+    approval, so a supplier could be cleared to bid on an address nobody had
+    proven was theirs. Separately, the verification link stopped working as
+    soon as the supplier signed in, because the token hashed `last_login`."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.supplier = make_supplier(verified=False)   # email_verified defaults to False
+
+    def _approve(self):
+        self.client.force_authenticate(user=self.admin)
+        return self.client.post(f"/api/suppliers/{self.supplier.pk}/approve/")
+
+    def test_unverified_email_cannot_be_approved(self):
+        res = self._approve()
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("verified their email", res.data["detail"])
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.PENDING)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertFalse(AuditLog.objects.filter(action="supplier.verified").exists())
+
+    def test_verified_email_can_be_approved(self):
+        self.supplier.email_verified = True
+        self.supplier.save()
+        self.assertEqual(self._approve().status_code, status.HTTP_200_OK)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.VERIFIED)
+
+    def test_email_verified_cannot_be_set_through_the_api(self):
+        # Admin generic edit is gone (405) ...
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.patch(f"/api/suppliers/{self.supplier.pk}/", {"email_verified": True}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        # ... and the supplier's own profile edit silently ignores the field.
+        self.client.force_authenticate(user=self.supplier.user)
+        self.client.patch("/api/suppliers/me/", {"email_verified": True}, format="json")
+        self.supplier.refresh_from_db()
+        self.assertFalse(self.supplier.email_verified)
+        self.assertEqual(self._approve().status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_supplier_cannot_approve_themselves(self):
+        self.supplier.email_verified = True
+        self.supplier.save()
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.post(f"/api/suppliers/{self.supplier.pk}/approve/")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_link_still_works_after_the_supplier_logs_in(self):
+        user = self.supplier.user
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = email_verification_token.make_token(user)
+        login = self.client.post("/api/auth/login/", {"username": user.username, "password": "pw"},
+                                 format="json")
+        self.assertEqual(login.status_code, status.HTTP_200_OK)   # sets last_login
+        res = self.client.post("/api/auth/verify-email/confirm/", {"uid": uid, "token": token},
+                               format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertTrue(self.supplier.email_verified)
+
+    def test_link_dies_when_the_email_changes(self):
+        user = self.supplier.user
+        token = email_verification_token.make_token(user)
+        user.email = "someone.else@example.com"
+        user.save()
+        self.assertFalse(email_verification_token.check_token(user, token))
+
+    def test_a_verification_link_is_not_a_password_reset_token(self):
+        from django.contrib.auth.tokens import default_token_generator
+        token = email_verification_token.make_token(self.supplier.user)
+        self.assertFalse(default_token_generator.check_token(self.supplier.user, token))
+
+    def test_full_flow_register_verify_then_approve(self):
+        res = self.client.post("/api/auth/register/supplier/",
+                               registration_payload(email="newco@example.com"), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        supplier = Supplier.objects.get(user__email="newco@example.com")
+        self.assertFalse(supplier.email_verified)
+
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/suppliers/{supplier.pk}/approve/").status_code,
+                         status.HTTP_400_BAD_REQUEST)
+
+        link = next(m.body for m in mail.outbox if "newco@example.com" in m.to)
+        query = parse_qs(urlparse(re.search(r"https?://\S+", link).group(0)).query)
+        self.client.force_authenticate(user=None)
+        res = self.client.post("/api/auth/verify-email/confirm/",
+                               {"uid": query["uid"][0], "token": query["token"][0]}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/suppliers/{supplier.pk}/approve/").status_code,
+                         status.HTTP_200_OK)
+
+
+class LegacyRegisterRouteRemovedTests(APITestCase):
+    """The unused public /api/auth/register/ created a bare `supplier` account
+    with no profile and accepted an email that already belonged to someone. A
+    stranger could take `username=<a supplier's email>` first and permanently
+    block that supplier's real registration (supplier registration rejects an
+    email that already exists as a username), and duplicate emails made
+    login-by-email and password reset resolve to an arbitrary account. The
+    route was removed; supplier self-registration is the only public sign-up."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_the_legacy_route_is_gone(self):
+        res = self.client.post("/api/auth/register/", {
+            "username": "squatter", "email": "victim@example.com", "password": "Str0ng!Passphrase1",
+        }, format="json")
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(User.objects.exists())
+
+    def test_supplier_self_registration_still_works_and_needs_email_verification(self):
+        res = self.client.post("/api/auth/register/supplier/",
+                               registration_payload(email="real.supplier@example.com"), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        user = User.objects.get(email="real.supplier@example.com")
+        self.assertEqual(user.role, User.Role.SUPPLIER)
+        supplier = Supplier.objects.get(user=user)
+        self.assertFalse(supplier.email_verified)
+        self.assertEqual(supplier.qualification_status, Supplier.Qualification.PENDING)
+        self.assertTrue(any("real.supplier@example.com" in m.to for m in mail.outbox))
+
+    def test_supplier_registration_enforces_the_password_policy(self):
+        # Carried over from the removed RegisterPasswordStrengthTests: the policy
+        # must hold on the one public sign-up route that remains.
+        payload = registration_payload(email="weak.pw@example.com")
+        payload["password"] = payload["confirm_password"] = "123456"
+        res = self.client.post("/api/auth/register/supplier/", payload, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", res.data)
+        self.assertFalse(User.objects.filter(email="weak.pw@example.com").exists())
+
+    def test_supplier_registration_cannot_reuse_an_existing_email_or_username(self):
+        make_admin()   # username "admin", email admin@example.com
+        res = self.client.post("/api/auth/register/supplier/",
+                               registration_payload(email="admin@example.com"), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(User.objects.filter(email__iexact="admin@example.com").count(), 1)
+
+    def test_role_cannot_be_chosen_at_registration(self):
+        payload = registration_payload(email="wants.admin@example.com")
+        payload["role"] = "admin"
+        res = self.client.post("/api/auth/register/supplier/", payload, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(User.objects.get(email="wants.admin@example.com").role, User.Role.SUPPLIER)
+
+    def test_no_other_unauthenticated_route_creates_an_account(self):
+        attempts = {
+            "/api/auth/admin/register-supplier/": ("multipart", registration_payload(email="a@example.com")),
+            "/api/suppliers/": ("json", {"company": "Ghost", "contact": "x"}),
+            "/api/auth/me/": ("json", {"username": "ghost", "password": "Str0ng!Passphrase1"}),
+            "/api/auth/login/": ("json", {"username": "ghost", "password": "Str0ng!Passphrase1"}),
+            "/api/auth/refresh/": ("json", {"refresh": "x"}),
+            "/api/auth/logout/": ("json", {"refresh": "x"}),
+            "/api/auth/password/reset/": ("json", {"email": "ghost@example.com"}),
+            "/api/auth/verify-email/confirm/": ("json", {"uid": "x", "token": "y"}),
+        }
+        for path, (fmt, body) in attempts.items():
+            with self.subTest(path=path):
+                self.client.post(path, body, format=fmt)
+                self.assertFalse(User.objects.exists(), path)
+                self.assertFalse(Supplier.objects.exists(), path)
+
+    def test_the_only_public_create_view_is_supplier_registration(self):
+        """Structural guard: walk every URL and list the views that both allow
+        anonymous callers and create objects. Adding a new public sign-up path
+        must be a deliberate change to this test."""
+        from django.urls import URLPattern, URLResolver, get_resolver
+        from rest_framework.mixins import CreateModelMixin
+        from rest_framework.permissions import AllowAny
+
+        from accounts.views import SupplierRegisterView
+
+        def walk(patterns):
+            for p in patterns:
+                if isinstance(p, URLResolver):
+                    yield from walk(p.url_patterns)
+                elif isinstance(p, URLPattern):
+                    yield p
+
+        public_creators = set()
+        for pattern in walk(get_resolver().url_patterns):
+            cls = getattr(pattern.callback, "cls", None) or getattr(pattern.callback, "view_class", None)
+            if cls is None or not issubclass(cls, CreateModelMixin):
+                continue
+            if any(perm is AllowAny for perm in getattr(cls, "permission_classes", [])):
+                public_creators.add(cls)
+        self.assertEqual(public_creators, {SupplierRegisterView})
+
+
+class CategoryChangeWorkflowTests(APITestCase):
+    """A verified supplier's PATCH /suppliers/me/ {business_types} took effect
+    immediately, so a supplier verified for one category could see, download
+    the documents of, and bid on procurements in any other. A verified
+    supplier now files a REQUEST; only an Admin decision changes the approved
+    set, and nothing pending or rejected grants eligibility."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.head = make_head()
+        self.supplier = make_supplier(verified=True, categories=["IT Equipment"])
+        self.furniture = make_project(status=Project.Status.PUBLISHED, category="Furniture")
+        self.furniture.purchase_request = dummy_pdf()
+        self.furniture.save()
+
+    def _request(self, categories, user=None):
+        self.client.force_authenticate(user=user or self.supplier.user)
+        return self.client.patch("/api/suppliers/me/", {"business_types": categories}, format="json")
+
+    def _decide(self, decision, user=None, **body):
+        self.client.force_authenticate(user=user or self.admin)
+        return self.client.post(f"/api/suppliers/{self.supplier.pk}/{decision}-categories/", body, format="json")
+
+    def _can_see_furniture(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        visible = [p["id"] for p in self.client.get("/api/projects/").json()]
+        doc = self.client.get(f"/api/files/project/{self.furniture.pk}/purchase_request/")
+        return self.furniture.pk in visible, doc.status_code
+
+    def test_request_is_pending_logged_and_announced(self):
+        res = self._request(["IT Equipment", "Furniture"])
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.business_types, ["IT Equipment"])
+        self.assertEqual(self.supplier.pending_business_types, ["IT Equipment", "Furniture"])
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.PENDING)
+        self.assertIsNotNone(self.supplier.category_requested_at)
+        log = AuditLog.objects.get(action="supplier.category_change_requested")
+        self.assertIn("add Furniture", log.description)
+        self.assertTrue(self.admin.notifications.filter(message__contains="category change").exists())
+
+    def test_pending_category_grants_no_eligibility(self):
+        self._request(["IT Equipment", "Furniture"])
+        self.assertEqual(self._can_see_furniture(), (False, status.HTTP_404_NOT_FOUND))
+        bid = self.client.post(f"/api/projects/{self.furniture.pk}/bid/", {"amount": "100"}, format="multipart")
+        self.assertEqual(bid.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_pending_category_gets_no_publish_notification(self):
+        self._request(["IT Equipment", "Furniture"])
+        approved = make_project(status=Project.Status.APPROVED, category="Furniture")
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/projects/{approved.pk}/publish/").status_code, 200)
+        self.assertFalse(self.supplier.user.notifications.filter(message__contains="open for bidding").exists())
+
+    def test_approval_activates_the_requested_set(self):
+        self._request(["IT Equipment", "Furniture"])
+        res = self._decide("approve")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.business_types, ["IT Equipment", "Furniture"])
+        self.assertEqual(self.supplier.business_type, "IT Equipment, Furniture")
+        self.assertIsNone(self.supplier.pending_business_types)
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.NONE)
+        self.assertTrue(AuditLog.objects.filter(action="supplier.category_change_approved").exists())
+        self.assertTrue(self.supplier.user.notifications.filter(message__contains="approved").exists())
+        self.assertEqual(self._can_see_furniture(), (True, status.HTTP_200_OK))
+
+    def test_rejection_keeps_the_approved_set_and_grants_nothing(self):
+        self._request(["IT Equipment", "Furniture"])
+        res = self._decide("reject", note="No furniture permits on file")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.business_types, ["IT Equipment"])
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.REJECTED)
+        self.assertEqual(self.supplier.category_request_note, "No furniture permits on file")
+        self.assertTrue(AuditLog.objects.filter(action="supplier.category_change_rejected").exists())
+        self.assertEqual(self._can_see_furniture(), (False, status.HTTP_404_NOT_FOUND))
+        # A rejected request can't be approved afterwards, but a new one can be filed.
+        self.assertEqual(self._decide("approve").status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._request(["IT Equipment", "Furniture"]).data["category_request_status"], "pending")
+
+    def test_removal_waits_for_approval_too(self):
+        self.supplier.business_types = ["IT Equipment", "Furniture"]
+        self.supplier.save()
+        self._request(["IT Equipment"])
+        self.assertEqual(self._can_see_furniture()[0], True)    # still active while pending
+        self._decide("approve")
+        self.assertEqual(self._can_see_furniture()[0], False)
+
+    def test_resending_the_approved_set_withdraws_the_request(self):
+        self._request(["IT Equipment", "Furniture"])
+        self._request(["IT Equipment"])
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.NONE)
+        self.assertIsNone(self.supplier.pending_business_types)
+        self.assertTrue(AuditLog.objects.filter(action="supplier.category_change_withdrawn").exists())
+
+    def test_only_an_admin_can_decide(self):
+        self._request(["IT Equipment", "Furniture"])
+        other = make_supplier(verified=True)
+        for user in (self.supplier.user, other.user, self.head):
+            for decision in ("approve", "reject"):
+                with self.subTest(user=user.username, decision=decision):
+                    self.assertEqual(self._decide(decision, user=user).status_code, status.HTTP_403_FORBIDDEN)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.business_types, ["IT Equipment"])
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.post(f"/api/suppliers/{self.supplier.pk}/approve-categories/").status_code,
+                         status.HTTP_401_UNAUTHORIZED)
+
+    def test_deciding_without_a_pending_request_is_refused(self):
+        for decision in ("approve", "reject"):
+            with self.subTest(decision=decision):
+                self.assertEqual(self._decide(decision).status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_request_state_cannot_be_forged_through_the_api(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        self.client.patch("/api/suppliers/me/", {
+            "pending_business_types": ["Furniture"], "category_request_status": "pending",
+        }, format="json")
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.NONE)
+        # Filing a request and then trying to clear its status in the same call.
+        self.client.patch("/api/suppliers/me/", {
+            "business_types": ["IT Equipment", "Furniture"], "category_request_status": "",
+        }, format="json")
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.PENDING)
+        self.assertEqual(self.supplier.business_types, ["IT Equipment"])
+        # The Admin's generic edit route is gone (H3), so it can't be used either.
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.patch(f"/api/suppliers/{self.supplier.pk}/", {"business_types": ["Furniture"]},
+                                format="json")
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_an_invalid_request_changes_nothing_at_all(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        for bad in ([], ["Not A Real Category"], "Furniture", [1, 2]):
+            with self.subTest(bad=bad):
+                res = self.client.patch("/api/suppliers/me/",
+                                        {"business_types": bad, "full_name": "Changed Name"}, format="json")
+                self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.supplier.refresh_from_db()
+        self.supplier.user.refresh_from_db()
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.NONE)
+        self.assertNotEqual(self.supplier.user.full_name, "Changed Name")
+
+    def test_unverified_supplier_updates_categories_directly(self):
+        pending = make_supplier(verified=False, categories=["IT Equipment"])
+        res = self._request(["Furniture"], user=pending.user)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        pending.refresh_from_db()
+        self.assertEqual(pending.business_types, ["Furniture"])
+        self.assertEqual(pending.category_request_status, Supplier.CategoryRequest.NONE)
+        self.assertTrue(AuditLog.objects.filter(action="supplier.categories_updated",
+                                                entity_id=str(pending.pk)).exists())
+
+    def test_contact_details_still_save_without_touching_categories(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.patch("/api/suppliers/me/", {"phone_number": "09170000000"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.phone_number, "09170000000")
+        self.assertEqual(self.supplier.category_request_status, Supplier.CategoryRequest.NONE)
+        self.assertFalse(AuditLog.objects.filter(action__startswith="supplier.categor").exists())
+
+
+class SupplierCategoryMigrationTests(TransactionTestCase):
+    """0018 must preserve every existing supplier's approved categories and
+    leave them with no pending request — forwards AND backwards."""
+
+    BEFORE = [("procurement", "0017_bid_product_images")]
+    AFTER = [("procurement", "0018_supplier_category_change_request")]
+
+    def _migrate(self, targets):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets)
+        return executor.loader.project_state(targets).apps
+
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+    def test_existing_suppliers_survive_forward_and_backward(self):
+        old = self._migrate(self.BEFORE)
+        OldUser = old.get_model("accounts", "User")
+        OldSupplier = old.get_model("procurement", "Supplier")
+        user = OldUser.objects.create(username="legacy@example.com", email="legacy@example.com", role="supplier")
+        rows = {
+            "verified": OldSupplier.objects.create(
+                user=user, company="Legacy Verified", contact="x", business_type="IT Equipment, Furniture",
+                business_types=["IT Equipment", "Furniture"], qualification_status="verified"),
+            "pending": OldSupplier.objects.create(
+                company="Legacy Pending", contact="y", business_types=["Construction"]),
+            "empty": OldSupplier.objects.create(company="Legacy Empty", contact="z", business_types=[]),
+        }
+
+        new = self._migrate(self.AFTER)
+        NewSupplier = new.get_model("procurement", "Supplier")
+        for key, before in rows.items():
+            with self.subTest(row=key):
+                after = NewSupplier.objects.get(pk=before.pk)
+                self.assertEqual(after.business_types, before.business_types)
+                self.assertEqual(after.qualification_status, before.qualification_status)
+                self.assertEqual(after.category_request_status, "")
+                self.assertIsNone(after.pending_business_types)
+                self.assertEqual(after.category_request_note, "")
+                self.assertIsNone(after.category_requested_at)
+
+        # A row inserted WITHOUT the new columns (as the previous release does
+        # while migrate runs on deploy) must still succeed — the DB defaults.
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO procurement_supplier (company, contact, business_type, status, "
+                "qualification_status, email_verified, registered, company_address, phone_number, tin, "
+                "representative_name, business_types, mayors_permit_expiry, tax_clearance_expiry, "
+                "financial_statement_year, track_record_description, declaration_accepted, admin_notes, "
+                "document_reviews, reviewed_at) VALUES ('Old Release Co', 'c', '', 'draft', "
+                "'waiting_admin_approval', 0, '2026-10-20', '', '', '', '', '[]', NULL, NULL, NULL, '', 0, "
+                "'', '{}', NULL)")
+        self.assertEqual(NewSupplier.objects.get(company="Old Release Co").category_request_status, "")
+
+        back = self._migrate(self.BEFORE)
+        BackSupplier = back.get_model("procurement", "Supplier")
+        self.assertEqual(BackSupplier.objects.get(pk=rows["verified"].pk).business_types,
+                         ["IT Equipment", "Furniture"])

@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 class EmailVerificationTokenGenerator(PasswordResetTokenGenerator):
     key_salt = "accounts.EmailVerificationTokenGenerator"
 
+    def _make_hash_value(self, user, timestamp):
+        """The base class hashes `last_login`, which is right for a password
+        reset but wrong here: a newly registered supplier is expected to sign in
+        before opening the email, and that sign-in silently invalidated the
+        link. The address itself is hashed instead, so a link only ever
+        confirms the email it was sent to (changing the email voids it), and the
+        password hash keeps a reset from leaving old links alive.
+
+        NOTE: links issued before this change no longer validate; the supplier
+        resends one from their dashboard."""
+        return f"{user.pk}{user.password}{(user.email or '').lower()}{timestamp}"
+
 
 email_verification_token = EmailVerificationTokenGenerator()
 

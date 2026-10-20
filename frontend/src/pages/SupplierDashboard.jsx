@@ -16,6 +16,11 @@ import {
 import { CATEGORIES } from '../constants/categories'
 import { TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import AnchorActivity from '../components/AnchorActivity'
+import AppSidebar from '../components/shell/AppSidebar'
+import AppHeader, { storedUser } from '../components/shell/AppHeader'
+import StatusBadge from '../components/ui/StatusBadge'
+import EmptyState, { TableEmpty } from '../components/ui/EmptyState'
+import { deadlineMeta } from '../utils/format'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
 import { runAnchor } from '../blockchain/anchorStore'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
@@ -120,12 +125,18 @@ const QUAL_STATUS = {
   rejected:               { label: 'Rejected', tone: 'rejected', text: 'Your registration was rejected. See the message below.' },
 }
 
-const NAV = [
-  { icon: LayoutDashboard, label: 'Dashboard',  to: '/supplier' },
-  { icon: FolderOpen,      label: 'Bid Opportunities', to: '/supplier/projects' },
-  { icon: FileText,        label: 'My Bids',    to: '/supplier/bids' },
-  { icon: Clock,           label: 'Status',     to: '/supplier/status' },
-  { icon: BarChart2,       label: 'Reports',    to: '/supplier/reports' },
+const NAV_SECTIONS = [
+  { label: 'Overview', items: [
+    { icon: LayoutDashboard, label: 'Dashboard', to: '/supplier' },
+  ] },
+  { label: 'Bidding', items: [
+    { icon: FolderOpen, label: 'Bid Opportunities', to: '/supplier/projects' },
+    { icon: FileText,   label: 'My Bids',           to: '/supplier/bids' },
+    { icon: Clock,      label: 'Status',            to: '/supplier/status' },
+  ] },
+  { label: 'Insights', items: [
+    { icon: BarChart2, label: 'Reports', to: '/supplier/reports' },
+  ] },
 ]
 
 const BID_STATUS = {
@@ -891,7 +902,7 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
           <div className="sd-modal-meta">
             <div><span>Amount</span><strong>{bid.amount}</strong></div>
             <div><span>Submitted</span><strong>{bid.submitted}</strong></div>
-            <div><span>Status</span><strong><span className={`badge ${BID_STATUS[bid.status] || 'badge-yellow'}`}>{bid.status.replace('_', ' ')}</span></strong></div>
+            <div><span>Status</span><strong><StatusBadge domain="bid" status={bid.status} label={BID_LABEL[bid.status]} /></strong></div>
             <div><span>Blockchain</span><strong><BlockchainBadge anchors={bid.anchors} /></strong></div>
           </div>
           <div className="sd-bid-body">
@@ -1062,7 +1073,7 @@ function VerificationBanner({ profile }) {
   const info = QUAL_STATUS[profile.qualification_status]
   if (!info || info.tone === 'approved') return null  // hide when verified
   return (
-    <div className={`sd-verify-banner sd-verify-${info.tone}`}>
+    <div className={`sd-verify-banner sd-verify-${info.tone}`} role="status">
       <div className="sd-verify-icon">
         {info.tone === 'rejected' ? <X size={18} /> : info.tone === 'revision' ? <AlertTriangle size={18} /> : <Clock size={18} />}
       </div>
@@ -1203,157 +1214,70 @@ function RevisionPanel({ profile, onResubmitted, setToast }) {
   )
 }
 
-// ─── Sidebar / Header ────────────────────────────────────────────────────────
+// ─── Pages ───────────────────────────────────────────────────────────────────
 
-function SupplierSidebar({ active, open, onClose, profile }) {
-  const isActive = (to) => to === '/supplier' ? active === '/supplier' : active.startsWith(to)
-  const name = profile?.full_name || profile?.contact || 'Supplier User'
-  const email = profile?.email || ''
-  const initial = (name || 'S').trim().charAt(0).toUpperCase()
+// Approval state as a tone for the status card / tracker.
+const QUAL_TONE = { pending: 'warning', revision: 'warning', approved: 'success', rejected: 'danger' }
+
+// Registered → Admin Verification → Eligible to Bid, with what happens next.
+function OnboardingTracker({ profile, eligible }) {
+  const qs = profile?.qualification_status
+  const info = QUAL_STATUS[qs]
+  const verifyState = eligible ? 'done' : qs === 'rejected' ? 'error' : qs === 'needs_revision' ? 'attention' : 'current'
+  const steps = [
+    { label: 'Registered', desc: profile?.registered ? `Account created ${profile.registered}` : 'Account created', state: 'done', icon: CheckCircle2 },
+    {
+      label: 'Admin Verification',
+      desc: info?.label || 'Pending Review',
+      state: verifyState,
+      icon: verifyState === 'done' ? CheckCircle2 : verifyState === 'error' ? XCircle : verifyState === 'attention' ? AlertTriangle : Clock,
+    },
+    {
+      label: 'Eligible to Bid',
+      desc: eligible ? 'Active on all open projects' : 'Locked until approved',
+      state: eligible ? 'done' : 'upcoming',
+      icon: eligible ? CheckCircle2 : Lock,
+    },
+  ]
+  const next = eligible
+    ? 'You can submit bids on any open procurement that matches your registered categories.'
+    : qs === 'needs_revision'
+    ? 'Re-upload the flagged documents above and resubmit — the admin will review them again.'
+    : qs === 'rejected'
+    ? 'Your registration was not approved. Read the admin’s note above for the reason.'
+    : 'The procurement office is checking your company details and documents. You’ll be notified by email once a decision is made.'
   return (
-    <aside className={`sd-sidebar${open ? ' open' : ''}`}>
-      <div className="sd-sidebar-logo">
-        <span className="sd-logo-icon"><Building2 size={16} /></span>
-        <div>
-          <div className="sd-logo-name">E-Procurement</div>
-          <div className="sd-logo-sub">Supplier Workspace</div>
-        </div>
+    <div className="sd-card sd-onboard">
+      <div className="sd-card-header">
+        <div><h2>Account Status</h2><p>Your registration and approval details</p></div>
+        <StatusBadge tone={QUAL_TONE[info?.tone] || 'warning'} label={info?.label || 'Pending Review'} />
       </div>
-      <div className="sd-menu-section">
-        <span className="sd-menu-label">MENU</span>
-        <nav className="sd-sidebar-nav">
-          {NAV.map(({ icon: Icon, label, to }) => (
-            <Link key={to} to={to} className={`sd-nav-item${isActive(to) ? ' active' : ''}`} onClick={onClose}>
-              <Icon size={18} /><span>{label}</span>
-              {isActive(to) && <span className="sd-nav-dot" />}
-            </Link>
-          ))}
-        </nav>
+      <ol className="sd-onboard-steps">
+        {steps.map(({ label, desc, state, icon: Icon }, i) => (
+          <li key={label} className={`sd-onboard-step is-${state}`} aria-current={state === 'current' || state === 'attention' ? 'step' : undefined}>
+            <span className="sd-onboard-dot" aria-hidden="true"><Icon size={16} /></span>
+            <div className="sd-onboard-text">
+              <span className="sd-onboard-n">Step {i + 1}</span>
+              <span className="sd-bold">{label}</span>
+              <span className="sd-muted sd-small">{desc}</span>
+            </div>
+          </li>
+        ))}
+      </ol>
+      <div className="sd-onboard-next">
+        <ArrowRight size={14} aria-hidden="true" />
+        <span><strong>What happens next:</strong> {next}</span>
       </div>
-      <div className="sd-sidebar-footer">
-        <div className="sd-sidebar-user">
-          <div className="sd-sidebar-avatar">{initial}</div>
-          <div className="sd-sidebar-user-info">
-            <span className="sd-sidebar-user-name">{name}</span>
-            <span className="sd-sidebar-user-email">{email}</span>
-          </div>
-        </div>
-      </div>
-    </aside>
-  )
-}
-
-// Bell with unread count + dropdown list. Opening it marks everything read.
-function NotificationsBell() {
-  const [items, setItems] = useState([])
-  const [open, setOpen] = useState(false)
-  const load = () => { apiListNotifications().then(setItems).catch(() => {}) }
-  useEffect(() => { load() }, [])
-  const unread = items.filter(n => !n.is_read).length
-
-  const toggle = () => {
-    const next = !open
-    setOpen(next)
-    if (next && unread > 0) {
-      apiMarkNotificationsRead()
-        .then(() => setItems(prev => prev.map(n => ({ ...n, is_read: true }))))
-        .catch(() => {})
-    }
-  }
-
-  return (
-    <div className="sd-notif-wrap">
-      <button className="sd-notif" onClick={toggle}>
-        <Bell size={18} />
-        {unread > 0 && <span className="sd-notif-badge">{unread}</span>}
-      </button>
-      {open && (
-        <>
-          <div className="sd-dropdown-backdrop" onClick={() => setOpen(false)} />
-          <div className="sd-notif-dropdown">
-            <div className="sd-notif-head">Notifications</div>
-            {items.length === 0 ? (
-              <div className="sd-notif-empty">No notifications yet.</div>
-            ) : (
-              items.map(n => (
-                <div key={n.id} className="sd-notif-item">
-                  <div className="sd-notif-msg">{n.message}</div>
-                  <div className="sd-notif-time">{new Date(n.created_at).toLocaleString()}</div>
-                </div>
-              ))
-            )}
-          </div>
-        </>
-      )}
     </div>
   )
 }
-
-function SupplierHeader({ title, onMenu, profile }) {
-  const navigate = useNavigate()
-  const [open, setOpen] = useState(false)
-  const name = profile?.full_name || profile?.contact || 'Supplier User'
-  const company = profile?.company || ''
-  const email = profile?.email || ''
-  const initial = (name || 'S').trim().charAt(0).toUpperCase()
-  return (
-    <header className="sd-header">
-      <div className="sd-header-left">
-        <button className="sd-menu-btn" onClick={onMenu} aria-label="Open menu"><Menu size={20} /></button>
-        <div>
-          <div className="sd-workspace-label">SUPPLIER WORKSPACE</div>
-          <h1 className="sd-page-title">{title}</h1>
-        </div>
-      </div>
-      <div className="sd-header-right">
-        <NotificationsBell />
-        <div className="sd-user-wrap">
-          <div className="sd-user" onClick={() => setOpen(o => !o)}>
-            <div className="sd-avatar">{initial}</div>
-            <div className="sd-user-info">
-              <span>{name}</span>
-              <span>{company}</span>
-            </div>
-            <ChevronDown size={14} color="#64748b" />
-          </div>
-          {open && (
-            <>
-              <div className="sd-dropdown-backdrop" onClick={() => setOpen(false)} />
-              <div className="sd-dropdown">
-                <div className="sd-dropdown-header">
-                  <div className="sd-avatar">{initial}</div>
-                  <div>
-                    <div className="sd-dropdown-name">{name}</div>
-                    <div className="sd-dropdown-email">{email}</div>
-                  </div>
-                </div>
-                <div className="sd-dropdown-divider" />
-                <button className="sd-dropdown-item" onClick={() => { setOpen(false); navigate('/supplier/profile') }}>
-                  <User size={15} /> My Profile
-                </button>
-                <button className="sd-dropdown-item" onClick={() => { setOpen(false); navigate('/supplier/settings') }}>
-                  <Settings size={15} /> Settings
-                </button>
-                <div className="sd-dropdown-divider" />
-                <button className="sd-dropdown-item sd-dropdown-logout" onClick={() => { apiLogout(); navigate('/login') }}>
-                  <LogOut size={15} /> Log out
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </header>
-  )
-}
-
-// ─── Pages ───────────────────────────────────────────────────────────────────
 
 function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted, setToast, loadingProjects, loadingBids }) {
   const [modal, setModal] = useState(null)
   const alreadyBid = new Set(bids.map(b => b.projectId))
   const available = projects.filter(p => !alreadyBid.has(p.id))
-  const approvalLabel = QUAL_STATUS[profile?.qualification_status]?.label || 'Pending'
+  const qualInfo = QUAL_STATUS[profile?.qualification_status]
+  const approvalLabel = qualInfo?.label || 'Pending'
 
   return (
     <div className="sd-content">
@@ -1365,19 +1289,32 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
 
       <div className="sd-stats">
         {[
-          { label: 'Eligible Projects', value: String(projects.length),                                       icon: FolderOpen,   color: 'blue'   },
-          { label: 'My Active Bids',  value: String(bids.length),                                             icon: FileText,     color: 'green'  },
-          { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'qualified').length),       icon: CheckCircle2, color: 'purple' },
-          { label: 'Approval Status', value: approvalLabel,                                                   icon: Shield,       color: eligible ? 'green' : 'yellow' },
-        ].map(({ label, value, icon: Icon, color }) => (
+          { label: 'Eligible Projects', value: String(projects.length),                                 icon: FolderOpen,   color: 'blue',  sub: 'Open and matching your categories' },
+          { label: 'My Active Bids',  value: String(bids.length),                                       icon: FileText,     color: 'green', sub: 'Submitted by your company' },
+          { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'qualified').length), icon: CheckCircle2, color: 'green', sub: 'Qualified in evaluation' },
+        ].map(({ label, value, icon: Icon, color, sub }) => (
           <div className="sd-stat-card" key={label}>
             <div className="sd-stat-top">
               <span className="sd-stat-label">{label}</span>
-              <div className={`sd-stat-icon sd-icon-${color}`}><Icon size={17} /></div>
+              <div className={`sd-stat-icon sd-icon-${color}`} aria-hidden="true"><Icon size={17} /></div>
             </div>
-            <div className="sd-stat-value">{value}</div>
+            <div className="sd-stat-value">{(label === 'Eligible Projects' ? loadingProjects : loadingBids) && value === '0' ? <ListSkeleton rows={1} height={26} /> : value}</div>
+            <div className="sd-stat-sub">{sub}</div>
           </div>
         ))}
+        {/* Approval is a state, not a count — shown as a badge + explanation. */}
+        <div className={`sd-stat-card sd-status-tile is-${qualInfo?.tone || 'pending'}`}>
+          <div className="sd-stat-top">
+            <span className="sd-stat-label">Approval Status</span>
+            <div className={`sd-stat-icon sd-icon-${eligible ? 'green' : 'yellow'}`} aria-hidden="true"><Shield size={17} /></div>
+          </div>
+          <div className="sd-status-tile-badge">
+            <StatusBadge size="lg" tone={QUAL_TONE[qualInfo?.tone] || 'warning'} label={approvalLabel} />
+          </div>
+          <div className="sd-stat-sub">
+            {eligible ? 'You can bid on open projects.' : 'Bidding unlocks once the admin approves your account.'}
+          </div>
+        </div>
       </div>
 
       <div className="sd-grid">
@@ -1389,31 +1326,39 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
           {loadingProjects && projects.length === 0 ? (
             <div style={{ padding: '12px 24px' }}><ListSkeleton rows={3} height={52} /></div>
           ) : available.length === 0 ? (
-            <div style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
-              {projects.length === 0
-                ? 'No open procurements match your registered categories yet.'
-                : 'You have already submitted bids on all eligible procurements.'}
-            </div>
+            projects.length === 0
+              ? <EmptyState compact icon={FolderOpen} title="No matching procurements yet"
+                  description="No open procurements match your registered categories yet."
+                  action={<Link to="/public" className="sd-btn-cancel">View public procurements</Link>} />
+              : <EmptyState compact icon={CheckCircle2} title="You're up to date"
+                  description="You have already submitted bids on all eligible procurements."
+                  action={<Link to="/supplier/bids" className="sd-btn-cancel">Track my bids</Link>} />
           ) : (
             <div className="sd-projects-list">
-              {available.map(p => (
-                <div className="sd-project-row" key={p.id}>
-                  <div className="sd-proj-icon"><FolderOpen size={16} /></div>
-                  <div className="sd-proj-info">
-                    <span className="sd-bold">{p.name}</span>
-                    <span className="sd-muted">{p.id} · {p.category}</span>
+              {available.map(p => {
+                const due = deadlineMeta(p.deadline)
+                return (
+                  <div className="sd-project-row" key={p.id}>
+                    <div className="sd-proj-icon" aria-hidden="true"><FolderOpen size={16} /></div>
+                    <div className="sd-proj-info">
+                      <span className="sd-bold">{p.name}</span>
+                      <span className="sd-proj-sub"><span className="sd-mono">{p.id}</span> {p.category}</span>
+                    </div>
+                    <div className="sd-proj-right">
+                      <span className="sd-proj-budget">{p.budget}</span>
+                      <span className="sd-muted sd-small">Due {p.deadline}</span>
+                    </div>
+                    {p.isExpired
+                      ? <StatusBadge tone="danger" label="Deadline Passed" />
+                      : <>
+                          {due && <StatusBadge tone={due.tone} icon={Clock} label={due.label} />}
+                          {eligible
+                            ? <button className="sd-bid-btn" onClick={() => setModal(p)}>Bid <ArrowRight size={13} /></button>
+                            : <button className="sd-bid-btn sd-bid-locked" disabled title="Approval required before bidding"><Lock size={12} /> Locked</button>}
+                        </>}
                   </div>
-                  <div className="sd-proj-right">
-                    <span className="sd-proj-budget">{p.budget}</span>
-                    <span className="sd-muted sd-small">Due {p.deadline}</span>
-                  </div>
-                  {p.isExpired
-                    ? <span className="badge badge-red">Deadline Passed</span>
-                    : eligible
-                    ? <button className="sd-bid-btn" onClick={() => setModal(p)}>Bid <ArrowRight size={13} /></button>
-                    : <button className="sd-bid-btn sd-bid-locked" disabled title="Approval required before bidding"><Lock size={12} /> Locked</button>}
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>
@@ -1421,13 +1366,16 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
         <div className="sd-card">
           <div className="sd-card-header">
             <div><h2>My Bids</h2><p>Your submitted bids</p></div>
+            {bids.length > 0 && <Link to="/supplier/bids" className="sd-view-all">View all →</Link>}
           </div>
           {loadingBids && bids.length === 0 ? (
             <div style={{ padding: '12px 24px' }}><ListSkeleton rows={2} height={48} /></div>
           ) : bids.length === 0 ? (
-            <div style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
-              No bids submitted yet.
-            </div>
+            <EmptyState compact icon={FileText} title="No bids submitted yet"
+              description={eligible ? 'Pick an open procurement and submit your first bid.' : 'Once your account is approved you can start bidding.'}
+              action={eligible
+                ? <Link to="/supplier/projects" className="sd-btn-primary">Browse opportunities</Link>
+                : <Link to="/supplier/profile" className="sd-btn-cancel">Complete your profile</Link>} />
           ) : (
             <div className="sd-bids-list">
               {bids.map((b, i) => (
@@ -1438,7 +1386,7 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
                   </div>
                   <div className="sd-bid-right">
                     <span className="sd-proj-budget">{b.amount}</span>
-                    <span className={`badge ${BID_STATUS[b.status] || 'badge-yellow'}`}>{b.status.replace('_', ' ')}</span>
+                    <StatusBadge domain="bid" status={b.status} label={BID_LABEL[b.status]} />
                   </div>
                 </div>
               ))}
@@ -1447,27 +1395,7 @@ function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted,
         </div>
       </div>
 
-      <div className="sd-card sd-status-card">
-        <div className="sd-card-header">
-          <div><h2>Account Status</h2><p>Your registration and approval details</p></div>
-        </div>
-        <div className="sd-status-body">
-          <div className="sd-status-item">
-            <CheckCircle2 size={18} className="sd-check" />
-            <div><span className="sd-bold">Account Registered</span><span className="sd-muted">{profile?.registered || '—'}</span></div>
-          </div>
-          <div className="sd-status-divider" />
-          <div className="sd-status-item">
-            {eligible ? <CheckCircle2 size={18} className="sd-check" /> : <Clock size={18} className="sd-clock" />}
-            <div><span className="sd-bold">Admin Verification</span><span className="sd-muted">{approvalLabel}</span></div>
-          </div>
-          <div className="sd-status-divider" />
-          <div className="sd-status-item">
-            {eligible ? <CheckCircle2 size={18} className="sd-check" /> : <Lock size={18} className="sd-clock" />}
-            <div><span className="sd-bold">Eligible to Bid</span><span className="sd-muted">{eligible ? 'Active on all open projects' : 'Locked until approved'}</span></div>
-          </div>
-        </div>
-      </div>
+      <OnboardingTracker profile={profile} eligible={eligible} />
     </div>
   )
 }
@@ -1489,10 +1417,11 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
         <div className="sd-card-header">
           <div><h2>Bid Opportunities</h2><p>Procurements open for bidding that match your registered business categories</p></div>
           {projects.length > 0 && (
-            <div className="sd-search-inline">
-              <Search size={14} />
+            <label className="sd-search-inline">
+              <Search size={14} aria-hidden="true" />
+              <span className="sr-only">Search projects</span>
               <input placeholder="Search projects" value={search} onChange={e => setSearch(e.target.value)} />
-            </div>
+            </label>
           )}
         </div>
         {loading && projects.length === 0 ? (
@@ -1503,18 +1432,20 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
             <tbody><TableSkeleton rows={4} cols={6} /></tbody>
           </table>
         ) : projects.length === 0 ? (
-          <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
-            No open procurements match your categories right now. Check back later.
-          </div>
+          <EmptyState icon={FolderOpen} title="No open procurements right now"
+            description="No open procurements match your categories right now. Check back later."
+            action={<>
+              <Link to="/public" className="sd-btn-cancel">View public procurements</Link>
+              <Link to="/supplier/profile" className="sd-btn-cancel">Review my categories</Link>
+            </>} />
         ) : filtered.length === 0 ? (
-          <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
-            No projects match "{search}".
-          </div>
+          <EmptyState icon={Search} title="No matching projects" description={`No projects match "${search}".`}
+            action={<button className="sd-btn-cancel" onClick={() => setSearch('')}>Clear search</button>} />
         ) : (
           <div className="sd-table-scroll">
           <table className="sd-table">
             <thead>
-              <tr><th>ID</th><th>Project</th><th>Budget</th><th>Category</th><th>Deadline</th><th></th></tr>
+              <tr><th>ID</th><th>Project</th><th className="sd-num">Budget</th><th>Category</th><th>Deadline</th><th><span className="sr-only">Action</span></th></tr>
             </thead>
             <tbody>
               {filtered.map(p => (
@@ -1524,17 +1455,24 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
                     <div className="sd-bold">{p.name}</div>
                     <div className="sd-muted sd-small" style={{ maxWidth: 220 }}>{p.description}</div>
                   </td>
-                  <td>{p.budget}</td>
-                  <td><span className="badge badge-blue">{p.category}</span></td>
-                  <td className="sd-muted">{p.deadline}</td>
+                  <td className="sd-num">{p.budget}</td>
+                  <td><span className="ui-badge ui-badge--neutral">{p.category}</span></td>
                   <td>
+                    <div className="sd-deadline-cell">
+                      <span className="sd-nowrap">{p.deadline}</span>
+                      {!p.isExpired && deadlineMeta(p.deadline) && (
+                        <StatusBadge tone={deadlineMeta(p.deadline).tone} dot={false} icon={Clock} label={deadlineMeta(p.deadline).label} />
+                      )}
+                    </div>
+                  </td>
+                  <td className="sd-action-cell">
                     {alreadyBid.has(p.id)
-                      ? <span className="badge badge-green">Bid Submitted</span>
+                      ? <StatusBadge tone="success" icon={CheckCircle2} label="Bid Submitted" />
                       : p.isExpired
-                      ? <span className="badge badge-red">Deadline Passed</span>
+                      ? <StatusBadge tone="danger" label="Deadline Passed" />
                       : eligible
                       ? <button className="sd-bid-btn-table" onClick={() => setModal(p)}>Submit Bid</button>
-                      : <span className="badge badge-yellow"><Lock size={11} /> Locked</span>}
+                      : <StatusBadge tone="neutral" icon={Lock} label="Locked" title="Approval required before bidding" />}
                   </td>
                 </tr>
               ))}
@@ -1577,10 +1515,11 @@ function SupplierBids({ bids, awards = [], onWithdraw, loading, onResubmitted, s
         <div className="sd-card-header">
           <div><h2>My Bids</h2><p>Track all your submitted bids and their evaluation status</p></div>
           {bids.length > 0 && (
-            <div className="sd-search-inline">
-              <Search size={14} />
+            <label className="sd-search-inline">
+              <Search size={14} aria-hidden="true" />
+              <span className="sr-only">Search your bids</span>
               <input placeholder="Search your bids" value={search} onChange={e => setSearch(e.target.value)} />
-            </div>
+            </label>
           )}
         </div>
         {loading && bids.length === 0 ? (
@@ -1591,27 +1530,29 @@ function SupplierBids({ bids, awards = [], onWithdraw, loading, onResubmitted, s
             <tbody><TableSkeleton rows={3} cols={6} /></tbody>
           </table>
         ) : bids.length === 0 ? (
-          <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
-            No bids submitted yet. Browse projects to submit your first bid.
-          </div>
+          <EmptyState icon={FileText} title="No bids submitted yet"
+            description="No bids submitted yet. Browse projects to submit your first bid."
+            action={<Link to="/supplier/projects" className="sd-btn-primary">Browse bid opportunities</Link>} />
         ) : filtered.length === 0 ? (
-          <div style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-gray)', fontSize: 14 }}>
-            No bids match "{search}".
-          </div>
+          <EmptyState icon={Search} title="No matching bids" description={`No bids match "${search}".`}
+            action={<button className="sd-btn-cancel" onClick={() => setSearch('')}>Clear search</button>} />
         ) : (
           <div className="sd-table-scroll">
           <table className="sd-table">
             <thead>
-              <tr><th>Project</th><th>Amount</th><th>Notes</th><th>Submitted</th><th>Status</th><th></th></tr>
+              <tr><th>Project</th><th className="sd-num">Amount</th><th>Notes</th><th>Submitted</th><th>Status</th><th><span className="sr-only">Action</span></th></tr>
             </thead>
             <tbody>
               {filtered.map(b => (
                 <tr key={b.id}>
-                  <td className="sd-bold">{b.project}</td>
-                  <td>{b.amount}</td>
+                  <td>
+                    <div className="sd-bold">{b.project}</div>
+                    {b.projectId && <span className="sd-mono" style={{ marginTop: 4, display: 'inline-block' }}>{b.projectId}</span>}
+                  </td>
+                  <td className="sd-num">{b.amount}</td>
                   <td className="sd-muted" style={{ maxWidth: 200, fontSize: 13 }}>{b.notes}</td>
-                  <td className="sd-muted">{b.submitted}</td>
-                  <td><span className={`badge ${BID_STATUS[b.status] || 'badge-yellow'}`}>{b.status.replace('_', ' ')}</span></td>
+                  <td className="sd-muted sd-nowrap">{b.submitted}</td>
+                  <td><StatusBadge domain="bid" status={b.status} label={BID_LABEL[b.status]} /></td>
                   <td>
                     <button className="sd-btn-view" onClick={() => setDetail(b)}>
                       <Eye size={13} /> View
@@ -1682,10 +1623,10 @@ function SupplierReportsPage({ bids, profile }) {
         </div>
         <div className="sd-export-btns">
           <button className="sd-btn-export-csv" onClick={() => exportReportCSV(reportShape, `${filename}.csv`)}>
-            Export CSV
+            <FileText size={14} aria-hidden="true" /> Export CSV
           </button>
           <button className="sd-btn-primary" onClick={() => exportReportPDF(reportShape, `${filename}.pdf`)}>
-            Export PDF
+            <FileText size={14} aria-hidden="true" /> Export PDF
           </button>
         </div>
       </div>
@@ -1694,7 +1635,7 @@ function SupplierReportsPage({ bids, profile }) {
         {stats.map(({ label, value, cls }) => (
           <div className="sd-stat-card" key={label}>
             <div className="sd-stat-label">{label}</div>
-            <div className={`sd-stat-value ${cls}`} style={{ fontSize: 22 }}>{value}</div>
+            <div className="sd-stat-value sd-stat-value-sm">{value}</div>
           </div>
         ))}
       </div>
@@ -1705,7 +1646,7 @@ function SupplierReportsPage({ bids, profile }) {
           <thead><tr><th>CATEGORY</th><th>BIDS</th></tr></thead>
           <tbody>
             {Object.keys(categoryCount).length === 0 ? (
-              <tr><td colSpan={2} className="sd-empty-msg">No bids yet.</td></tr>
+              <TableEmpty colSpan={2} icon={BarChart2} title="No bids yet" description="Your bids will be grouped by category here." />
             ) : Object.entries(categoryCount).map(([cat, count]) => (
               <tr key={cat}><td>{cat}</td><td>{count}</td></tr>
             ))}
@@ -1716,15 +1657,16 @@ function SupplierReportsPage({ bids, profile }) {
       <div className="sd-card">
         <div className="sd-card-header"><h2>Bid History</h2></div>
         <table className="sd-table">
-          <thead><tr><th>PROJECT</th><th>AMOUNT</th><th>STATUS</th><th>SUBMITTED</th></tr></thead>
+          <thead><tr><th>Project</th><th className="sd-num">Amount</th><th>Status</th><th>Submitted</th></tr></thead>
           <tbody>
             {bids.length === 0 ? (
-              <tr><td colSpan={4} className="sd-empty-msg">No bids yet.</td></tr>
+              <TableEmpty colSpan={4} icon={FileText} title="No bids yet" description="Your bid history will appear here."
+                action={<Link to="/supplier/projects" className="sd-btn-cancel">Browse bid opportunities</Link>} />
             ) : bids.map(b => (
               <tr key={b.id}>
                 <td className="sd-bold">{b.project}</td>
-                <td className="sd-bold">{b.amount}</td>
-                <td><span className={`badge ${BID_STATUS[b.status] || 'badge-yellow'}`}>{BID_LABEL[b.status] || b.status}</span></td>
+                <td className="sd-num">{b.amount}</td>
+                <td><StatusBadge domain="bid" status={b.status} label={BID_LABEL[b.status]} /></td>
                 <td className="sd-muted">{b.submitted}</td>
               </tr>
             ))}
@@ -1803,6 +1745,8 @@ function SupplierStatusPage({ bids, profile, eligible }) {
       <div className="sd-card">
         <div className="sd-card-header">
           <div><h2>Account & Bid Timeline</h2><p>Your progress through the procurement process</p></div>
+          <StatusBadge tone={steps.every(st => st.done) ? 'success' : 'neutral'} dot={false}
+            label={`${steps.filter(st => st.done).length} of ${steps.length} complete`} />
         </div>
         <div className="sd-timeline">
           {steps.map((step, i) => (
@@ -1832,6 +1776,56 @@ function profileBusinessTypes(profile) {
   }
   return (profile?.business_type || '')
     .split(',').map(s => s.trim()).filter(Boolean)
+}
+
+// A verified supplier's category change is a REQUEST until an Admin approves it
+// (the server keeps the approved list in business_types and the request in
+// pending_business_types). Shows what is pending — or why it was declined —
+// so the supplier knows which categories they can actually bid in today.
+function CategoryRequestBanner({ profile, onWithdraw, withdrawing }) {
+  const status = profile?.category_request_status
+  if (!status) return null
+  const approved = profileBusinessTypes(profile)
+  const requested = profile.pending_business_types || []
+  const added = requested.filter(c => !approved.includes(c))
+  const removed = approved.filter(c => !requested.includes(c))
+  const changes = [
+    added.length ? `add ${added.join(', ')}` : '',
+    removed.length ? `remove ${removed.join(', ')}` : '',
+  ].filter(Boolean).join('; ')
+
+  if (status === 'rejected') {
+    return (
+      <div className="sd-verify-banner sd-verify-rejected" role="status">
+        <div className="sd-verify-icon"><X size={18} /></div>
+        <div className="sd-verify-text">
+          <span className="sd-bold">Category change not approved</span>
+          <span className="sd-muted sd-small">
+            Your request ({changes || 'no change'}) was declined. You can still bid in your approved
+            categories, and you can submit a new request below.
+          </span>
+          {profile.category_request_note && <span className="sd-verify-note">“{profile.category_request_note}”</span>}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="sd-verify-banner sd-verify-pending" role="status">
+      <div className="sd-verify-icon"><Clock size={18} /></div>
+      <div className="sd-verify-text">
+        <span className="sd-bold">Category change awaiting Admin approval</span>
+        <span className="sd-muted sd-small">
+          Requested: {changes || 'no change'}. Until it's approved you can only see and bid on
+          procurements in your current categories: {approved.join(', ') || '—'}.
+        </span>
+      </div>
+      {onWithdraw && (
+        <button type="button" className="sd-btn-cancel" disabled={withdrawing} onClick={onWithdraw}>
+          {withdrawing ? 'Withdrawing…' : 'Withdraw request'}
+        </button>
+      )}
+    </div>
+  )
 }
 
 // Maps a document's review state to a badge — "not uploaded" wins over any
@@ -1945,6 +1939,7 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry }) {
                 {businessTypes.map(t => <span className="sd-chip" key={t}>{t}</span>)}
               </div>
             )}
+            <CategoryRequestBanner profile={profile} />
           </div>
         </div>
       </div>
@@ -1970,14 +1965,14 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry }) {
             return d.url ? (
               <a key={d.key} className="sd-doc-row" href={d.url} target="_blank" rel="noreferrer">
                 {labelEl}
-                <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                <span className={`ui-badge ${badge.cls}`}><span className="ui-badge-dot" aria-hidden="true" />{badge.label}</span>
                 {expiryEl}
                 <span className="sd-doc-view"><Eye size={13} /> View</span>
               </a>
             ) : (
               <div key={d.key} className="sd-doc-row sd-doc-row-missing">
                 {labelEl}
-                <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                <span className={`ui-badge ${badge.cls}`}><span className="ui-badge-dot" aria-hidden="true" />{badge.label}</span>
                 {expiryEl}
               </div>
             )
@@ -2025,14 +2020,37 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
   const [passwordError, setPasswordError] = useState('')
   const [savingPassword, setSavingPassword] = useState(false)
 
+  const [withdrawing, setWithdrawing] = useState(false)
+  const isVerified = profile?.qualification_status === 'verified'
+
   useEffect(() => {
     if (!profile) return
     setFullName(profile.full_name || profile.contact || '')
     setRepName(profile.representative_name || '')
     setPhone(profile.phone_number || '')
     setAddress(profile.company_address || '')
-    setBusinessTypes(profileBusinessTypes(profile))
+    // Show the pending request's selection while it awaits approval, so the
+    // supplier edits their request rather than silently reverting it.
+    setBusinessTypes(
+      profile.category_request_status === 'pending' && Array.isArray(profile.pending_business_types)
+        ? profile.pending_business_types
+        : profileBusinessTypes(profile)
+    )
   }, [profile])
+
+  // Re-sending the approved list withdraws a pending request (server-side rule).
+  const withdrawRequest = async () => {
+    setWithdrawing(true)
+    try {
+      await apiUpdateMySupplier({ business_types: profileBusinessTypes(profile) })
+      await onUpdated()
+      setToast({ type: 'success', message: 'Category change request withdrawn.' })
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Could not withdraw the request.' })
+    } finally {
+      setWithdrawing(false)
+    }
+  }
 
   const toggleBusinessType = (t) =>
     setBusinessTypes(list => list.includes(t) ? list.filter(x => x !== t) : [...list, t])
@@ -2046,7 +2064,8 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
     }
     setSavingProfile(true)
     try {
-      await apiUpdateMySupplier({
+      const before = profile?.category_request_status || ''
+      const saved = await apiUpdateMySupplier({
         full_name: fullName.trim(),
         representative_name: repName.trim(),
         phone_number: phone.trim(),
@@ -2054,7 +2073,14 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
         business_types: businessTypes,
       })
       await onUpdated()
-      setToast({ type: 'success', message: 'Profile updated successfully.' })
+      const filedRequest = saved?.category_request_status === 'pending' &&
+        (before !== 'pending' || saved?.category_requested_at !== profile?.category_requested_at)
+      setToast({
+        type: 'success',
+        message: filedRequest
+          ? 'Profile saved. Your category change was sent to the Admin for approval.'
+          : 'Profile updated successfully.',
+      })
     } catch (err) {
       setToast({ type: 'error', message: err.message || 'Could not update your profile.' })
     } finally {
@@ -2111,8 +2137,11 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
         <div className="sd-form-group sd-profile-field-full">
           <label>Business Types</label>
           <span className="sd-muted sd-small" style={{ marginBottom: 6 }}>
-            Controls which procurement categories you see and can bid on. Changes apply immediately.
+            {isVerified
+              ? 'Controls which procurement categories you see and can bid on. Changes are sent to the Admin for approval; your current categories stay active until then.'
+              : 'Controls which procurement categories you see and can bid on. They are reviewed together with your registration.'}
           </span>
+          <CategoryRequestBanner profile={profile} onWithdraw={withdrawRequest} withdrawing={withdrawing} />
           <div className="sd-chips">
             {CATEGORIES.map(t => (
               <button
@@ -2177,6 +2206,7 @@ let myProfileCache = null
 
 export default function SupplierDashboard() {
   const loc = useLocation()
+  const navigate = useNavigate()
   const [profile, setProfile] = useState(myProfileCache)
   const [profileError, setProfileError] = useState('')
   const [loadingProfile, setLoadingProfile] = useState(!myProfileCache)
@@ -2283,10 +2313,32 @@ export default function SupplierDashboard() {
 
   return (
     <div className="sd-layout">
-      <SupplierSidebar active={loc.pathname} open={navOpen} onClose={() => setNavOpen(false)} profile={profile} />
+      <AppSidebar
+        workspace="Supplier Workspace"
+        logoIcon={Building2}
+        sections={NAV_SECTIONS}
+        isActive={(to) => to === '/supplier' ? loc.pathname === '/supplier' : loc.pathname.startsWith(to)}
+        open={navOpen}
+        onClose={() => setNavOpen(false)}
+      />
       {navOpen && <div className="sd-nav-backdrop" onClick={() => setNavOpen(false)} />}
       <div className="sd-main">
-        <SupplierHeader title={title} onMenu={() => setNavOpen(true)} profile={profile} />
+        <AppHeader
+          title={title}
+          breadcrumbs={[{ label: 'Supplier', to: '/supplier' }, { label: title }]}
+          onMenu={() => setNavOpen(true)}
+          user={{
+            name: profile?.full_name || profile?.contact || storedUser().full_name || 'Supplier User',
+            email: profile?.email || storedUser().email || '',
+            role: profile?.company || 'Supplier',
+          }}
+          menu={[
+            { icon: User, label: 'My Profile', onClick: () => navigate('/supplier/profile') },
+            { icon: Settings, label: 'Settings', onClick: () => navigate('/supplier/settings') },
+            { divider: true },
+            { icon: LogOut, label: 'Log out', danger: true, onClick: () => { apiLogout(); navigate('/login') } },
+          ]}
+        />
         {toast && <SupplierToast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
         <div className="sd-body">
           <Routes>

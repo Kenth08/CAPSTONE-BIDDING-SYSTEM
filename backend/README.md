@@ -11,7 +11,8 @@ py -m venv venv
 venv\Scripts\activate            # Windows
 pip install -r requirements.txt
 python manage.py migrate
-python manage.py seed            # loads demo data + role accounts
+python manage.py seed            # loads demo data + role accounts (local SQLite only;
+                                 # refuses remote DBs; add --wipe-local-data to replace existing data)
 python manage.py runserver       # http://127.0.0.1:8000
 ```
 
@@ -56,7 +57,7 @@ Base URL: `http://127.0.0.1:8000/api/`
 | Method | Endpoint           | Body                       | Returns               |
 |--------|--------------------|----------------------------|-----------------------|
 | POST   | `/auth/login/`     | `{username, password}`     | `{access, refresh, user}` |
-| POST   | `/auth/register/`  | `{username, password, ...}`| new user              |
+| POST   | `/auth/register/supplier/` | multipart form + documents | pending supplier (email verification sent) |
 | POST   | `/auth/refresh/`   | `{refresh}`                | `{access}`            |
 | GET    | `/auth/me/`        | (Bearer token)             | current user          |
 

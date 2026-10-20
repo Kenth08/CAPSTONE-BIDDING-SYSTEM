@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Shield, Eye, EyeOff, ArrowLeft } from 'lucide-react'
+import { Shield, Eye, EyeOff, ArrowLeft, AlertCircle, Loader2, LogIn } from 'lucide-react'
 import { apiLogin, saveSession } from '../api'
 import '../style/LoginPage.css'
 
@@ -40,8 +40,8 @@ export default function LoginPage() {
           <div className="login-logo">
             <span className="lp-logo-icon"><Shield size={18} /></span>
             <div>
-              <div className="lp-logo-name">E-Procurement</div>
-              <div className="lp-logo-sub">Procurement System</div>
+              <div className="lp-logo-name login-brand-name">E-Procurement</div>
+              <div className="lp-logo-sub login-brand-sub">Procurement System</div>
             </div>
           </div>
 
@@ -49,27 +49,32 @@ export default function LoginPage() {
           <p className="login-subtitle">Sign in with your username or email to continue.</p>
           <form onSubmit={handleSubmit} className="login-form">
             <div className="form-group">
-              <label>Username or Email</label>
-              <input type="text" placeholder="Email" value={form.identifier} onChange={e => setForm({ ...form, identifier: e.target.value })} required />
+              <label htmlFor="login-identifier">Username or Email</label>
+              <input id="login-identifier" type="text" autoComplete="username" placeholder="Username or email" value={form.identifier}
+                onChange={e => setForm({ ...form, identifier: e.target.value })} required aria-invalid={!!error} />
             </div>
             <div className="form-group">
-              <label>Password</label>
+              <label htmlFor="login-password">Password</label>
               <div className="pass-wrap">
                 <input
+                  id="login-password"
+                  autoComplete="current-password"
+                  aria-invalid={!!error}
                   type={showPass ? 'text' : 'password'}
                   placeholder="••••••••"
                   value={form.password}
                   onChange={e => setForm({ ...form, password: e.target.value })}
                   required
                 />
-                <button type="button" className="pass-toggle" onClick={() => setShowPass(!showPass)}>
+                <button type="button" className="pass-toggle" onClick={() => setShowPass(!showPass)}
+                  aria-label={showPass ? 'Hide password' : 'Show password'} aria-pressed={showPass}>
                   {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
             </div>
             {error && (
-              <div className="login-error">
-                <span>{error}</span>
+              <div className="login-error" role="alert">
+                <span className="login-error-msg"><AlertCircle size={15} aria-hidden="true" /> {error}</span>
                 {/no account found/i.test(error) && (
                   <Link to="/register" className="login-error-cta">Create a supplier account →</Link>
                 )}
@@ -77,7 +82,9 @@ export default function LoginPage() {
             )}
             <Link to="/forgot-password" className="login-forgot">Forgot password?</Link>
             <button type="submit" className="login-submit" disabled={loading}>
-              {loading ? 'Please wait…' : 'Sign In'}
+              {loading
+                ? <><Loader2 size={16} className="ui-spin" aria-hidden="true" /> Signing in…</>
+                : <><LogIn size={16} aria-hidden="true" /> Sign In</>}
             </button>
           </form>
           <p className="login-switch">
