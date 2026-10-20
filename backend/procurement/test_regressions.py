@@ -521,29 +521,6 @@ class RegistrationAtomicityTests(APITestCase):
         self.assertTrue(Supplier.objects.filter(user=user).exists())
 
 
-class RegisterPasswordStrengthTests(APITestCase):
-    """/auth/register/ accepted any six-character password with no strength
-    check — a public back door around the policy the real form enforces."""
-
-    def setUp(self):
-        cache.clear()
-
-    def test_a_weak_password_is_rejected(self):
-        res = self.client.post("/api/auth/register/", {
-            "username": "weakling", "email": "weak@example.com", "password": "123456",
-        }, format="json")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("password", res.data)
-
-    def test_a_strong_password_is_accepted_and_role_stays_supplier(self):
-        res = self.client.post("/api/auth/register/", {
-            "username": "strongling", "email": "strong@example.com",
-            "password": "Str0ng!Passphrase1", "role": "admin",
-        }, format="json")
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
-        self.assertEqual(User.objects.get(username="strongling").role, User.Role.SUPPLIER)
-
-
 class UploadContentValidationTests(APITestCase):
     """Uploads were checked by file extension only, so anything renamed to .pdf
     was stored and later served back under a PDF content type."""
@@ -1067,3 +1044,101 @@ class EmailVerificationGateTests(APITestCase):
         self.client.force_authenticate(user=self.admin)
         self.assertEqual(self.client.post(f"/api/suppliers/{supplier.pk}/approve/").status_code,
                          status.HTTP_200_OK)
+
+
+class LegacyRegisterRouteRemovedTests(APITestCase):
+    """The unused public /api/auth/register/ created a bare `supplier` account
+    with no profile and accepted an email that already belonged to someone. A
+    stranger could take `username=<a supplier's email>` first and permanently
+    block that supplier's real registration (supplier registration rejects an
+    email that already exists as a username), and duplicate emails made
+    login-by-email and password reset resolve to an arbitrary account. The
+    route was removed; supplier self-registration is the only public sign-up."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_the_legacy_route_is_gone(self):
+        res = self.client.post("/api/auth/register/", {
+            "username": "squatter", "email": "victim@example.com", "password": "Str0ng!Passphrase1",
+        }, format="json")
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(User.objects.exists())
+
+    def test_supplier_self_registration_still_works_and_needs_email_verification(self):
+        res = self.client.post("/api/auth/register/supplier/",
+                               registration_payload(email="real.supplier@example.com"), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        user = User.objects.get(email="real.supplier@example.com")
+        self.assertEqual(user.role, User.Role.SUPPLIER)
+        supplier = Supplier.objects.get(user=user)
+        self.assertFalse(supplier.email_verified)
+        self.assertEqual(supplier.qualification_status, Supplier.Qualification.PENDING)
+        self.assertTrue(any("real.supplier@example.com" in m.to for m in mail.outbox))
+
+    def test_supplier_registration_enforces_the_password_policy(self):
+        # Carried over from the removed RegisterPasswordStrengthTests: the policy
+        # must hold on the one public sign-up route that remains.
+        payload = registration_payload(email="weak.pw@example.com")
+        payload["password"] = payload["confirm_password"] = "123456"
+        res = self.client.post("/api/auth/register/supplier/", payload, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", res.data)
+        self.assertFalse(User.objects.filter(email="weak.pw@example.com").exists())
+
+    def test_supplier_registration_cannot_reuse_an_existing_email_or_username(self):
+        make_admin()   # username "admin", email admin@example.com
+        res = self.client.post("/api/auth/register/supplier/",
+                               registration_payload(email="admin@example.com"), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(User.objects.filter(email__iexact="admin@example.com").count(), 1)
+
+    def test_role_cannot_be_chosen_at_registration(self):
+        payload = registration_payload(email="wants.admin@example.com")
+        payload["role"] = "admin"
+        res = self.client.post("/api/auth/register/supplier/", payload, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(User.objects.get(email="wants.admin@example.com").role, User.Role.SUPPLIER)
+
+    def test_no_other_unauthenticated_route_creates_an_account(self):
+        attempts = {
+            "/api/auth/admin/register-supplier/": ("multipart", registration_payload(email="a@example.com")),
+            "/api/suppliers/": ("json", {"company": "Ghost", "contact": "x"}),
+            "/api/auth/me/": ("json", {"username": "ghost", "password": "Str0ng!Passphrase1"}),
+            "/api/auth/login/": ("json", {"username": "ghost", "password": "Str0ng!Passphrase1"}),
+            "/api/auth/refresh/": ("json", {"refresh": "x"}),
+            "/api/auth/logout/": ("json", {"refresh": "x"}),
+            "/api/auth/password/reset/": ("json", {"email": "ghost@example.com"}),
+            "/api/auth/verify-email/confirm/": ("json", {"uid": "x", "token": "y"}),
+        }
+        for path, (fmt, body) in attempts.items():
+            with self.subTest(path=path):
+                self.client.post(path, body, format=fmt)
+                self.assertFalse(User.objects.exists(), path)
+                self.assertFalse(Supplier.objects.exists(), path)
+
+    def test_the_only_public_create_view_is_supplier_registration(self):
+        """Structural guard: walk every URL and list the views that both allow
+        anonymous callers and create objects. Adding a new public sign-up path
+        must be a deliberate change to this test."""
+        from django.urls import URLPattern, URLResolver, get_resolver
+        from rest_framework.mixins import CreateModelMixin
+        from rest_framework.permissions import AllowAny
+
+        from accounts.views import SupplierRegisterView
+
+        def walk(patterns):
+            for p in patterns:
+                if isinstance(p, URLResolver):
+                    yield from walk(p.url_patterns)
+                elif isinstance(p, URLPattern):
+                    yield p
+
+        public_creators = set()
+        for pattern in walk(get_resolver().url_patterns):
+            cls = getattr(pattern.callback, "cls", None) or getattr(pattern.callback, "view_class", None)
+            if cls is None or not issubclass(cls, CreateModelMixin):
+                continue
+            if any(perm is AllowAny for perm in getattr(cls, "permission_classes", [])):
+                public_creators.add(cls)
+        self.assertEqual(public_creators, {SupplierRegisterView})

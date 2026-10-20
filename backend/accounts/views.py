@@ -23,7 +23,6 @@ from .serializers import (
     EmailVerifyConfirmSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
-    RegisterSerializer,
     RoleTokenObtainPairSerializer,
     SupplierRegisterSerializer,
     UserSerializer,
@@ -62,22 +61,16 @@ class LoginView(TokenObtainPairView):
         return response
 
 
-class RegisterView(generics.CreateAPIView):
-    """POST to create a new account (used by supplier registration).
-
-    Rate limited to 10 per hour per IP — stops scripted mass account creation
-    without affecting a real applicant fixing a typo or validation error."""
-
-    queryset = User.objects.all()
-    serializer_class = RegisterSerializer
-    permission_classes = [permissions.AllowAny]
-    throttle_classes = [RegisterRateThrottle]
-
-
 class SupplierRegisterView(generics.CreateAPIView):
     """POST multipart form -> creates a supplier account + profile (pending review).
 
-    Same per-IP rate limit as RegisterView, for the same reason."""
+    The ONLY public sign-up route. A bare /auth/register/ (account with no
+    supplier profile) used to exist alongside it; it was unused by the frontend
+    and let anyone claim a username equal to a supplier's email, which blocked
+    that supplier's real registration — so it was removed (audit item M6).
+
+    Rate limited to 10 per hour per IP — stops scripted mass account creation
+    without affecting a real applicant fixing a typo or validation error."""
 
     queryset = User.objects.all()
     serializer_class = SupplierRegisterSerializer

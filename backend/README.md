@@ -57,7 +57,7 @@ Base URL: `http://127.0.0.1:8000/api/`
 | Method | Endpoint           | Body                       | Returns               |
 |--------|--------------------|----------------------------|-----------------------|
 | POST   | `/auth/login/`     | `{username, password}`     | `{access, refresh, user}` |
-| POST   | `/auth/register/`  | `{username, password, ...}`| new user              |
+| POST   | `/auth/register/supplier/` | multipart form + documents | pending supplier (email verification sent) |
 | POST   | `/auth/refresh/`   | `{refresh}`                | `{access}`            |
 | GET    | `/auth/me/`        | (Bearer token)             | current user          |
 
