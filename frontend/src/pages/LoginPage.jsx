@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { Shield, Eye, EyeOff, ArrowLeft, AlertCircle, Loader2, LogIn } from 'lucide-react'
-import { apiLogin, saveSession } from '../api'
+import { apiLogin, saveSession, getToken, getRole } from '../api'
 import '../style/LoginPage.css'
 
 export default function LoginPage() {
@@ -31,6 +31,11 @@ export default function LoginPage() {
       setLoading(false)
     }
   }
+
+  // Already signed in (e.g. arrived from a public page link): go straight back
+  // to the dashboard instead of showing a login form that looks like a logout.
+  const signedInRole = getToken() && getRole()
+  if (signedInRole) return <Navigate to={`/${signedInRole}`} replace />
 
   return (
     <div className="login-page">

@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   Shield, ArrowLeft, Eye, Gavel, Trophy, Calendar, MapPin,
-  Tag, Users, Inbox, AlertCircle,
+  Tag, Users, Inbox, AlertCircle, Lock, LayoutDashboard,
 } from 'lucide-react'
-import { apiPublicProcurement } from '../api'
+import { apiPublicProcurement, apiGetMySupplier, getToken, getRole } from '../api'
 import PublicVerifier from '../components/PublicVerifier'
 import '../style/PublicResultsPage.css'
 
@@ -12,11 +12,21 @@ const peso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
 const fmtDate = (v) =>
   v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
+const PENDING_MSG =
+  'Your supplier account is pending admin approval. You can view this procurement, ' +
+  'but you cannot submit a bid until your account is approved.'
+
 export default function PublicResultsPage() {
   const navigate = useNavigate()
   const [data, setData] = useState({ biddings: [], winners: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // This page is public, but a signed-in user can open it too (e.g. a supplier
+  // from their dashboard). Read the session so the page doesn't look as if they
+  // were logged out, and so "Join to Bid" respects their approval status.
+  const role = getToken() ? getRole() : null
+  const [qualStatus, setQualStatus] = useState(null)
+  const [bidNotice, setBidNotice] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -27,9 +37,28 @@ export default function PublicResultsPage() {
     return () => { alive = false }
   }, [])
 
-  // Bidding requires a verified supplier account — send guests to the login,
-  // which links onward to registration if they don't have one yet.
-  const goBid = () => navigate('/login')
+  useEffect(() => {
+    if (role !== 'supplier') return
+    let alive = true
+    apiGetMySupplier()
+      .then((p) => { if (alive) setQualStatus(p?.qualification_status || null) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [role])
+
+  const supplierApproved = qualStatus === 'verified'
+  // Still loading or not approved — either way bidding stays locked for now.
+  const supplierLocked = role === 'supplier' && !supplierApproved
+
+  // Guests go to the login (which links onward to registration). An approved
+  // supplier goes to their dashboard's bid list. A pending supplier stays here,
+  // still signed in, and sees why they can't bid yet.
+  const goBid = () => {
+    if (!role) return navigate('/login')
+    if (role !== 'supplier') return
+    if (supplierApproved) return navigate('/supplier/projects')
+    setBidNotice(PENDING_MSG)
+  }
 
   const { biddings, winners } = data
 
@@ -46,7 +75,9 @@ export default function PublicResultsPage() {
         </Link>
         <div className="pub-nav-right">
           <Link to="/" className="pub-back"><ArrowLeft size={15} /> Back to Home</Link>
-          <Link to="/login" className="btn-primary pub-login-btn">Login</Link>
+          {role
+            ? <Link to={`/${role}`} className="btn-primary pub-login-btn"><LayoutDashboard size={15} /> My Dashboard</Link>
+            : <Link to="/login" className="btn-primary pub-login-btn">Login</Link>}
         </div>
       </nav>
 
@@ -63,6 +94,9 @@ export default function PublicResultsPage() {
       <main className="pub-main">
         {error && (
           <div className="pub-error"><AlertCircle size={18} /> {error}</div>
+        )}
+        {supplierLocked && qualStatus && (bidNotice || biddings.length > 0) && (
+          <div className="pub-notice" role="status"><Lock size={18} /> {bidNotice || PENDING_MSG}</div>
         )}
 
         {/* Available biddings */}
@@ -115,9 +149,16 @@ export default function PublicResultsPage() {
                     {b.delivery_location && <li><MapPin size={14} /> {b.delivery_location}</li>}
                     <li><Users size={14} /> {b.bids} bid{b.bids === 1 ? '' : 's'} submitted</li>
                   </ul>
-                  <button className="pub-bid-btn" onClick={goBid}>
-                    <Gavel size={15} /> Join to Bid
-                  </button>
+                  {role === 'supplier' && supplierLocked ? (
+                    <button className="pub-bid-btn is-locked" onClick={goBid} aria-disabled="true"
+                      title="Bidding unlocks once the admin approves your account">
+                      <Lock size={15} /> Pending Approval
+                    </button>
+                  ) : (!role || role === 'supplier') && (
+                    <button className="pub-bid-btn" onClick={goBid}>
+                      <Gavel size={15} /> {role ? 'Bid on this Project' : 'Join to Bid'}
+                    </button>
+                  )}
                 </article>
               ))}
             </div>
@@ -181,15 +222,15 @@ export default function PublicResultsPage() {
             hash. Read-only — no account, no wallet, no gas. */}
         <PublicVerifier />
 
-        {/* CTA */}
-        <section className="pub-cta">
+        {/* CTA — only for visitors who aren't signed in */}
+        {!role && <section className="pub-cta">
           <h2>Ready to compete for these contracts?</h2>
           <p>Register as a supplier to submit bids, or log in if you already have an account.</p>
           <div className="pub-cta-btns">
             <Link to="/register" className="btn-primary">Register as Supplier</Link>
             <Link to="/login" className="btn-outline">Login</Link>
           </div>
-        </section>
+        </section>}
       </main>
     </div>
   )
