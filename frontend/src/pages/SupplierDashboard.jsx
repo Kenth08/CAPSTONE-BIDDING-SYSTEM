@@ -4,7 +4,7 @@ import {
   LayoutDashboard, FolderOpen, FileText, Clock, CheckCircle2,
   Building2, Bell, Search, ChevronDown, LogOut, Settings,
   Eye, ArrowRight, Shield, User, X, Send, Trophy, Trash2, BarChart2,
-  AlertTriangle, Upload, Lock, Menu, Camera, Check, Plus, Loader2, XCircle
+  AlertTriangle, Upload, Lock, Menu, Camera, Check, Plus, Loader2, XCircle, ChevronRight, ShieldCheck,
 } from 'lucide-react'
 import {
   apiLogout, apiGetMySupplier, apiResubmitDocuments,
@@ -18,13 +18,19 @@ import CategoryDocumentFields, {
   appendCategoryDocs, categoryDocsProblem, checkDocFile, pastExpiryProblem, todayIso,
   useCategoryDocState, useCategoryRequirements,
 } from '../components/CategoryDocuments'
-import { TableSkeleton, ListSkeleton } from '../components/Skeleton'
+import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import AnchorActivity from '../components/AnchorActivity'
 import AppSidebar from '../components/shell/AppSidebar'
 import AppHeader, { storedUser } from '../components/shell/AppHeader'
 import StatusBadge from '../components/ui/StatusBadge'
 import EmptyState, { TableEmpty } from '../components/ui/EmptyState'
-import { deadlineMeta } from '../utils/format'
+import { deadlineMeta, greeting, peso, pesoCompact, todayLong } from '../utils/format'
+import KpiCard, { KpiRow } from '../components/ui/KpiCard'
+import Countdown, { useNow } from '../components/ui/Countdown'
+import Thumbnail from '../components/ui/Thumbnail'
+import Lightbox from '../components/ui/Lightbox'
+import RelativeTime from '../components/ui/RelativeTime'
+import Toaster from '../components/ui/Toaster'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
 import { runAnchor } from '../blockchain/anchorStore'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
@@ -41,6 +47,7 @@ const mapProject = (p) => ({
   id: p.code, pk: p.id, name: p.name, budget: fmtPeso(p.budget),
   budgetRaw: Number(p.budget || 0),  // numeric ABC for the live budget comparison
   deadline: fmtDate(p.deadline), category: p.category, description: p.description,
+  deadlineRaw: p.deadline || null, publishedAt: p.published_at || null,
   referenceImage: p.reference_image_url || '',  // optional required-product reference
   // Whether bidders must attach product photos, plus the Admin's guidance.
   requireProductImages: !!p.require_product_images,
@@ -1289,130 +1296,350 @@ function OnboardingTracker({ profile, eligible }) {
   )
 }
 
-function SupplierHome({ projects, bids, onBid, eligible, profile, onResubmitted, setToast, loadingProjects, loadingBids }) {
+// ── Supplier home: opportunities, bids and document health ───────────────────
+
+const NEW_WINDOW_MS = 48 * 60 * 60 * 1000
+
+// What the supplier must do next, per verification status.
+function AccountStatusBanner({ profile }) {
+  if (!profile || profile.qualification_status === 'verified') return null
+  const qs = profile.qualification_status
+  const missing = (profile.documents || []).filter(d => d.missing).length
+  if (qs === 'rejected') {
+    return (
+      <div className="rf-banner rf-banner--danger" role="status">
+        <span className="rf-banner-icon" aria-hidden="true"><XCircle size={18} /></span>
+        <div>
+          <strong>Your registration was not approved</strong>
+          <p>{profile.admin_notes ? `Reason from the BAC office: “${profile.admin_notes}”` : 'The BAC office did not give a reason.'} Contact the procurement office if you believe this is a mistake.</p>
+        </div>
+      </div>
+    )
+  }
+  if (qs === 'needs_revision') {
+    const flagged = (profile.documents || []).filter(d => d.review_status === 'needs_revision').length
+    if (!flagged) {
+      return (
+        <div className="rf-banner rf-banner--warning" role="status">
+          <span className="rf-banner-icon" aria-hidden="true"><AlertTriangle size={18} /></span>
+          <div>
+            <strong>Action needed on your registration</strong>
+            <p>{profile.admin_notes ? `The BAC office says: “${profile.admin_notes}”` : 'The BAC office asked for changes to your registration.'} Contact the procurement office if anything is unclear.</p>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="rf-banner rf-banner--warning" role="status">
+        <span className="rf-banner-icon" aria-hidden="true"><AlertTriangle size={18} /></span>
+        <div>
+          <strong>Action needed: fix the flagged documents</strong>
+          <p>The BAC office reviewed your registration and needs some documents replaced. Bidding unlocks once they verify the new files.</p>
+          <ol>
+            <li>Open <b>Documents Needing Revision</b> below and re-upload each flagged file.</li>
+            <li>Select <b>Resubmit for Review</b>. Your account returns to the review queue.</li>
+          </ol>
+        </div>
+        <a href="#doc-revision" className="ui-btn ui-btn--primary ui-btn--sm">Fix documents</a>
+      </div>
+    )
+  }
+  return (
+    <div className="rf-banner rf-banner--info" role="status">
+      <span className="rf-banner-icon" aria-hidden="true"><Clock size={18} /></span>
+      <div>
+        <strong>Your account is waiting for verification</strong>
+        <p>You can browse opportunities now. You can bid once the BAC office verifies your registration. To avoid delays:</p>
+        <ol>
+          {!profile.email_verified && <li>Confirm your email address with the link we sent you.</li>}
+          <li>{missing ? `Upload the ${missing} required document${missing === 1 ? '' : 's'} still missing (see Document health).` : 'Keep your documents current — all required documents are on file.'}</li>
+          <li>Wait for the review. You will be emailed when a decision is made.</li>
+        </ol>
+      </div>
+      <Link to="/supplier/profile" className="ui-btn ui-btn--secondary ui-btn--sm">My documents</Link>
+    </div>
+  )
+}
+
+// Submitted → Under evaluation → Qualified/Disqualified → Won/Not selected
+function bidSteps(b) {
+  const awardedElsewhere = b.projectStatus === 'awarded' && b.status !== 'winner'
+  const s = (label, state) => ({ label, state })
+  if (b.status === 'winner') return [s('Submitted', 'done'), s('Evaluated', 'done'), s('Qualified', 'done'), s('Won', 'done')]
+  if (b.status === 'disqualified') return [s('Submitted', 'done'), s('Evaluated', 'done'), s('Disqualified', 'bad')]
+  if (b.status === 'qualified') return [s('Submitted', 'done'), s('Evaluated', 'done'), s('Qualified', 'done'),
+    awardedElsewhere ? s('Not selected', 'bad') : s('Won / Not selected', 'current')]
+  return [s('Submitted', 'done'), awardedElsewhere ? s('Not selected', 'bad') : s('Under evaluation', 'current'),
+    s('Qualified / Disqualified', 'upcoming'), s('Won / Not selected', 'upcoming')]
+}
+
+function MiniSteps({ steps }) {
+  return (
+    <ol className="rf-mini-steps" aria-label="Bid progress">
+      {steps.map(st => (
+        <li key={st.label} className={`is-${st.state}`}>
+          <span className="rf-mini-dot" aria-hidden="true" />{st.label}
+          <span className="sr-only"> ({st.state === 'done' ? 'done' : st.state === 'current' ? 'current' : st.state === 'bad' ? 'outcome' : 'not yet'})</span>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+// Documents that need attention, most serious first.
+function docProblems(profile) {
+  const out = []
+  for (const d of profile?.documents || []) {
+    if (d.review_status === 'needs_revision') out.push({ d, tone: 'danger', note: `Flagged by the BAC office${d.review_note ? `: “${d.review_note}”` : ''}`, rank: 0 })
+    else if (d.expired) out.push({ d, tone: 'danger', note: d.expiry_date ? `Expired ${fmtDate(d.expiry_date)}` : 'Expired', rank: 1 })
+    else if (d.missing) out.push({ d, tone: 'danger', note: d.reason === 'file missing from storage' ? 'File is missing — upload it again' : 'Required — not uploaded yet', rank: 2 })
+    else if (d.expiring_soon) out.push({ d, tone: 'warning', note: `Expires ${fmtDate(d.expiry_date)}${d.days_left != null ? ` · in ${d.days_left} day${d.days_left === 1 ? '' : 's'}` : ''}`, rank: 3 })
+  }
+  return out.sort((a, b) => a.rank - b.rank)
+}
+
+function DocumentHealth({ profile, setToast, onUploaded }) {
+  if (!profile) return <div className="rf-card-body"><ListSkeleton rows={3} height={36} /></div>
+  const problems = docProblems(profile)
+  const total = (profile.documents || []).filter(d => d.required).length
+  const ok = total - (profile.documents || []).filter(d => d.required && (d.missing || d.expired || d.review_status === 'needs_revision')).length
+  const inRevision = profile.qualification_status === 'needs_revision'
+  return (
+    <>
+      <dl className="rf-stat-line">
+        <div><dt>Verification</dt><dd><StatusBadge domain="qualification" status={profile.qualification_status} /></dd></div>
+        <div><dt>Required documents in order</dt><dd>{ok} of {total}</dd></div>
+      </dl>
+      {problems.length === 0 ? (
+        <EmptyState compact icon={ShieldCheck} title="All documents in order"
+          description="Nothing is missing, flagged or expiring in the next 30 days." />
+      ) : (
+        <ul className="rf-doc-list">
+          {problems.map(({ d, tone, note }) => (
+            <li key={d.key} className="rf-doc-row">
+              <span className={`rf-attn-icon rf-tone-${tone}`} aria-hidden="true">
+                {tone === 'danger' ? <AlertTriangle size={15} /> : <Clock size={15} />}
+              </span>
+              <span style={{ minWidth: 0 }}>
+                <span className="rf-doc-name" style={{ display: 'block' }}>{d.label}</span>
+                <span className="rf-doc-note">{note}</span>
+              </span>
+              <span>
+                {inRevision && d.review_status === 'needs_revision' ? (
+                  <a href="#doc-revision" className="ui-btn ui-btn--secondary ui-btn--sm"><Upload size={13} /> Re-upload</a>
+                ) : canUploadCategoryDoc(d, profile) ? (
+                  <CategoryDocUpload doc={d} setToast={setToast} onUploaded={onUploaded} />
+                ) : (
+                  <Link to="/supplier/profile" className="ui-btn ui-btn--ghost ui-btn--sm"
+                    title="Base registration documents are replaced when the BAC office requests a revision">
+                    <Upload size={13} /> Upload
+                  </Link>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  )
+}
+
+function SupplierHome({ projects, bids, awards = [], onBid, eligible, profile, onResubmitted, setToast, loadingProjects, loadingBids }) {
+  const now = useNow()
   const [modal, setModal] = useState(null)
-  const alreadyBid = new Set(bids.map(b => b.projectId))
-  const available = projects.filter(p => !alreadyBid.has(p.id))
-  const qualInfo = QUAL_STATUS[profile?.qualification_status]
-  const approvalLabel = qualInfo?.label || 'Pending'
+  const [preview, setPreview] = useState(null)   // { images, index, title }
+  const [category, setCategory] = useState('all')
+  const [sort, setSort] = useState('deadline')
+  const u = storedUser()
+  const bidByProject = Object.fromEntries(bids.map(b => [b.projectId, b]))
+
+  const open = projects.filter(p => !p.isExpired)
+  const isNew = (p) => p.publishedAt && now - new Date(p.publishedAt).getTime() < NEW_WINDOW_MS
+  const categories = [...new Set(open.map(p => p.category).filter(Boolean))].sort()
+  const feed = open
+    .filter(p => category === 'all' || p.category === category)
+    .sort((a, b) => sort === 'abc_desc' ? b.budgetRaw - a.budgetRaw
+      : sort === 'abc_asc' ? a.budgetRaw - b.budgetRaw
+      : String(a.deadlineRaw).localeCompare(String(b.deadlineRaw)))
+
+  const won = bids.filter(b => b.status === 'winner')
+  const active = bids.filter(b => ['under_review', 'qualified'].includes(b.status) && b.projectStatus !== 'awarded')
+  const decided = bids.filter(b => b.status === 'winner' || b.status === 'disqualified' || b.projectStatus === 'awarded')
+  const winRate = decided.length ? Math.round((won.length / decided.length) * 100) : null
+  const problems = docProblems(profile)
+  const newCount = open.filter(isNew).length
+
+  const receiptFor = (b) => {
+    const award = awards.find(a => a.bid === b.id || a.project_code === b.projectId)
+    return (award?.anchors || []).find(a => a.stage === 'AWARDED' && a.anchored)
+  }
 
   return (
-    <div className="sd-content">
+    <div className="sd-content rf-home">
       {modal && <BidModal project={modal} profile={profile} onClose={() => setModal(null)} onSubmit={onBid} />}
 
-      <VerificationBanner profile={profile} />
-      <EmailVerifyBanner profile={profile} setToast={setToast} />
-      <RevisionPanel profile={profile} onResubmitted={onResubmitted} setToast={setToast} />
-
-      <div className="sd-stats">
-        {[
-          { label: 'Eligible Projects', value: String(projects.length),                                 icon: FolderOpen,   color: 'blue',  sub: 'Open and matching your categories' },
-          { label: 'My Active Bids',  value: String(bids.length),                                       icon: FileText,     color: 'green', sub: 'Submitted by your company' },
-          { label: 'Shortlisted',     value: String(bids.filter(b => b.status === 'qualified').length), icon: CheckCircle2, color: 'green', sub: 'Qualified in evaluation' },
-        ].map(({ label, value, icon: Icon, color, sub }) => (
-          <div className="sd-stat-card" key={label}>
-            <div className="sd-stat-top">
-              <span className="sd-stat-label">{label}</span>
-              <div className={`sd-stat-icon sd-icon-${color}`} aria-hidden="true"><Icon size={17} /></div>
-            </div>
-            <div className="sd-stat-value">{(label === 'Eligible Projects' ? loadingProjects : loadingBids) && value === '0' ? <ListSkeleton rows={1} height={26} /> : value}</div>
-            <div className="sd-stat-sub">{sub}</div>
-          </div>
-        ))}
-        {/* Approval is a state, not a count — shown as a badge + explanation. */}
-        <div className={`sd-stat-card sd-status-tile is-${qualInfo?.tone || 'pending'}`}>
-          <div className="sd-stat-top">
-            <span className="sd-stat-label">Approval Status</span>
-            <div className={`sd-stat-icon sd-icon-${eligible ? 'green' : 'yellow'}`} aria-hidden="true"><Shield size={17} /></div>
-          </div>
-          <div className="sd-status-tile-badge">
-            <StatusBadge size="lg" tone={QUAL_TONE[qualInfo?.tone] || 'warning'} label={approvalLabel} />
-          </div>
-          <div className="sd-stat-sub">
-            {eligible ? 'You can bid on open projects.' : 'Bidding unlocks once the admin approves your account.'}
-          </div>
+      <div className="rf-greeting">
+        <div>
+          <h2>{greeting()}, {profile?.representative_name || profile?.full_name || u.full_name || 'Supplier'}</h2>
+          <p>{todayLong()}{profile?.company ? ` · ${profile.company}` : ''}</p>
+        </div>
+        <div className="rf-greeting-actions">
+          <Link to="/supplier/projects" className="ui-btn ui-btn--primary ui-btn--sm"><FolderOpen size={13} /> All opportunities</Link>
         </div>
       </div>
 
-      <div className="sd-grid">
-        <div className="sd-card sd-card-wide">
-          <div className="sd-card-header">
-            <div><h2>Bid Opportunities</h2><p>Open procurements matching your business that you can bid on</p></div>
-            <Link to="/supplier/projects" className="sd-view-all">View all →</Link>
-          </div>
-          {loadingProjects && projects.length === 0 ? (
-            <div style={{ padding: '12px 24px' }}><ListSkeleton rows={3} height={52} /></div>
-          ) : available.length === 0 ? (
-            projects.length === 0
-              ? <EmptyState compact icon={FolderOpen} title="No matching procurements yet"
-                  description="No open procurements match your registered categories yet."
-                  action={<Link to="/public" className="sd-btn-cancel">View public procurements</Link>} />
-              : <EmptyState compact icon={CheckCircle2} title="You're up to date"
-                  description="You have already submitted bids on all eligible procurements."
-                  action={<Link to="/supplier/bids" className="sd-btn-cancel">Track my bids</Link>} />
-          ) : (
-            <div className="sd-projects-list">
-              {available.map(p => {
-                const due = deadlineMeta(p.deadline)
-                return (
-                  <div className="sd-project-row" key={p.id}>
-                    <div className="sd-proj-icon" aria-hidden="true"><FolderOpen size={16} /></div>
-                    <div className="sd-proj-info">
-                      <span className="sd-bold">{p.name}</span>
-                      <span className="sd-proj-sub"><span className="sd-mono">{p.id}</span> {p.category}</span>
-                    </div>
-                    <div className="sd-proj-right">
-                      <span className="sd-proj-budget">{p.budget}</span>
-                      <span className="sd-muted sd-small">Due {p.deadline}</span>
-                    </div>
-                    {p.isExpired
-                      ? <StatusBadge tone="danger" label="Deadline Passed" />
-                      : <>
-                          {due && <StatusBadge tone={due.tone} icon={Clock} label={due.label} />}
-                          {eligible
-                            ? <button className="sd-bid-btn" onClick={() => setModal(p)}>Bid <ArrowRight size={13} /></button>
-                            : <button className="sd-bid-btn sd-bid-locked" disabled title="Approval required before bidding"><Lock size={12} /> Locked</button>}
-                        </>}
-                  </div>
-                )
-              })}
+      <AccountStatusBanner profile={profile} />
+      <EmailVerifyBanner profile={profile} setToast={setToast} />
+      <div id="doc-revision" style={{ scrollMarginTop: 80 }}>
+        <RevisionPanel profile={profile} onResubmitted={onResubmitted} setToast={setToast} />
+      </div>
+
+      <KpiRow cols={5}>
+        <KpiCard label="Open opportunities" icon={FolderOpen} tone="info" loading={loadingProjects}
+          value={open.length} to="/supplier/projects"
+          context={newCount ? `${newCount} new in the last 48 hours` : 'In your registered categories'} />
+        <KpiCard label="My active bids" icon={FileText} loading={loadingBids} value={active.length} to="/supplier/bids"
+          context={`${active.filter(b => b.status === 'under_review').length} under evaluation`} />
+        <KpiCard label="Bids won" icon={Trophy} tone={won.length ? 'success' : 'neutral'} loading={loadingBids}
+          value={won.length} to="/supplier/bids"
+          context={won.length ? `${pesoCompact(won.reduce((s, b) => s + b.amountRaw, 0))} in contracts` : 'No awards yet'} />
+        <KpiCard label="Win rate" icon={BarChart2} loading={loadingBids}
+          value={winRate == null ? '—' : `${winRate}%`} to="/supplier/reports"
+          context={decided.length ? `${won.length} of ${decided.length} decided bid${decided.length === 1 ? '' : 's'}` : 'No decided bids yet'} />
+        <KpiCard label="Documents needing attention" icon={AlertTriangle} loading={!profile}
+          tone={problems.some(p => p.tone === 'danger') ? 'danger' : problems.length ? 'warning' : 'success'}
+          value={problems.length} to="/supplier/profile"
+          context={problems.length ? 'Missing, flagged or expiring' : 'All in order'} />
+      </KpiRow>
+
+      <section className="rf-card" aria-labelledby="opp-h">
+        <div className="rf-card-head" style={{ flexWrap: 'wrap' }}>
+          <div><h3 id="opp-h">Opportunities for you</h3><p>Published procurements in your registered categories</p></div>
+          {open.length > 0 && (
+            <div className="rf-filterbar">
+              <label>Category
+                <select className="rf-select" value={category} onChange={e => setCategory(e.target.value)}>
+                  <option value="all">All categories</option>
+                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </label>
+              <label>Sort
+                <select className="rf-select" value={sort} onChange={e => setSort(e.target.value)}>
+                  <option value="deadline">Deadline (soonest)</option>
+                  <option value="abc_desc">ABC (highest)</option>
+                  <option value="abc_asc">ABC (lowest)</option>
+                </select>
+              </label>
             </div>
           )}
         </div>
+        {loadingProjects && projects.length === 0 ? (
+          <div className="rf-opp-grid">{[0, 1, 2].map(i => <Skeleton key={i} height={170} radius={12} />)}</div>
+        ) : feed.length === 0 ? (
+          <EmptyState icon={FolderOpen} title="No open procurements in your categories"
+            description="New biddings in your categories appear here as soon as they are published."
+            action={<>
+              <Link to="/public" className="ui-btn ui-btn--secondary ui-btn--sm">Browse all public biddings</Link>
+              <Link to="/supplier/settings" className="ui-btn ui-btn--ghost ui-btn--sm">Review my categories</Link>
+            </>} />
+        ) : (
+          <div className="rf-opp-grid">
+            {feed.map(p => {
+              const mine = bidByProject[p.id]
+              return (
+                <article key={p.id} className="rf-opp">
+                  <div className="rf-opp-top">
+                    <Thumbnail src={p.referenceImage} size={64} category={p.category}
+                      alt={`Reference image for ${p.id} ${p.name}`}
+                      onOpen={() => setPreview({ images: [{ url: p.referenceImage, caption: `${p.id} · ${p.name}` }], index: 0, title: 'Reference image' })} />
+                    <div style={{ minWidth: 0 }}>
+                      <div className="rf-opp-tags">
+                        <span className="rf-code">{p.id}</span>
+                        {isNew(p) && <span className="rf-new-tag">New</span>}
+                        <span className="rf-muted" style={{ fontSize: 'var(--fs-caption)' }}>{p.category}</span>
+                      </div>
+                      <h4 className="rf-opp-title">{p.name}</h4>
+                    </div>
+                  </div>
+                  <div className="rf-opp-meta">
+                    <div className="rf-opp-abc"><small>Approved budget (ABC)</small><strong>{peso(p.budgetRaw)}</strong></div>
+                    <Countdown deadline={p.deadlineRaw} />
+                  </div>
+                  <div className="rf-opp-actions">
+                    {mine ? (
+                      <Link to="/supplier/bids" className="ui-btn ui-btn--secondary ui-btn--sm"><CheckCircle2 size={13} /> Bid submitted · view</Link>
+                    ) : eligible ? (
+                      <button type="button" className="ui-btn ui-btn--primary ui-btn--sm" onClick={() => setModal(p)}>
+                        View &amp; bid <ArrowRight size={13} />
+                      </button>
+                    ) : (
+                      <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled title="Bidding unlocks once your account is verified">
+                        <Lock size={13} /> Locked until verified
+                      </button>
+                    )}
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </section>
 
-        <div className="sd-card">
-          <div className="sd-card-header">
-            <div><h2>My Bids</h2><p>Your submitted bids</p></div>
-            {bids.length > 0 && <Link to="/supplier/bids" className="sd-view-all">View all →</Link>}
+      <div className="rf-grid-2">
+        <section className="rf-card" aria-labelledby="mybids-h">
+          <div className="rf-card-head">
+            <div><h3 id="mybids-h">My bids</h3><p>Where each bid stands in the evaluation</p></div>
+            {bids.length > 0 && <Link to="/supplier/bids" className="rf-card-link">All bids <ChevronRight size={13} /></Link>}
           </div>
           {loadingBids && bids.length === 0 ? (
-            <div style={{ padding: '12px 24px' }}><ListSkeleton rows={2} height={48} /></div>
+            <div className="rf-card-body"><ListSkeleton rows={2} height={60} /></div>
           ) : bids.length === 0 ? (
-            <EmptyState compact icon={FileText} title="No bids submitted yet"
-              description={eligible ? 'Pick an open procurement and submit your first bid.' : 'Once your account is approved you can start bidding.'}
-              action={eligible
-                ? <Link to="/supplier/projects" className="sd-btn-primary">Browse opportunities</Link>
-                : <Link to="/supplier/profile" className="sd-btn-cancel">Complete your profile</Link>} />
+            <EmptyState compact icon={FileText} title="No bids yet"
+              description={eligible ? 'Pick an opportunity above and submit your first bid.' : 'Once your account is verified you can start bidding.'} />
           ) : (
-            <div className="sd-bids-list">
-              {bids.map((b, i) => (
-                <div className="sd-bid-row" key={i}>
-                  <div className="sd-bid-info">
-                    <span className="sd-bold">{b.project}</span>
-                    <span className="sd-muted sd-small">Submitted {b.submitted}</span>
-                  </div>
-                  <div className="sd-bid-right">
-                    <span className="sd-proj-budget">{b.amount}</span>
-                    <StatusBadge domain="bid" status={b.status} label={BID_LABEL[b.status]} />
-                  </div>
-                </div>
-              ))}
-            </div>
+            <ul className="rf-list">
+              {bids.slice(0, 6).map(b => {
+                const receipt = b.status === 'winner' ? receiptFor(b) : null
+                const imgs = b.productImages || []
+                return (
+                  <li key={b.id} className="rf-bid-row">
+                    <Thumbnail src={imgs[0]?.url} size={48} category={b.category}
+                      alt={`Product image on your bid for ${b.projectId}`} badge={imgs.length > 1 ? `+${imgs.length - 1}` : null}
+                      onOpen={() => setPreview({ images: imgs.map((i, n) => ({ url: i.url, caption: i.caption || `Product image ${n + 1}` })), index: 0, title: `${b.projectId} · your product images` })} />
+                    <div style={{ minWidth: 0 }}>
+                      <div className="rf-list-title">{b.project}</div>
+                      <div className="rf-list-sub"><span className="rf-code">{b.projectId}</span>Submitted <RelativeTime value={b.submittedAt} /></div>
+                      <MiniSteps steps={bidSteps(b)} />
+                    </div>
+                    <div className="rf-list-side">
+                      <span className="rf-amount">{peso(b.amountRaw)}</span>
+                      {b.status === 'winner' && (receipt ? (
+                        <a className="rf-receipt" href={receipt.explorer_url} target="_blank" rel="noopener noreferrer"
+                          title={`Award transaction ${receipt.tx_hash} on Etherscan`}>
+                          <ShieldCheck size={13} aria-hidden="true" /> Blockchain receipt
+                        </a>
+                      ) : <span className="rf-muted" style={{ fontSize: 'var(--fs-caption)' }}>Receipt pending</span>)}
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
           )}
-        </div>
+        </section>
+
+        <section className="rf-card" aria-labelledby="docs-h">
+          <div className="rf-card-head">
+            <div><h3 id="docs-h">Document health</h3><p>Missing, flagged and expiring licenses</p></div>
+            <Link to="/supplier/profile" className="rf-card-link">My documents <ChevronRight size={13} /></Link>
+          </div>
+          <DocumentHealth profile={profile} setToast={setToast} onUploaded={onResubmitted} />
+        </section>
       </div>
 
-      <OnboardingTracker profile={profile} eligible={eligible} />
+      {preview && (
+        <Lightbox images={preview.images} index={preview.index} title={preview.title}
+          onIndex={(i) => setPreview(pv => ({ ...pv, index: i }))} onClose={() => setPreview(null)} />
+      )}
     </div>
   )
 }
@@ -2520,20 +2747,21 @@ export default function SupplierDashboard() {
         {toast && <SupplierToast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
         <div className="sd-body">
           <Routes>
-            <Route index element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
+            <Route index element={<SupplierHome projects={projects} bids={bids} awards={awards} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
             <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} loading={loadingProjects} profile={profile} />} />
             <Route path="bids"     element={<SupplierBids bids={bids} awards={awards} onWithdraw={withdrawBid} loading={loadingBids} onResubmitted={loadBids} setToast={setToast} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="reports"  element={<SupplierReportsPage bids={bids} profile={profile} />} />
             <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} loading={loadingProfile} error={profileError} onRetry={loadProfile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} />} />
             <Route path="settings" element={<SupplierSettings profile={profile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} loading={loadingProfile} error={profileError} onRetry={loadProfile} />} />
-            <Route path="*"        element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
+            <Route path="*"        element={<SupplierHome projects={projects} bids={bids} awards={awards} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
           </Routes>
         </div>
       </div>
       {/* Anchoring feedback for the supplier's own bid submissions. At the
           layout root so it survives navigation while MetaMask is open. */}
       <AnchorActivity />
+      <Toaster />
     </div>
   )
 }

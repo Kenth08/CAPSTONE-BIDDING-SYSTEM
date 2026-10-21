@@ -15,7 +15,7 @@ import EmptyState from '../../components/ui/EmptyState'
 import RelativeTime from '../../components/ui/RelativeTime'
 import { toast } from '../../components/ui/Toaster'
 import { ListSkeleton, Skeleton } from '../../components/Skeleton'
-import { amount, peso, pesoCompact } from '../../utils/format'
+import { amount, greeting, peso, pesoCompact, todayLong } from '../../utils/format'
 
 const ATTN_ICON = {
   evaluate: Gavel, revision: FileWarning, verify: UserCheck, category: Users,
@@ -23,12 +23,6 @@ const ATTN_ICON = {
 }
 const ATTN_LIMIT = 6
 
-export function greeting(date = new Date()) {
-  const h = date.getHours()
-  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
-}
-export const todayLong = () =>
-  new Date().toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
 
 export function AttentionList({ items, loading, limit = ATTN_LIMIT, emptyTitle = 'Nothing needs your attention', emptyText }) {
   const [all, setAll] = useState(false)

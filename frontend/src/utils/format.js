@@ -129,3 +129,13 @@ export function timeLeft(deadline, now = Date.now()) {
   if (sameDay) return { label: hours >= 1 ? `Closes today · ${hours}h left` : 'Closes within the hour', tone, closed: false }
   return { label: days >= 1 ? `${days}d ${hours % 24}h left` : `${hours}h left`, tone, closed: false }
 }
+
+/** "Good morning" / "Good afternoon" / "Good evening" for the dashboard greeting. */
+export function greeting(date = new Date()) {
+  const h = date.getHours()
+  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
+}
+
+/** "Thursday, October 22, 2026" */
+export const todayLong = () =>
+  new Date().toLocaleDateString('en-PH', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })

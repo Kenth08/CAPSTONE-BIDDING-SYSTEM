@@ -452,7 +452,8 @@ button.rf-bar-row:focus-visible { outline: none; box-shadow: var(--focus-ring); 
   .rf-banner > :last-child:not(:nth-child(2)) { grid-column: 1 / -1; }
 }
 @media (max-width: 420px) {
-  .rf-kpi-row, .rf-kpi-row[class*='is-'] { grid-template-columns: minmax(0, 1fr); }
+  .rf-kpi-value { font-size: 20px; }
+  .rf-kpi-icon { display: none; }
   .rf-attn-item { grid-template-columns: auto minmax(0, 1fr); }
   .rf-attn-side { display: none; }
   .rf-list-row { grid-template-columns: minmax(0, 1fr) auto; }
@@ -465,3 +466,9 @@ button.rf-bar-row:focus-visible { outline: none; box-shadow: var(--focus-ring); 
 }
 .rf-eval-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--sp-4); align-items: start; }
 @media (max-width: 768px) { .rf-eval-head { grid-template-columns: auto minmax(0, 1fr); } .rf-eval-head > :last-child { grid-column: 1 / -1; } }
+.rf-field { display: flex; flex-direction: column; gap: 6px; margin: 0 0 var(--sp-3); font-size: var(--fs-caption); font-weight: var(--fw-semibold); color: var(--text-body); }
+.rf-field textarea { font: inherit; font-size: var(--fs-small); font-weight: 400; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-btn); resize: vertical; color: var(--text-strong); }
+.rf-field textarea:focus-visible { outline: none; border-color: var(--c-primary-500); box-shadow: var(--focus-ring); }
+@media (max-width: 340px) {
+  .rf-kpi-row, .rf-kpi-row[class*='is-'] { grid-template-columns: minmax(0, 1fr); }
+}
