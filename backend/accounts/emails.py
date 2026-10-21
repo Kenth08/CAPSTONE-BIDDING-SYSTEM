@@ -56,7 +56,10 @@ def send_verification_email(user):
             ),
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[user.email],
-            fail_silently=True,
+            # False on purpose: the try/except around this logs the failure.
+            # fail_silently=True swallowed SMTP errors before the log line ran,
+            # so undelivered mail left no trace anywhere.
+            fail_silently=False,
         )
     except Exception:
         logger.exception("Failed to send verification email to %s", user.email)

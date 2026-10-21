@@ -321,6 +321,9 @@ if EMAIL_HOST:
     EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() == 'true'
     EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
     EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+    # Without a timeout an unreachable SMTP server (e.g. a host that blocks
+    # outbound port 587) hangs the request worker until the platform kills it.
+    EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '15'))
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'no-reply@eprocurement.local')

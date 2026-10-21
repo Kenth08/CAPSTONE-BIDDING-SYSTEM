@@ -51,13 +51,24 @@ An authenticated API client with no token in the URL is still served, by
 re-running the ownership check directly — belt and braces, and it keeps the
 endpoint usable from scripts and tests.
 """
+import logging
 import mimetypes
 import os
 
 from django.core import signing
 from django.http import FileResponse, Http404
 from rest_framework import permissions
+from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
+
+logger = logging.getLogger(__name__)
+
+# Shown only to a caller who already passed the access check, so it reveals
+# nothing an unauthorized caller could learn.
+MISSING_FILE_DETAIL = (
+    "This document is on record but its file is missing from storage. "
+    "Ask the supplier to upload it again."
+)
 
 # How long a document link stays valid. Long enough that a tab left open over a
 # lunch break still works, short enough that a URL pasted into a chat or leaked
@@ -209,9 +220,13 @@ class ProtectedFileView(APIView):
             handle = file_field.open("rb")
         except (FileNotFoundError, OSError, ValueError):
             # The record still points at a file that storage no longer has —
-            # most likely written to Render's ephemeral disk before an S3 bucket
-            # was configured. A clean 404 beats a 500.
-            raise Http404
+            # most likely written to Render's ephemeral disk (wiped on every
+            # deploy/restart) because no S3 bucket is configured. Logged so a
+            # missing file can be told apart from an access denial, which stays
+            # a bare 404 above.
+            logger.warning("Protected file missing from storage: %s/%s/%s -> %s",
+                           kind, pk, field, file_field.name)
+            raise NotFound(MISSING_FILE_DETAIL)
 
         filename = os.path.basename(file_field.name)
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
