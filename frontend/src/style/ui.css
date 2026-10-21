@@ -283,6 +283,14 @@ td.ui-empty-cell { padding: 0 !important; background: var(--surface) !important;
   z-index: 60;
   box-shadow: var(--shadow-md);
 }
+/* For buttons at the right edge of a scrolling table: a centered tooltip gets
+   cut off there, so open it leftwards from the button's right edge instead. */
+[data-tip][data-tip-align="end"]:hover::after,
+[data-tip][data-tip-align="end"]:focus-visible::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
 
 /* ── Toasts (all three dashboards) ────────────────────────────────────────── */
 .ad-toast, .hd-toast, .sd-toast {

@@ -565,6 +565,24 @@ def _ledger_abi():
         return json.load(fh)
 
 
+def _fee_fields(w3):
+    """EIP-1559 fee fields that are always valid together.
+
+    The old version paired a fixed 1.5 gwei tip with `gas_price * 2` as the
+    cap. Sepolia's gas price often sits well under 0.75 gwei, which made the
+    cap lower than the tip, and the node rejected every transaction with
+    "max priority fee per gas higher than max fee per gas". Building the cap
+    as `2 x base fee + tip` keeps it above the tip whatever the network does,
+    and leaves room for the base fee to rise for a block or two."""
+    try:
+        tip = int(w3.eth.max_priority_fee)       # the node's suggested tip
+    except Exception:
+        tip = int(w3.to_wei(1, "gwei"))
+    block = w3.eth.get_block("latest")
+    base_fee = int(block.get("baseFeePerGas") or 0) or int(w3.eth.gas_price)
+    return {"maxPriorityFeePerGas": tip, "maxFeePerGas": base_fee * 2 + tip}
+
+
 def submit_anchor_server_side(anchor):
     """Sign and submit `anchor` from the server with web3.py (no wallet).
 
@@ -612,10 +630,9 @@ def submit_anchor_server_side(anchor):
             # rejected as duplicates.
             "nonce": w3.eth.get_transaction_count(account.address, "pending"),
             "chainId": SEPOLIA_CHAIN_ID,
-            # A tx this small is ~200k gas at most; leave price to the node.
+            # A tx this small is ~200k gas at most.
             "gas": 400_000,
-            "maxFeePerGas": w3.eth.gas_price * 2,
-            "maxPriorityFeePerGas": w3.to_wei(1.5, "gwei"),
+            **_fee_fields(w3),
         })
         signed = account.sign_transaction(tx)
         # web3.py v6 exposes .rawTransaction, v7 renamed it to .raw_transaction.

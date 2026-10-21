@@ -3010,6 +3010,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
             disabled={busy}
             onClick={() => inputRef.current?.click()}
             data-tip="Replace with signed copy"
+            data-tip-align="end"
             aria-label={`Replace ${shortLabel} with the signed copy`}
           >
             {busy ? <Loader2 size={13} className="ui-spin" /> : <Upload size={13} />}
@@ -3032,6 +3033,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
             disabled={busy}
             onClick={() => inputRef.current?.click()}
             data-tip="Upload a signed copy instead"
+            data-tip-align="end"
             aria-label={`Upload a signed copy of ${shortLabel}`}
           >
             <Upload size={13} />
