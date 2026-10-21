@@ -1,12 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
   ChevronDown, LogOut,
   ClipboardCheck, AlertCircle, AlertTriangle, FolderOpen, Eye,
-  ThumbsUp, ThumbsDown, FileText, Menu, X, Image as ImageIcon,
+  ThumbsUp, ThumbsDown, FileText, Menu, X, Image as ImageIcon, ChevronRight, ShieldCheck, Link2, Loader2,
 } from 'lucide-react'
-import { apiLogout } from '../api'
+import { apiLogout, apiHeadSummary } from '../api'
 import {
   useProjects, approveProject as storeApprove, rejectProject as storeReject,
   requestProjectRevision as storeRequestRevision,
@@ -19,6 +19,15 @@ import StatusBadge from '../components/ui/StatusBadge'
 import EmptyState from '../components/ui/EmptyState'
 import AnchorActivity from '../components/AnchorActivity'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
+import KpiCard, { KpiRow } from '../components/ui/KpiCard'
+import Thumbnail from '../components/ui/Thumbnail'
+import Lightbox from '../components/ui/Lightbox'
+import ConfirmDialog from '../components/ui/ConfirmDialog'
+import RelativeTime from '../components/ui/RelativeTime'
+import Toaster, { toast } from '../components/ui/Toaster'
+import { useNow } from '../components/ui/Countdown'
+import { runAnchor, isAnchorBusy, useAnchorActivity } from '../blockchain/anchorStore'
+import { daysSince, greeting, peso, todayLong } from '../utils/format'
 import '../style/HeadDashboard.css'
 
 const NAV_SECTIONS = (pendingCount) => [
@@ -47,8 +56,8 @@ function Toast({ type, message, onClose }) {
   )
 }
 
-function PendingCard({ project, onApprove, onReject, onRequestRevision }) {
-  const [expanded, setExpanded] = useState(false)
+function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultExpanded = false }) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
   const [showRejectForm, setShowRejectForm] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [busy, setBusy] = useState(false)
@@ -95,7 +104,7 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision }) {
   const flaggedCount = Object.keys(flaggedDocs()).length
 
   return (
-    <div className={`hd-pending-card${expanded ? ' is-open' : ''}`}>
+    <div className={`hd-pending-card${expanded ? ' is-open' : ''}`} id={project.code} style={{ scrollMarginTop: 80 }}>
       <div className="hd-pending-card-top">
         <div className="hd-proj-icon" aria-hidden="true"><FolderOpen size={16} /></div>
         <div className="hd-pending-info">
@@ -286,117 +295,272 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision }) {
   )
 }
 
-function HeadHome() {
-  const { projects, loading } = useProjects()
-  const [toast, setToast] = useState(null)
-  const pending = projects.filter(p => p.status === 'pending_head')
-  const approved = projects.filter(isReviewed)
-  const approvedCount = approved.filter(p => decisionOf(p) === 'approved').length
-  const rejectedCount = approved.filter(p => decisionOf(p) === 'rejected').length
-  const publishedCount = projects.filter(p => p.status === 'published').length
-  // Capture the project name BEFORE awaiting — once approved/rejected it leaves
-  // the pending list. Errors still bubble up so PendingCard shows them inline.
-  const onApprove = async (id) => {
-    const proj = projects.find(p => p.id === id)
-    await storeApprove(id)
-    setToast({ type: 'success', message: `"${proj?.name}" approved — sent back to Admin to be published for bidding.` })
+// ── Head home: approval command center ───────────────────────────────────────
+
+const WAIT_WARN_DAYS = 3
+
+function DocChecklist({ documents = [] }) {
+  return (
+    <ul className="rf-checklist" aria-label="Required documents">
+      {documents.map(d => {
+        const state = d.review_status === 'needs_revision' ? 'flagged' : d.url ? 'ok' : 'missing'
+        return (
+          <li key={d.key} className={`is-${state}`}>
+            {state === 'ok' ? <CheckCircle2 size={12} aria-hidden="true" />
+              : state === 'flagged' ? <AlertTriangle size={12} aria-hidden="true" />
+              : <XCircle size={12} aria-hidden="true" />}
+            {d.label.replace(/ \(.*\)/, '')}
+            <span className="sr-only">: {state === 'ok' ? 'uploaded' : state === 'flagged' ? 'flagged' : 'missing'}</span>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+function QueueItem({ project, meta, onDecide }) {
+  const now = useNow()
+  const [preview, setPreview] = useState(false)
+  const waitingSince = meta?.waiting_since || null
+  const days = daysSince(waitingSince, now)
+  return (
+    <li className="rf-queue-item">
+      <Thumbnail src={project.referenceImage} size={64} category={project.category}
+        alt={`Reference image for ${project.code} ${project.name}`} onOpen={() => setPreview(true)} />
+      <div style={{ minWidth: 0 }}>
+        <h4 className="rf-queue-title">{project.name}</h4>
+        <div className="rf-queue-meta">
+          <span className="rf-code">{project.code}</span>
+          <span>{project.category || '—'}</span>
+          <span>ABC <strong style={{ color: 'var(--text-strong)' }}>{project.budget}</strong></span>
+          {meta?.created_by && <span>Created by {meta.created_by}</span>}
+        </div>
+        <DocChecklist documents={project.documents} />
+      </div>
+      <div className="rf-queue-side">
+        {days != null && (
+          <StatusBadge tone={days >= WAIT_WARN_DAYS ? 'warning' : 'neutral'} icon={Clock}
+            title={`In your queue since ${new Date(waitingSince).toLocaleString('en-PH')}`}
+            label={days === 0 ? 'Waiting since today' : `Waiting ${days} day${days === 1 ? '' : 's'}`} />
+        )}
+        <div className="rf-queue-actions">
+          <button type="button" className="ui-btn ui-btn--danger-outline ui-btn--sm" onClick={() => onDecide('reject', project)}>
+            <ThumbsDown size={13} /> Reject
+          </button>
+          <Link to={`/head/pending#${project.code}`} className="ui-btn ui-btn--secondary ui-btn--sm">
+            <AlertTriangle size={13} /> Request revision
+          </Link>
+          <button type="button" className="ui-btn ui-btn--primary ui-btn--sm" onClick={() => onDecide('approve', project)}>
+            <ThumbsUp size={13} /> Approve
+          </button>
+        </div>
+      </div>
+      {preview && (
+        <Lightbox images={[{ url: project.referenceImage, caption: `${project.code} · ${project.name}` }]} index={0}
+          title="Project reference image" onClose={() => setPreview(false)} />
+      )}
+    </li>
+  )
+}
+
+function DecisionChain({ anchor, onAnchored }) {
+  const activity = useAnchorActivity()
+  const [busy, setBusy] = useState(false)
+  if (!anchor) return <span className="rf-muted">Not recorded</span>
+  if (anchor.anchored) {
+    return (
+      <a className="rf-receipt" href={anchor.explorer_url} target="_blank" rel="noopener noreferrer"
+        title={`Transaction ${anchor.tx_hash} on Etherscan`}>
+        <ShieldCheck size={13} aria-hidden="true" /> On-chain
+      </a>
+    )
   }
-  const onReject = async (id, reason) => {
-    const proj = projects.find(p => p.id === id)
-    await storeReject(id, reason)
-    setToast({ type: 'success', message: `"${proj?.name}" was rejected.` })
-  }
-  const onRequestRevision = async (id, documents) => {
-    const proj = projects.find(p => p.id === id)
-    await storeRequestRevision(id, documents)
-    setToast({ type: 'success', message: `Revision requested on "${proj?.name}" — sent back to Admin to fix.` })
+  const go = async () => {
+    setBusy(true)
+    const ok = await runAnchor(anchor, { label: `${anchor.entity_ref} · ${anchor.stage_label}` })
+    setBusy(false)
+    if (ok) { toast.success(`${anchor.entity_ref} decision recorded on-chain.`); onAnchored() }
   }
   return (
-    <div className="hd-content">
-      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
-      <div className="hd-stats">
-        {[
-          { label: 'Pending Approval', value: pending.length, icon: Clock, color: 'yellow', sub: 'Waiting for your decision' },
-          { label: 'Approved', value: approvedCount, icon: CheckCircle2, color: 'green', sub: `of ${approved.length} reviewed by you` },
-          { label: 'Rejected', value: rejectedCount, icon: XCircle, color: 'red', sub: `of ${approved.length} reviewed by you` },
-          { label: 'Published', value: publishedCount, icon: ClipboardCheck, color: 'blue', sub: 'Open for supplier bidding' },
-        ].map(({ label, value, icon: Icon, color, sub }) => (
-          <div className={`hd-stat-card hd-stat-${color}`} key={label}>
-            <div className="hd-stat-top">
-              <span className="hd-stat-label">{label}</span>
-              <div className={`hd-stat-icon hd-icon-${color}`} aria-hidden="true"><Icon size={17} /></div>
-            </div>
-            <div className="hd-stat-value">{loading && projects.length === 0 ? <Skeleton width={40} height={26} /> : value}</div>
-            <div className="hd-stat-sub">{sub}</div>
-          </div>
-        ))}
+    <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={go} disabled={busy || isAnchorBusy(activity)}>
+      {busy ? <Loader2 size={12} className="ui-spin" /> : <Link2 size={12} />} {busy ? 'Anchoring…' : 'Anchor now'}
+    </button>
+  )
+}
+
+const DECISION_BADGE = {
+  approved: ['success', 'Approved'], rejected: ['danger', 'Rejected'], revision: ['warning', 'Revision requested'],
+}
+
+function HeadHome() {
+  const { projects, loading } = useProjects()
+  const [summary, setSummary] = useState(null)
+  const [sumLoading, setSumLoading] = useState(true)
+  const [sumError, setSumError] = useState('')
+  const [decide, setDecide] = useState(null)     // { type: 'approve'|'reject', project }
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const u = storedUser()
+
+  const loadSummary = useCallback(() => {
+    setSumError('')
+    return apiHeadSummary().then(setSummary)
+      .catch(e => setSumError(e instanceof TypeError ? 'Cannot reach the server. Check your connection and try again.' : e.message || 'Could not load your summary.'))
+      .finally(() => setSumLoading(false))
+  }, [])
+  useEffect(() => { loadSummary() }, [loadSummary])
+
+  const metaById = Object.fromEntries((summary?.queue || []).map(q => [q.id, q]))
+  // Oldest first: the one that has waited longest is the most urgent.
+  const pending = projects.filter(p => p.status === 'pending_head')
+    .sort((a, b) => String(metaById[a.id]?.waiting_since || '').localeCompare(String(metaById[b.id]?.waiting_since || '')))
+  const k = summary?.kpis || {}
+  const oldest = daysSince(summary?.queue?.[0]?.waiting_since)
+
+  const run = async () => {
+    const { type, project } = decide
+    setBusy(true)
+    try {
+      if (type === 'approve') {
+        await storeApprove(project.id)
+        toast.success(`${project.code} approved — sent to the Admin to publish for bidding.`)
+      } else {
+        await storeReject(project.id, reason)
+        toast.success(`${project.code} was rejected and returned to the Admin.`)
+      }
+      setDecide(null); setReason('')
+      loadSummary()
+    } catch (e) {
+      toast.error(e.message || 'Could not record your decision.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="hd-content rf-home">
+      <div className="rf-greeting">
+        <div>
+          <h2>{greeting()}, {u.full_name || u.username || 'Head'}</h2>
+          <p>{todayLong()} · Approving Authority</p>
+        </div>
       </div>
 
-      <div className={`hd-card hd-queue${pending.length > 0 ? ' has-items' : ''}`}>
-        <div className="hd-card-header">
-          <div className="hd-queue-head">
-            <span className="hd-queue-icon" aria-hidden="true"><AlertCircle size={18} /></span>
-            <div>
-              <h2>Awaiting your approval</h2>
-              <p>
-                {pending.length > 0
-                  ? `You have ${pending.length} project${pending.length > 1 ? 's' : ''} waiting for your approval`
-                  : 'Projects submitted by Admin for your review — approve or reject below'}
-              </p>
-            </div>
+      {sumError && (
+        <div className="ui-callout ui-callout--danger" role="alert">
+          <AlertCircle size={18} className="ui-callout-icon" />
+          <div>
+            <div className="ui-callout-title">Some numbers could not load</div>
+            <p>{sumError}</p>
+            <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={() => { setSumLoading(true); loadSummary() }}>Try again</button>
           </div>
-          <Link to="/head/pending" className="hd-view-all">View all →</Link>
+        </div>
+      )}
+
+      <KpiRow cols={4}>
+        <KpiCard label="Waiting for my approval" icon={Clock} loading={sumLoading} to="/head/pending"
+          tone={!summary ? 'neutral' : k.waiting ? (oldest >= WAIT_WARN_DAYS ? 'warning' : 'info') : 'success'} value={k.waiting ?? '—'}
+          context={!summary ? 'Unavailable' : k.waiting ? `Oldest waiting ${oldest === 0 ? 'since today' : `${oldest} day${oldest === 1 ? '' : 's'}`}` : 'All caught up'} />
+        <KpiCard label="Approved this month" icon={CheckCircle2} tone="success" loading={sumLoading}
+          value={k.approved_this_month ?? '—'} to="/head/approved" context="Sent to the Admin to publish" />
+        <KpiCard label="Returned for revision" icon={AlertTriangle} tone={k.returned_for_revision ? 'warning' : 'neutral'}
+          loading={sumLoading} value={k.returned_for_revision ?? '—'} to="/head/approved" context="Waiting on the Admin to fix" />
+        <KpiCard label="Rejected" icon={XCircle} tone="neutral" loading={sumLoading}
+          value={k.rejected ?? '—'} to="/head/approved" context="All time" />
+      </KpiRow>
+
+      <section className="rf-card" aria-labelledby="queue-h">
+        <div className="rf-card-head">
+          <div>
+            <h3 id="queue-h">Approval queue</h3>
+            <p>Longest waiting first · check the five required documents before you decide</p>
+          </div>
+          <Link to="/head/pending" className="rf-card-link">Full review <ChevronRight size={13} /></Link>
         </div>
         {loading && pending.length === 0 ? (
-          <div style={{ padding: '16px 20px' }}><ListSkeleton rows={2} height={70} /></div>
+          <div className="rf-card-body"><ListSkeleton rows={2} height={84} /></div>
         ) : pending.length === 0 ? (
-          <EmptyState icon={CheckCircle2} title="All caught up!" description="No projects pending your approval — all caught up!" />
+          <EmptyState icon={CheckCircle2} title="All caught up"
+            description="No procurements are waiting for your approval. New submissions from the Admin appear here." />
         ) : (
-          <div className="hd-pending-list">
+          <ul className="rf-queue">
             {pending.map(p => (
-              <PendingCard key={p.id} project={p} onApprove={onApprove} onReject={onReject} onRequestRevision={onRequestRevision} />
+              <QueueItem key={p.id} project={p} meta={metaById[p.id]} onDecide={(type, project) => setDecide({ type, project })} />
             ))}
-          </div>
+          </ul>
         )}
-      </div>
+      </section>
 
-      <div className="hd-card">
-        <div className="hd-card-header">
-          <div><h2>Recently Reviewed</h2><p>Projects you've approved or rejected</p></div>
-          <Link to="/head/approved" className="hd-view-all">View all →</Link>
+      <section className="rf-card" aria-labelledby="hist-h">
+        <div className="rf-card-head">
+          <div><h3 id="hist-h">My decision history</h3><p>Your latest decisions and whether each is recorded on-chain</p></div>
+          <Link to="/head/approved" className="rf-card-link">All reviewed <ChevronRight size={13} /></Link>
         </div>
-        {loading && approved.length === 0 ? (
-          <div className="hd-table-wrap"><table className="hd-table"><tbody><TableSkeleton rows={3} cols={6} /></tbody></table></div>
-        ) : approved.length === 0 ? (
-          <EmptyState compact icon={FolderOpen} title="No reviewed projects yet" description="Projects you approve or reject will be listed here." />
+        {sumLoading ? (
+          <div className="rf-card-body"><ListSkeleton rows={3} height={40} /></div>
+        ) : !summary?.history?.length ? (
+          <EmptyState compact icon={FolderOpen} title="No decisions yet" description="Procurements you approve, reject or return will be listed here." />
         ) : (
-          <div className="hd-table-wrap">
-            <table className="hd-table">
+          <div className="rf-table-scroll">
+            <table className="rf-table">
+              <caption className="sr-only">Decision history</caption>
               <thead>
-                <tr><th>ID</th><th>Project Name</th><th className="hd-num">Budget</th><th>Category</th><th>Reviewed On</th><th>Decision</th></tr>
+                <tr><th scope="col">Procurement</th><th scope="col" className="is-num">ABC</th><th scope="col">Decision</th><th scope="col">When</th><th scope="col">On-chain</th></tr>
               </thead>
               <tbody>
-                {approved.slice(0, 4).map(p => (
-                  <tr key={p.id}>
-                    <td><span className="hd-id">{p.code}</span></td>
-                    <td className="hd-bold">{p.name}</td>
-                    <td className="hd-num">{p.budget}</td>
-                    <td><span className="ui-badge ui-badge--neutral">{p.type}</span></td>
-                    <td className="hd-muted hd-nowrap">{p.reviewedAt}</td>
-                    <td><StatusBadge domain="decision" status={decisionOf(p)} /></td>
-                  </tr>
-                ))}
+                {summary.history.map(h => {
+                  const [tone, label] = DECISION_BADGE[h.decision] || ['neutral', h.decision]
+                  return (
+                    <tr key={h.id}>
+                      <td>
+                        <div className="rf-cell-title"><div><strong>{h.name}</strong><small><span className="rf-code">{h.code}</span></small></div></div>
+                      </td>
+                      <td className="is-num"><span className="rf-amount">{peso(h.budget)}</span></td>
+                      <td><StatusBadge tone={tone} label={label} /></td>
+                      <td><RelativeTime value={h.reviewed_at} /></td>
+                      <td><DecisionChain anchor={h.anchor} onAnchored={loadSummary} /></td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
         )}
-      </div>
+      </section>
+
+      {decide && (
+        <ConfirmDialog
+          title={decide.type === 'approve' ? `Approve ${decide.project.code}?` : `Reject ${decide.project.code}?`}
+          tone={decide.type === 'approve' ? 'primary' : 'danger'}
+          confirmLabel={decide.type === 'approve' ? 'Approve procurement' : 'Reject procurement'}
+          onChain busy={busy}
+          points={decide.type === 'approve'
+            ? [`${decide.project.name} (ABC ${decide.project.budget}) is approved.`, 'It goes back to the Admin, who publishes it for bidding.']
+            : [`${decide.project.name} is marked Rejected and returned to the Admin.`, 'A rejected procurement cannot be edited — the Admin files a new one.']}
+          onCancel={() => { setDecide(null); setReason('') }}
+          onConfirm={run}
+        >
+          {decide.type === 'reject' && (
+            <label className="rf-field">
+              <span>Reason for rejection (optional)</span>
+              <textarea rows={3} value={reason} onChange={e => setReason(e.target.value)}
+                placeholder="Explain why, so the Admin can correct it in a new filing" />
+            </label>
+          )}
+        </ConfirmDialog>
+      )}
     </div>
   )
 }
 
 function PendingPage() {
   const { projects, loading } = useProjects()
+  const loc = useLocation()
+  // Opened from the home queue's "Request revision": scroll to that card.
+  useEffect(() => {
+    if (!loc.hash || loading) return
+    document.getElementById(decodeURIComponent(loc.hash.slice(1)))?.scrollIntoView({ block: 'start' })
+  }, [loc.hash, loading])
   const [toast, setToast] = useState(null)
   const pending = projects.filter(p => p.status === 'pending_head')
   // Capture the project name BEFORE awaiting — once approved/rejected it leaves
@@ -434,7 +598,8 @@ function PendingPage() {
         ) : (
           <div className="hd-pending-list">
             {pending.map(p => (
-              <PendingCard key={p.id} project={p} onApprove={onApprove} onReject={onReject} onRequestRevision={onRequestRevision} />
+              <PendingCard key={p.id} project={p} onApprove={onApprove} onReject={onReject} onRequestRevision={onRequestRevision}
+                defaultExpanded={loc.hash === `#${p.code}`} />
             ))}
           </div>
         )}
@@ -572,6 +737,7 @@ export default function HeadDashboard() {
           decisions. Mounted at the layout root so it survives route changes
           while a MetaMask prompt is open. */}
       <AnchorActivity />
+      <Toaster />
     </div>
   )
 }

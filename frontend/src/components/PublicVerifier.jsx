@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   AlertCircle, CheckCircle2, ExternalLink, FileSearch, Loader2, Search,
   ShieldCheck, ShieldX, Upload, XCircle,
@@ -105,8 +105,8 @@ const STATE_UI = {
  * through a plain JSON-RPC provider; document hashing happens in the browser via
  * WebCrypto, so the file being checked is never uploaded anywhere.
  */
-export default function PublicVerifier() {
-  const [code, setCode] = useState('')
+export default function PublicVerifier({ initialCode = '' }) {
+  const [code, setCode] = useState(initialCode)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState(null) // { project, rows, chainReachable, chainError }
@@ -172,8 +172,14 @@ export default function PublicVerifier() {
   const verifiedCount = (result?.rows || []).filter((r) => r.state === 'verified').length
   const alteredCount = result?.project?.altered_count || 0
 
+  // Opened with a reference (from the landing-page search or a results row):
+  // run the lookup straight away. Remounted via `key` when the code changes.
+  useEffect(() => {
+    if (initialCode) lookup()
+  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
-    <section className="pv">
+    <section className="pv" id="verify" style={{ scrollMarginTop: 80 }}>
       <div className="pv-head">
         <div className="pv-title">
           <ShieldCheck size={20} className="pv-title-ico" />

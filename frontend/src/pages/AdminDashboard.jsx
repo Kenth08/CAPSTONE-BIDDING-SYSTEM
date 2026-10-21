@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Routes, Route, Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
   Search, ChevronRight, LogOut, Shield,
@@ -36,6 +36,14 @@ import AnchorActivity from '../components/AnchorActivity'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
 import { runAnchor } from '../blockchain/anchorStore'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
+import AdminHome from './admin/AdminHome'
+import Toaster from '../components/ui/Toaster'
+import Thumbnail from '../components/ui/Thumbnail'
+import Lightbox from '../components/ui/Lightbox'
+import DataTable from '../components/ui/DataTable'
+import ActionConfirm from '../components/ui/ConfirmDialog'
+import Countdown from '../components/ui/Countdown'
+import ProcurementStepper from '../components/ui/ProcurementStepper'
 import '../style/AdminDashboard.css'
 
 const NAV_SECTIONS = [
@@ -117,202 +125,30 @@ function DeadlineCell({ project }) {
   return <span className="ad-muted">—</span>
 }
 
-// ── Dashboard Home ────────────────────────────────────────────────────────────
-
-function DashboardHome() {
-  const { projects, loading } = useProjects()
-  const [tab, setTab] = useState('All')
-  const [expiringDocs, setExpiringDocs] = useState([])
-  const [docsLoading, setDocsLoading] = useState(true)
-  const TABS = ['All', 'Draft', 'Active', 'Closed', 'Awarded']
-
-  useEffect(() => {
-    const cutoff = new Date()
-    cutoff.setDate(cutoff.getDate() + 30)
-    apiListDocuments()
-      .then(docs => setExpiringDocs(docs.filter(d => new Date(d.expiry_date) <= cutoff)))
-      .catch(() => setExpiringDocs([]))
-      .finally(() => setDocsLoading(false))
-  }, [])
-
-  const totalProjects    = projects.length
-  const totalBids        = projects.reduce((s, p) => s + p.bids, 0)
-  const activeBidding    = projects.filter(p => p.status === 'published' || p.status === 'active').length
-  const awardedContracts = projects.filter(p => p.status === 'awarded').length
-
-  const awaitingPublish = projects.filter(p => p.status === 'approved').length
-  const awaitingHead    = projects.filter(p => p.status === 'pending_head' || p.status === 'needs_revision').length
-
-  const STATS = [
-    { label: 'Total Projects',    value: totalProjects,    sub: 'All created procurement projects', icon: FolderOpen  },
-    { label: 'Total Bids',        value: totalBids,        sub: 'Submitted bid entries',            icon: FileText    },
-    { label: 'Active Bidding',    value: activeBidding,    sub: 'Projects currently open',          icon: Activity    },
-    { label: 'Awarded Contracts', value: awardedContracts, sub: 'Finalized awards',                 icon: UserCheck   },
-  ]
-
-  const filtered = projects.filter(p => {
-    if (tab === 'All')     return true
-    if (tab === 'Awarded') return p.status === 'awarded'
-    if (tab === 'Active')  return p.status === 'published' || p.status === 'active'
-    if (tab === 'Draft')   return p.status === 'draft'
-    if (tab === 'Closed')  return p.status === 'closed'
-    return true
-  })
-  // The card promises the last 10; the full list lives on Projects / Planning.
-  const recent = filtered.slice(0, 10)
-
-  const NEXT_ACTIONS = [
-    {
-      to: '/admin/projects', icon: FolderOpen, title: 'Create or Manage Projects',
-      desc: 'Review draft, active, and awarded projects',
-      count: awaitingPublish, countLabel: 'ready to publish',
-    },
-    {
-      to: '/admin/planning', icon: Calendar, title: 'Track Planning',
-      desc: 'Projects waiting on the Head or needing revision',
-      count: awaitingHead, countLabel: 'in review',
-    },
-    {
-      to: '/admin/suppliers', icon: Users, title: 'Review Suppliers',
-      desc: 'Check supplier profiles and approvals',
-    },
-    {
-      to: '/admin/bids', icon: Pencil, title: 'Evaluate Bids',
-      desc: 'Open bid evaluation for submitted projects',
-      count: activeBidding, countLabel: 'open for bidding',
-    },
-  ]
-
-  return (
-    <div className="ad-content ad-dash-page">
-      <div className="ad-stats">
-        {STATS.map(({ label, value, sub, icon: Icon }) => (
-          <div className="ad-stat-card" key={label}>
-            <div className="ad-stat-top">
-              <span className="ad-stat-label">{label}</span>
-              <div className="ad-stat-icon-wrap" aria-hidden="true"><Icon size={18} /></div>
-            </div>
-            <div className="ad-stat-value">{loading && projects.length === 0 ? <Skeleton width={48} height={26} /> : value}</div>
-            <div className="ad-stat-sub">{sub}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="ad-dash-grid">
-        <div className="ad-dash-main">
-          <div className="ad-card">
-            <div className="ad-card-header">
-              <div>
-                <h2>Recent Projects</h2>
-                <p>Last 10 projects by status</p>
-              </div>
-              <Link to="/admin/projects" className="ad-view-all">View all <ChevronRight size={14} /></Link>
-            </div>
-            <div className="ad-filter-pills" role="tablist" aria-label="Filter recent projects">
-              {TABS.map(t => (
-                <button
-                  key={t}
-                  role="tab"
-                  aria-selected={tab === t}
-                  className={`ad-pill${tab === t ? ' ad-pill-active' : ''}`}
-                  onClick={() => setTab(t)}
-                >{t}</button>
-              ))}
-            </div>
-            <div className="ad-project-list">
-              {loading && filtered.length === 0
-                ? <div style={{ padding: '12px 20px' }}><ListSkeleton rows={4} height={44} /></div>
-                : recent.length === 0
-                ? <EmptyState compact icon={FolderOpen} title="No projects here yet"
-                    description={tab === 'All' ? 'Projects you create in Planning will show up here.' : `No ${tab.toLowerCase()} projects right now.`} />
-                : recent.map(p => (
-                  <div className="ad-project-row" key={p.id}>
-                    <div className="ad-project-row-main">
-                      <div className="ad-bold ad-truncate">{p.name}</div>
-                      <div className="ad-project-row-meta">
-                        <RefCode code={p.code} />
-                        <span className="ad-muted ad-small">{p.budget}</span>
-                        <span className="ad-dot-sep" aria-hidden="true" />
-                        <span className="ad-muted ad-small">{deadlineLabel(p)}</span>
-                      </div>
-                    </div>
-                    <StatusBadge domain="project" status={p.status} />
-                  </div>
-                ))
-              }
-            </div>
-          </div>
-
-          <div className="ad-card ad-card-mt">
-            <div className="ad-card-header">
-              <div>
-                <h2>Expiring Documents</h2>
-                <p>Supplier documents expiring within 30 days</p>
-              </div>
-              {!docsLoading && expiringDocs.length > 0 && (
-                <StatusBadge tone="warning" label={`${expiringDocs.length} to follow up`} />
-              )}
-            </div>
-            <div className="ad-expiring-list">
-              {docsLoading
-                ? <div style={{ padding: '12px 20px' }}><ListSkeleton rows={2} height={40} /></div>
-                : expiringDocs.length === 0
-                ? <EmptyState compact icon={CheckCircle2} title="Nothing expiring soon"
-                    description="No supplier documents expire in the next 30 days." />
-                : expiringDocs.map(doc => {
-                  const exp = expiryMeta(doc.expiry_date)
-                  return (
-                    <div className="ad-expiring-row" key={doc.id}>
-                      <div className="ad-expiring-icon" aria-hidden="true"><FileText size={15} /></div>
-                      <div className="ad-expiring-main">
-                        <div className="ad-bold ad-truncate">{doc.company}</div>
-                        <div className="ad-muted ad-small">{doc.doc_type} · {fmtDate(doc.expiry_date)}</div>
-                      </div>
-                      <StatusBadge tone={exp.tone} label={exp.label} icon={exp.tone === 'danger' ? AlertTriangle : Clock} />
-                    </div>
-                  )
-                })
-              }
-            </div>
-          </div>
-        </div>
-
-        <div className="ad-dash-side">
-          <div className="ad-card">
-            <div className="ad-card-header">
-              <div>
-                <h2>Next Actions</h2>
-                <p>Where your attention is needed</p>
-              </div>
-            </div>
-            <div className="ad-next-actions">
-              {NEXT_ACTIONS.map(({ to, icon: Icon, title, desc, count, countLabel }) => (
-                <Link to={to} className="ad-next-action" key={to}>
-                  <span className="ad-next-icon" aria-hidden="true"><Icon size={17} /></span>
-                  <div className="ad-next-body">
-                    <div className="ad-bold">{title}</div>
-                    <div className="ad-muted ad-small">{desc}</div>
-                    {count > 0 && <span className="ad-next-count">{count} {countLabel}</span>}
-                  </div>
-                  <ChevronRight size={16} className="ad-action-arrow" aria-hidden="true" />
-                </Link>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ── Projects Page ─────────────────────────────────────────────────────────────
+
+// Pipeline stages on the dashboard link here as /admin/projects?stage=<key>.
+// Same grouping as the admin summary's pipeline (procurement/dashboard.py).
+const PIPELINE_STAGES = {
+  draft:          { label: 'Draft',            test: p => p.status === 'draft' },
+  pending_head:   { label: 'Head Review',      test: p => p.status === 'pending_head' },
+  needs_revision: { label: 'Needs Revision',   test: p => p.status === 'needs_revision' },
+  approved:       { label: 'Ready to Publish', test: p => p.status === 'approved' },
+  published:      { label: 'Published',        test: p => p.status === 'published' },
+  evaluation:     { label: 'Evaluation',       test: p => p.status === 'closed' && p.bids > 0 },
+  awarded:        { label: 'Awarded',          test: p => p.status === 'awarded' },
+  closed:         { label: 'Closed (no bids)', test: p => p.status === 'closed' && !p.bids },
+}
 
 function ProjectsPage() {
   const { projects, loading } = useProjects()
   const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
+  const stage = PIPELINE_STAGES[params.get('stage')] ? params.get('stage') : null
   const [filterTab, setFilterTab] = useState('All')
   const [search, setSearch] = useState('')
   const [toast, setToast] = useState(null)
+  const [preview, setPreview] = useState(null)   // project whose reference image is open
   const FILTER_TABS = ['All', 'Active', 'Closed', 'Awarded']
 
   // Only projects the Head has already approved appear here. Projects still being
@@ -325,9 +161,10 @@ function ProjectsPage() {
   const active = approved.filter(p => !isExpired(p))
   const historyCount = approved.length - active.length
 
-  const filtered = active.filter(p => {
+  const filtered = (stage ? projects.filter(PIPELINE_STAGES[stage].test) : active).filter(p => {
     const q = search.toLowerCase()
     const matchSearch = !q || p.name.toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q)
+    if (stage) return matchSearch
     const matchTab =
       filterTab === 'All'     ? true :
       filterTab === 'Awarded' ? p.status === 'awarded' :
@@ -345,11 +182,20 @@ function ProjectsPage() {
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
       <div className="ad-card">
         <div className="ad-card-header ad-toolbar-row">
+          {stage ? (
+            <div className="rf-chips" role="status">
+              <span className="rf-chip is-active">Stage: {PIPELINE_STAGES[stage].label} <span className="rf-chip-count">{filtered.length}</span></span>
+              <button type="button" className="rf-chip" onClick={() => setParams({})} aria-label="Clear the stage filter">
+                <X size={12} aria-hidden="true" /> Clear
+              </button>
+            </div>
+          ) : (
           <div className="ad-filter-pills ad-filter-pills-inline" role="tablist" aria-label="Filter projects">
             {FILTER_TABS.map(t => (
               <button key={t} role="tab" aria-selected={filterTab === t} className={`ad-pill${filterTab === t ? ' ad-pill-active' : ''}`} onClick={() => setFilterTab(t)}>{t}</button>
             ))}
           </div>
+          )}
           <div className="ad-toolbar">
             <label className="ad-search-inline">
               <Search size={14} aria-hidden="true" />
@@ -366,21 +212,26 @@ function ProjectsPage() {
         <table className="ad-table">
           <thead>
             <tr>
+              <th><span className="sr-only">Image</span></th>
               <th>Ref Code</th><th>Title</th><th className="ad-num">Budget</th><th>Deadline</th><th>Type</th>
               <th>Eligible Types</th><th>Status</th><th className="ad-actions-col">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading && filtered.length === 0
-              ? <TableSkeleton rows={4} cols={8} />
+              ? <TableSkeleton rows={4} cols={9} />
               : filtered.length === 0
-              ? <TableEmpty colSpan={8} icon={FolderOpen}
+              ? <TableEmpty colSpan={9} icon={FolderOpen}
                   title={search || filterTab !== 'All' ? 'No projects match your filters' : 'No approved projects yet'}
                   description={search || filterTab !== 'All'
                     ? 'Try a different search or filter.'
                     : 'Projects appear here once the Head approves them in Planning.'} />
               : filtered.map(p => (
                 <tr key={p.id}>
+                  <td style={{ width: 64 }}>
+                    <Thumbnail src={p.referenceImage} size={48} category={p.category}
+                      alt={`Reference image for ${p.code} ${p.name}`} onOpen={() => setPreview(p)} />
+                  </td>
                   <td><RefCode code={p.code} /></td>
                   <td className="ad-bold ad-cell-title">{p.name}</td>
                   <td className="ad-num">{p.budget}</td>
@@ -411,6 +262,10 @@ function ProjectsPage() {
         </table>
         </div>
       </div>
+      {preview && (
+        <Lightbox images={[{ url: preview.referenceImage, caption: `${preview.code} · ${preview.name}` }]}
+          index={0} title="Project reference image" onClose={() => setPreview(null)} />
+      )}
     </div>
   )
 }
@@ -2836,25 +2691,50 @@ function EvalProgressBar({ status, bids }) {
 }
 
 // ── Bid evaluation detail page (admin) — /admin/bids/:id ───────────────────────
+
+// Every product photo on a bid: the legacy single image first, then the gallery.
+function bidImages(b) {
+  const out = []
+  if (b.supplier_product_image_url) out.push({ url: b.supplier_product_image_url, caption: 'Product image' })
+  ;(b.product_images || []).forEach((img, i) => out.push({ url: img.url, caption: img.caption || `Product image ${i + 1}` }))
+  return out
+}
+// Documents column: flagged > missing required > complete.
+function bidDocState(b) {
+  const docs = b.documents || []
+  const flagged = docs.filter(d => d.review_status === 'needs_revision').length
+  if (flagged) return { tone: 'warning', label: `${flagged} flagged` }
+  const missing = docs.filter(d => d.required && !d.url).length
+  if (missing) return { tone: 'danger', label: `${missing} missing` }
+  return { tone: 'success', label: 'Complete' }
+}
+
 function BidEvaluationPage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [project, setProject] = useState(null)
   const [bids, setBids] = useState([])
+  const [award, setAward] = useState(null)       // for the post-award stepper stages
   // Loaded independently — the project header and the bids table are
   // unrelated requests, so one being slow shouldn't hold the other back.
   const [loadingProject, setLoadingProject] = useState(true)
   const [loadingBids, setLoadingBids] = useState(true)
   const [busyId, setBusyId] = useState(null)
-  const [confirm, setConfirm] = useState(null)   // { bid }
+  const [pending, setPending] = useState(null)   // { type, bid, docs? } awaiting confirmation
   const [toast, setToast] = useState(null)
   const [viewBid, setViewBid] = useState(null)   // bid shown in the detail modal
   const [showTimeline, setShowTimeline] = useState(false)
+  const [gallery, setGallery] = useState(null)   // { images, index, title, reference }
 
   const loadProject = () => {
     setLoadingProject(true)
     apiGetProject(id)
-      .then(setProject)
+      .then(p => {
+        setProject(p)
+        if (p.status === 'awarded') {
+          apiListAwards().then(list => setAward(list.find(a => a.project === p.id) || null)).catch(() => {})
+        }
+      })
       .catch(() => setToast({ type: 'error', message: 'Could not load this procurement.' }))
       .finally(() => setLoadingProject(false))
   }
@@ -2878,16 +2758,21 @@ function BidEvaluationPage() {
   }, [bids])
 
   const awarded = project?.status === 'awarded'
+  const abc = Number(project?.budget || 0)
+  // "Lowest bid" is a label on the data, among bids still in the running.
+  const inRunning = bids.filter(b => b.status !== 'disqualified')
+  const lowest = inRunning.length > 1 ? Math.min(...inRunning.map(b => Number(b.amount))) : null
 
   // Qualify/disqualify only change the bid's own status — refetch just the
   // bids table, not the project header too. The evaluation decision is anchored
   // afterwards (not awaited: the decision is already saved, and the on-chain
   // write is an optional witness that can be retried from the bid's trail).
-  const act = async (bid, fn, errMsg, stageLabel) => {
+  const act = async (bid, fn, errMsg, stageLabel, okMsg) => {
     setBusyId(bid.id)
     try {
       const updated = await fn(bid.id)
       loadBidsList()
+      setToast({ type: 'success', message: okMsg })
       if (updated?.anchor) {
         runAnchor(updated.anchor, { label: `${project?.code || ''} · ${stageLabel}` })
       }
@@ -2903,8 +2788,7 @@ function BidEvaluationPage() {
       loadBidsList()
       // Close the modal — its checkbox/note UI reflects local clicks, not the
       // server's confirmed state, so leaving it open after a successful submit
-      // looks like nothing happened. Closing (then reopening, if needed) shows
-      // the real "Flagged for revision" status fresh from the server.
+      // looks like nothing happened.
       setViewBid(null)
       setToast({ type: 'success', message: 'Revision request sent to the supplier.' })
     } catch (e) {
@@ -2914,9 +2798,8 @@ function BidEvaluationPage() {
     }
   }
 
-  const confirmWinner = async () => {
-    const bid = confirm.bid
-    setBusyId(bid.id); setConfirm(null)
+  const confirmWinner = async (bid) => {
+    setBusyId(bid.id)
     try {
       const result = await apiSelectWinner(bid.id)
       await load()
@@ -2934,12 +2817,145 @@ function BidEvaluationPage() {
     }
   }
 
+  // What each action will do, shown in the confirmation dialog before it runs.
+  const CONFIRM = {
+    qualify: (b) => ({
+      title: `Qualify ${b.supplier_name}?`, tone: 'primary', confirmLabel: 'Qualify bid',
+      points: [`The ${peso(b.amount)} bid is marked Qualified for ${project.code}.`, 'The supplier is notified of the result.',
+        'A qualified bid can then be selected as the winner.'],
+      run: () => act(b, apiQualifyBid, 'Could not qualify.', 'Bid qualified', `${b.supplier_name}'s bid qualified.`),
+    }),
+    disqualify: (b) => ({
+      title: `Disqualify ${b.supplier_name}?`, tone: 'danger', confirmLabel: 'Disqualify bid',
+      points: [`The ${peso(b.amount)} bid is marked Disqualified for ${project.code}.`, 'The supplier is notified of the result.',
+        'A disqualified bid cannot be selected as the winner.'],
+      run: () => act(b, apiDisqualifyBid, 'Could not disqualify.', 'Bid disqualified', `${b.supplier_name}'s bid disqualified.`),
+    }),
+    revision: (b, docs) => ({
+      title: 'Request a document revision?', tone: 'warning', confirmLabel: 'Send request', onChain: false,
+      points: [`${Object.keys(docs).length} document(s) on ${b.supplier_name}'s bid are flagged and the supplier is asked to re-upload them.`,
+        'The bid stays in this bidding — it is not disqualified.', 'It cannot be selected as the winner until the files are fixed.'],
+      run: () => requestRevision(b, docs),
+    }),
+    winner: (b) => ({
+      title: 'Select the winning bidder?', tone: 'primary', confirmLabel: 'Award contract',
+      points: [`${project.name} (${project.code}) is awarded to ${b.supplier_name} for ${peso(b.amount)}.`,
+        'The procurement becomes Awarded and every bidder is notified.',
+        'You then issue the BAC Resolution, Notice of Award and Notice to Proceed from Awards.'],
+      run: () => confirmWinner(b),
+    }),
+  }
+  const dialog = pending && project ? CONFIRM[pending.type](pending.bid, pending.docs) : null
+  const ask = (type, bid, docs) => setPending({ type, bid, docs })
+
+  const reference = project?.reference_image_url
+    ? { url: project.reference_image_url, caption: `${project.code} · ${project.name}` } : null
+  const openGallery = (b) => {
+    const images = bidImages(b)
+    if (images.length) setGallery({ images, index: 0, title: `${b.supplier_name} · product images`, reference })
+  }
+
+  const columns = project ? [
+    {
+      key: 'product', header: <span className="sr-only">Product image</span>,
+      render: b => {
+        const imgs = bidImages(b)
+        return (
+          <Thumbnail src={imgs[0]?.url} size={48} category={project.category}
+            alt={`Product image from ${b.supplier_name}`} badge={imgs.length > 1 ? `+${imgs.length - 1}` : null}
+            onOpen={() => openGallery(b)} />
+        )
+      },
+    },
+    {
+      key: 'supplier', header: 'Supplier', mobileLabel: false, sortValue: b => b.supplier_name,
+      render: b => (
+        <div className="rf-cell-title" style={{ minWidth: 180 }}>
+          <div>
+            <strong>{b.supplier_name}</strong>
+            <small>
+              {Number(b.amount) === lowest && (
+                <span className="ui-badge ui-badge--success" title="Lowest amount among bids that are not disqualified">Lowest bid</span>
+              )}
+              {[b.brand_name, b.model_number].filter(Boolean).join(' ') || `Submitted ${fmtDate(b.submitted_at)}`}
+            </small>
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'amount', header: 'Bid amount', align: 'right', sortValue: b => Number(b.amount),
+      render: b => <span className="rf-amount">{peso(b.amount)}</span>,
+    },
+    {
+      key: 'abc', header: 'vs ABC', align: 'right', sortValue: b => Number(b.amount) - abc,
+      render: b => {
+        const diff = Number(b.amount) - abc
+        const pct = abc ? (diff / abc) * 100 : 0
+        return diff > 0 ? (
+          <span className="rf-diff is-over" title="Bids above the Approved Budget for the Contract are flagged">
+            <AlertTriangle size={11} aria-hidden="true" /> Above ABC +{peso(diff)} ({pct.toFixed(1)}%)
+          </span>
+        ) : (
+          <span className="rf-diff is-under">−{peso(-diff)} ({Math.abs(pct).toFixed(1)}%)</span>
+        )
+      },
+    },
+    {
+      key: 'docs', header: 'Documents', sortValue: b => bidDocState(b).label,
+      render: b => { const d = bidDocState(b); return <StatusBadge tone={d.tone} label={d.label} /> },
+    },
+    { key: 'delivery', header: 'Delivery', hideBelow: 'md', render: b => b.delivery_timeline || <span className="rf-muted">—</span> },
+    {
+      key: 'status', header: 'Status', sortValue: b => b.status,
+      render: b => b.status === 'winner'
+        ? <StatusBadge tone="success" icon={Award} label="Winning Bidder" />
+        : <StatusBadge domain="bid" status={b.status} />,
+    },
+    {
+      key: 'actions', header: <span className="sr-only">Actions</span>, align: 'right',
+      render: b => {
+        const busy = busyId === b.id
+        const flagged = (b.documents || []).some(d => d.review_status === 'needs_revision')
+        return (
+          <div className="rf-row-actions" onClick={e => e.stopPropagation()}>
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => setViewBid(b)}>
+              <Eye size={13} /> Review
+            </button>
+            {!awarded && b.status !== 'winner' && (
+              <>
+                {b.status !== 'qualified' && (
+                  <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy} onClick={() => ask('qualify', b)}>
+                    <Check size={13} /> Qualify
+                  </button>
+                )}
+                {b.status !== 'disqualified' && (
+                  <button type="button" className="ui-btn ui-btn--danger-outline ui-btn--sm" disabled={busy} onClick={() => ask('disqualify', b)}>
+                    <XCircle size={13} /> Disqualify
+                  </button>
+                )}
+                {b.status === 'qualified' && !flagged && (
+                  <button type="button" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy} onClick={() => ask('winner', b)}>
+                    <Award size={13} /> Select winner
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        )
+      },
+    },
+  ] : []
+
+  const closedLabel = project && project.status !== 'published' && project.deadline
+    ? `Bidding closed ${fmtDate(project.deadline)}` : null
+
   return (
     <div className="ad-content">
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
 
-      <button className="ad-back-link" onClick={() => navigate('/admin/projects')}>
-        <ArrowLeft size={14} /> Back to projects
+      <button className="ad-back-link" onClick={() => navigate('/admin/bids')}>
+        <ArrowLeft size={14} /> Back to bid evaluation
       </button>
 
       {loadingProject && !project ? (
@@ -2947,9 +2963,9 @@ function BidEvaluationPage() {
           <Skeleton width="40%" height={20} />
           <Skeleton width="60%" style={{ marginTop: 10 }} />
           <div style={{ display: 'flex', gap: 24, marginTop: 24 }}>
-            {Array.from({ length: 7 }).map((_, i) => (
+            {Array.from({ length: 8 }).map((_, i) => (
               <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, flex: 1 }}>
-                <Skeleton width={30} height={30} radius={15} />
+                <Skeleton width={28} height={28} radius={14} />
                 <Skeleton width="80%" height={9} />
               </div>
             ))}
@@ -2963,18 +2979,22 @@ function BidEvaluationPage() {
         </div>
       ) : (
         <>
-          <div className="ad-card" style={{ padding: '20px 24px' }}>
-            <div className="ad-eval-head-row">
+          <section className="rf-card" aria-labelledby="eval-title">
+            <div className="rf-card-body rf-eval-head">
+              <Thumbnail src={project.reference_image_url} size={72} category={project.category}
+                alt={`Reference image for ${project.code} ${project.name}`}
+                onOpen={() => setGallery({ images: [reference], index: 0, title: 'Project reference image' })} />
               <div style={{ minWidth: 0 }}>
                 <div className="ad-eval-title-row">
-                  <h2 className="ad-eval-title">{project.name}</h2>
+                  <h2 className="ad-eval-title" id="eval-title">{project.name}</h2>
                   <StatusBadge domain="project" status={project.status} />
                 </div>
-                <div className="ad-ref-line" style={{ marginTop: 8 }}>
+                <div className="ad-ref-line" style={{ marginTop: 8, flexWrap: 'wrap' }}>
                   <RefCode code={project.code} size="lg" />
-                  <span className="ad-muted ad-small">
-                    {project.category || '—'} · ABC <strong className="ad-eval-abc">{peso(project.budget)}</strong>
-                  </span>
+                  <span className="ad-muted ad-small">{project.category || '—'}</span>
+                  <span className="ad-muted ad-small">ABC <strong className="ad-eval-abc">{peso(project.budget)}</strong></span>
+                  {project.status === 'published' && project.deadline && <Countdown deadline={project.deadline} />}
+                  {closedLabel && <StatusBadge tone="neutral" icon={Clock} label={closedLabel} />}
                 </div>
               </div>
               <div className="ad-eval-head-actions">
@@ -2984,73 +3004,44 @@ function BidEvaluationPage() {
                 </button>
               </div>
             </div>
-            {project.reference_image_url && (
-              <div className="ad-eval-refimg">
-                <div className="ad-refimg-section-label"><ImageIcon size={14} /> Project Reference Image</div>
-                <a href={project.reference_image_url} target="_blank" rel="noreferrer" title="Open full size">
-                  <img src={project.reference_image_url} alt="Project reference" className="ad-refimg-thumb" />
-                </a>
-              </div>
-            )}
-            <EvalProgressBar status={project.status} bids={bids} />
-          </div>
+            <div style={{ padding: '0 20px 16px' }}>
+              <ProcurementStepper project={project} award={award} />
+            </div>
+          </section>
 
-          <div className="ad-card">
-            <div className="ad-card-header">
+          <section aria-labelledby="bids-h" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div className="rf-greeting">
               <div>
-                <h2>Submitted Bids</h2>
-                <p className="ad-muted ad-small">Suppliers who submitted a bid for this procurement</p>
+                <h3 id="bids-h" style={{ margin: 0, fontSize: 'var(--fs-section-title)', color: 'var(--text-strong)' }}>Bid comparison</h3>
+                <p>
+                  {bids.length} bid{bids.length === 1 ? '' : 's'} compared with the ABC of {peso(project.budget)}.
+                  “Lowest bid” labels the data only — it is not an automatic ranking.
+                </p>
               </div>
-              {awarded
-                ? <StatusBadge domain="project" status="awarded" />
-                : !loadingBids && bids.length > 0 && <StatusBadge tone="neutral" dot={false} label={`${bids.length} bid${bids.length !== 1 ? 's' : ''}`} />}
             </div>
-            <div className="ad-x-scroll">
-            <table className="ad-table">
-              <thead>
-                <tr><th>Product</th><th>Supplier</th><th className="ad-num">Bid Amount</th><th>Submitted</th><th>Qualification Status</th><th className="ad-actions-col">Actions</th></tr>
-              </thead>
-              <tbody>
-                {loadingBids
-                  ? <TableSkeleton rows={3} cols={6} />
-                  : bids.length === 0
-                  ? <TableEmpty colSpan={6} icon={FileText}
-                      title="No bids submitted yet"
-                      description={project.status === 'published'
-                        ? 'Eligible suppliers can bid until the deadline. New bids will appear here automatically.'
-                        : 'Bids open once this project is published.'} />
-                  : bids.map(b => (
-                    <tr key={b.id} className="ad-bid-row" onClick={() => setViewBid(b)}>
-                      <td><BidProductCell bid={b} /></td>
-                      <td className="ad-bold ad-bid-supplier-cell">{b.supplier_name}</td>
-                      <td className="ad-num">{peso(b.amount)}</td>
-                      <td className="ad-muted ad-nowrap">{fmtDate(b.submitted_at)}</td>
-                      <td>
-                        <div className="ad-badge-stack">
-                          <StatusBadge domain="bid" status={b.status} />
-                          {(b.documents || []).some(d => d.review_status === 'needs_revision') && (
-                            <StatusBadge tone="warning" icon={AlertTriangle} label="Docs Flagged" />
-                          )}
-                        </div>
-                      </td>
-                      <td className="ad-actions-col" onClick={e => e.stopPropagation()}>
-                        {b.status === 'winner' ? (
-                          <StatusBadge tone="success" icon={Award} label="Winning Bidder" />
-                        ) : awarded ? (
-                          <span className="ad-muted ad-small">—</span>
-                        ) : (
-                          <button className="ad-btn-review" onClick={() => setViewBid(b)}>
-                            <Eye size={13} /> Review
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                }
-              </tbody>
-            </table>
-            </div>
-          </div>
+            <DataTable
+              caption={`Bids for ${project.code}`}
+              columns={columns}
+              rows={bids}
+              loading={loadingBids}
+              initialSort={{ key: 'amount', dir: 'asc' }}
+              search={b => `${b.supplier_name} ${b.brand_name || ''} ${b.model_number || ''}`}
+              searchPlaceholder="Search suppliers"
+              filters={[
+                { key: 'all', label: 'All', test: () => true },
+                { key: 'under_review', label: 'Under review', test: b => b.status === 'under_review' },
+                { key: 'qualified', label: 'Qualified', test: b => b.status === 'qualified' || b.status === 'winner' },
+                { key: 'disqualified', label: 'Disqualified', test: b => b.status === 'disqualified' },
+              ]}
+              onRowClick={b => setViewBid(b)}
+              empty={{
+                icon: FileText, title: 'No bids submitted yet',
+                description: project.status === 'published'
+                  ? 'Eligible suppliers can bid until the deadline. New bids appear here.'
+                  : 'Bids open once this procurement is published.',
+              }}
+            />
+          </section>
 
           {/* The whole procurement's on-chain trail: submission, Head decision,
               publication, every bid, and the award. Anything not yet anchored
@@ -3067,15 +3058,30 @@ function BidEvaluationPage() {
           awarded={awarded}
           busyId={busyId}
           projectName={project.name}
-          onQualify={(b) => act(b, apiQualifyBid, 'Could not qualify.', 'Bid qualified')}
-          onDisqualify={(b) => act(b, apiDisqualifyBid, 'Could not disqualify.', 'Bid disqualified')}
-          onMarkWinner={(b) => setConfirm({ bid: b })}
-          onRequestRevision={requestRevision}
-          confirm={confirm}
-          onConfirmWinner={confirmWinner}
-          onCancelConfirm={() => setConfirm(null)}
-          onClose={() => { setViewBid(null); setConfirm(null) }}
+          onQualify={(b) => { setViewBid(null); ask('qualify', b) }}
+          onDisqualify={(b) => { setViewBid(null); ask('disqualify', b) }}
+          onMarkWinner={(b) => { setViewBid(null); ask('winner', b) }}
+          onRequestRevision={(b, docs) => ask('revision', b, docs)}
+          confirm={null}
+          onConfirmWinner={() => {}}
+          onCancelConfirm={() => {}}
+          onClose={() => setViewBid(null)}
         />
+      )}
+
+      {dialog && (
+        <ActionConfirm
+          title={dialog.title} points={dialog.points} tone={dialog.tone}
+          confirmLabel={dialog.confirmLabel} onChain={dialog.onChain !== false}
+          busy={busyId === pending.bid.id}
+          onCancel={() => setPending(null)}
+          onConfirm={async () => { const run = dialog.run; setPending(null); await run() }}
+        />
+      )}
+
+      {gallery && (
+        <Lightbox images={gallery.images} index={gallery.index} title={gallery.title} reference={gallery.reference}
+          onIndex={(i) => setGallery(g => ({ ...g, index: i }))} onClose={() => setGallery(null)} />
       )}
 
       {showTimeline && project && (
@@ -3674,7 +3680,7 @@ export default function AdminDashboard() {
         />
         <div className="ad-body">
           <Routes>
-            <Route index element={<DashboardHome />} />
+            <Route index element={<AdminHome />} />
             <Route path="projects"  element={<ProjectsPage />} />
             <Route path="projects/history" element={<ProjectHistoryPage />} />
             <Route path="planning"  element={<PlanningPage />} />
@@ -3683,7 +3689,7 @@ export default function AdminDashboard() {
             <Route path="bids/:id"  element={<BidEvaluationPage />} />
             <Route path="awards"    element={<AwardsPage />} />
             <Route path="reports"   element={<ReportsPage />} />
-            <Route path="*"         element={<DashboardHome />} />
+            <Route path="*"         element={<AdminHome />} />
           </Routes>
         </div>
       </div>
@@ -3691,6 +3697,7 @@ export default function AdminDashboard() {
           publish, qualify/disqualify, award). At the layout root so it survives
           route changes while a MetaMask prompt is open. */}
       <AnchorActivity />
+      <Toaster />
     </div>
   )
 }

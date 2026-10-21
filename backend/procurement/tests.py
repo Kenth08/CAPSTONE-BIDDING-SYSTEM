@@ -2156,3 +2156,112 @@ class CategoryDocumentExpiryTests(_TempMediaMixin, APITestCase):
         supplier.refresh_from_db()
         self.assertEqual(supplier.qualification_status, Supplier.Qualification.VERIFIED)
         self.assertEqual(str(supplier.category_documents.get(key="fda_lto").expiry_date), IN_A_YEAR)
+
+
+class DashboardSummaryTests(APITestCase):
+    """Read-only dashboard summaries: correct counts, role-scoped, and the
+    public one never leaks private bid or supplier data."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.head = make_head()
+        self.supplier = make_supplier()
+        rival = make_supplier()
+        today = timezone.localdate()
+        self.open = make_project()
+        Project.objects.filter(pk=self.open.pk).update(deadline=today + timedelta(days=2), budget=100000)
+        make_project(status=Project.Status.PENDING_HEAD)
+        make_project(status=Project.Status.NEEDS_REVISION)
+        self.closed = make_project(status=Project.Status.CLOSED)
+        Project.objects.filter(pk=self.closed.pk).update(deadline=today - timedelta(days=1))
+        Bid.objects.create(project=self.closed, supplier=self.supplier, amount=40000)
+        self.losing = Bid.objects.create(project=self.closed, supplier=rival, amount=48765)
+        awarded = make_project(status=Project.Status.AWARDED)
+        win = Bid.objects.create(project=awarded, supplier=self.supplier, amount=45000, status=Bid.Status.WINNER)
+        Bid.objects.create(project=awarded, supplier=rival, amount=47321, status=Bid.Status.QUALIFIED)
+        self.award = Award.objects.create(project=awarded, supplier=self.supplier, bid=win, amount=45000)
+        record_anchor(BlockchainAnchor.EntityType.PROJECT, self.open.code, "SUBMITTED", {"a": 1},
+                      entity_id=self.open.id)
+
+    def get(self, url, user=None):
+        if user:
+            self.client.force_authenticate(user=user)
+        return self.client.get(url)
+
+    def test_admin_summary_counts(self):
+        res = self.get("/api/dashboard/admin-summary/", self.admin)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        k = res.data["kpis"]
+        self.assertEqual(k["open_biddings"], 1)
+        self.assertEqual(k["closing_this_week"], 1)
+        self.assertEqual(k["bids_awaiting_evaluation"], 2)
+        self.assertEqual(k["bids_awaiting_on_closed"], 2)
+        self.assertEqual(k["anchors_pending"], 1)
+        self.assertEqual(float(k["open_abc"]), 100000)
+        pipeline = {row["key"]: row["count"] for row in res.data["pipeline"]}
+        self.assertEqual(pipeline["pending_head"], 1)
+        self.assertEqual(pipeline["needs_revision"], 1)
+        self.assertEqual(pipeline["evaluation"], 1)
+        self.assertEqual(pipeline["awarded"], 1)
+        self.assertEqual(float(res.data["savings"]["total_saved"]), 5000)
+        kinds = [i["kind"] for i in res.data["attention"]]
+        self.assertEqual(kinds[0], "evaluate")   # most urgent first
+        self.assertIn("award_docs", kinds)
+        self.assertEqual(res.data["chain"]["pending_items"][0]["stage"], "SUBMITTED")
+
+    def test_admin_summary_is_read_only(self):
+        self.client.force_authenticate(user=self.admin)
+        before = (Project.objects.count(), Bid.objects.count(), BlockchainAnchor.objects.count())
+        self.client.get("/api/dashboard/admin-summary/")
+        self.assertEqual(self.client.post("/api/dashboard/admin-summary/").status_code,
+                         status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(before, (Project.objects.count(), Bid.objects.count(), BlockchainAnchor.objects.count()))
+
+    def test_head_summary_counts(self):
+        reviewed = make_project(status=Project.Status.APPROVED)
+        Project.objects.filter(pk=reviewed.pk).update(reviewed_at=timezone.now())
+        res = self.get("/api/dashboard/head-summary/", self.head)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["kpis"]["waiting"], 1)
+        self.assertEqual(res.data["kpis"]["returned_for_revision"], 1)
+        self.assertEqual(res.data["kpis"]["approved_this_month"], 1)
+        self.assertEqual(len(res.data["queue"]), 1)
+        self.assertEqual(res.data["history"][0]["decision"], "approved")
+
+    def test_each_role_only_reads_its_own_summary(self):
+        cases = {
+            "/api/dashboard/admin-summary/": self.admin,
+            "/api/dashboard/head-summary/": self.head,
+        }
+        for url, owner in cases.items():
+            for user in (self.admin, self.head, self.supplier.user):
+                self.client.force_authenticate(user=user)
+                expected = status.HTTP_200_OK if user == owner else status.HTTP_403_FORBIDDEN
+                self.assertEqual(self.client.get(url).status_code, expected, (url, user.username))
+            self.client.force_authenticate(user=None)
+            self.assertEqual(self.client.get(url).status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_public_summary_counts_without_login(self):
+        res = self.client.get("/api/public/summary/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["open_biddings"], 1)
+        self.assertEqual(res.data["awarded_contracts"], 1)
+        # published + closed + awarded = 100000 + 50000 + 50000
+        self.assertEqual(float(res.data["total_published_abc"]), 200000)
+        self.assertEqual(res.data["awards"][0]["winner"], self.supplier.company)
+        self.assertFalse(res.data["awards"][0]["anchored"])
+
+    def test_public_summary_exposes_no_private_fields(self):
+        res = self.client.get("/api/public/summary/")
+        body = json.dumps(res.data, default=str)
+        # Losing bid amounts never appear; the winning amount is the published award.
+        self.assertNotIn("48765", body)
+        self.assertNotIn("47321", body)
+        for private in ("contact", "email", "Jane Dela Cruz", "tin", "phone", "documents",
+                        "payload", "data_hash", "reference_image", "supplier_id"):
+            self.assertNotIn(private, body)
+        self.assertEqual(set(res.data["awards"][0]),
+                         {"code", "name", "category", "winner", "amount", "awarded_at", "anchored", "explorer_url"})
+        self.assertEqual(set(res.data["open"][0]),
+                         {"code", "name", "category", "budget", "deadline", "published_at", "bids"})
