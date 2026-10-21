@@ -940,6 +940,7 @@ class ServerSideSigningTests(APITestCase):
             w3.eth.send_raw_transaction.return_value = b"\xab" * 32
 
         ledger = w3.eth.contract.return_value
+        ledger.functions.recordEvent.return_value.estimate_gas.return_value = 1_168_782
         ledger.functions.recordEvent.return_value.build_transaction.side_effect = (
             lambda params: captured.update(params) or dict(params)
         )
@@ -1011,6 +1012,25 @@ class ServerSideSigningTests(APITestCase):
         self._submit(Web3)
         self.assertGreaterEqual(captured["maxFeePerGas"], captured["maxPriorityFeePerGas"])
         self.assertEqual(captured["maxFeePerGas"], 2 * 50_000_000 + 1_500_000_000)
+
+    def test_gas_limit_comes_from_the_estimate_with_headroom(self):
+        # Regression: a fixed 400k limit was far below the ~1.17M gas recordEvent
+        # really needs, so every server-signed anchor ran out of gas and reverted
+        # on-chain while the app showed it as anchored.
+        Web3, _, captured = self._fake_web3()
+        self._submit(Web3)
+        self.assertEqual(captured["gas"], int(1_168_782 * 1.25))
+
+    def test_a_call_that_would_revert_is_never_sent(self):
+        # estimate_gas raises when the contract would reject the call. Sending it
+        # anyway would burn gas and mark the record anchored when it isn't.
+        Web3, w3, _ = self._fake_web3()
+        ledger = w3.eth.contract.return_value
+        ledger.functions.recordEvent.return_value.estimate_gas.side_effect = RuntimeError("execution reverted")
+        result, anchor = self._submit(Web3)
+        self.assertIsNone(result)
+        self.assertFalse(anchor.anchored)
+        w3.eth.send_raw_transaction.assert_not_called()
 
     def test_gas_and_chain_id_target_sepolia(self):
         Web3, _, captured = self._fake_web3()
