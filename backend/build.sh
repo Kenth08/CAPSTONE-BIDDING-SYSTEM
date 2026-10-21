@@ -10,3 +10,9 @@ python manage.py collectstatic --no-input
 
 # Apply database migrations.
 python manage.py migrate
+
+# Confirm server-signed blockchain anchors against Sepolia: saves the block
+# number of each one that succeeded and clears any that failed on-chain, so a
+# record can never keep showing "On-chain" when it isn't. Best-effort — a
+# network or chain problem must never fail a deploy.
+python manage.py confirm_anchors --apply || echo "confirm_anchors skipped"

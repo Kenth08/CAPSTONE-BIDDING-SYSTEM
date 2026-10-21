@@ -11,7 +11,9 @@
 // first is open.
 import { useSyncExternalStore } from 'react'
 
-import { AnchorError, anchorTransition, attachAnchorTx, hasWallet, isUserRejection } from './anchor'
+import {
+  AnchorError, anchorTransition, attachAnchorTx, hasWallet, isUserRejection, serverSubmitAnchor,
+} from './anchor'
 import { isLedgerConfigured, txUrl } from './contract'
 
 const listeners = new Set()
@@ -32,6 +34,8 @@ const MESSAGES = {
   signing: 'Waiting for MetaMask — confirm the transaction to anchor this record.',
   mining: 'Anchoring on Sepolia… waiting for the transaction to be mined.',
   saving: 'Transaction confirmed. Saving the reference…',
+  server: 'Anchoring on Sepolia… the server is signing this record.',
+  serverFailed: 'The server could not anchor this record right now. It is still saved — try again in a moment.',
   done: 'Recorded on the blockchain.',
   rejected: 'Not anchored — the MetaMask signature was declined. You can retry any time.',
   unavailable: 'Not anchored — no wallet or contract configured. The record is saved and can be anchored later.',
@@ -77,6 +81,27 @@ export async function runAnchor(anchor, { label = '' } = {}) {
       explorerUrl: txUrl(anchor.tx_hash),
     })
     return true
+  }
+
+  // Server signing is on: the server signs with its own wallet, so nobody needs
+  // MetaMask — not even to retry. No fallback to MetaMask on failure: a popup
+  // nobody expects (from a wallet that may hold no test ETH) is worse than a
+  // clear "try again", and the record is saved either way.
+  if (anchor.server_signing && anchor.attach_url) {
+    set({ state: 'mining', anchor, label, message: MESSAGES.server })
+    try {
+      const saved = await serverSubmitAnchor(anchor)
+      set({
+        state: 'done', anchor: saved || anchor, label,
+        txHash: saved?.tx_hash, blockNumber: saved?.block_number,
+        message: MESSAGES.done,
+        explorerUrl: txUrl(saved?.tx_hash),
+      })
+      return true
+    } catch (err) {
+      set({ state: 'error', anchor, label, message: err?.message || MESSAGES.serverFailed })
+      return false
+    }
   }
 
   if (!isLedgerConfigured() || !hasWallet()) {

@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import os
+from datetime import timedelta
 
 from django.utils import timezone
 
@@ -473,6 +474,9 @@ def anchor_summary(anchor, *, include_payload=False):
         "explorer_url": (ETHERSCAN_TX_URL + anchor.tx_hash) if anchor.tx_hash else "",
         "created_at": anchor.created_at,
         "attach_url": attach_url_for(anchor),
+        # Tells the browser to ask the server to sign a retry ("Anchor now")
+        # instead of opening MetaMask.
+        "server_signing": SERVER_SIGNING_ENABLED,
     }
     if include_payload:
         data["payload"] = anchor.payload
@@ -603,8 +607,10 @@ def submit_anchor_server_side(anchor):
     get the worker killed and turn a successful approval into a 502. Broadcasting
     is enough: the transaction is signed, accepted by the network and final in
     the next block or two, and its hash is what proves the anchor. The trade-off
-    is that `block_number` stays NULL (nothing tells us the block without the
-    receipt); Etherscan shows it via the tx hash, and verification never uses it.
+    is that `block_number` stays NULL until confirm_anchor() reads the receipt
+    (the `confirm_anchors` command runs on every deploy). Until then the record
+    has been SENT but not yet CONFIRMED — and a transaction that later fails
+    on-chain is cleared there, so it can never keep showing as anchored.
 
     Returns the updated anchor, or None if nothing was submitted."""
     if not (SERVER_SIGNING_ENABLED and BLOCKCHAIN_PRIVATE_KEY and LEDGER_CONTRACT_ADDRESS):
@@ -659,6 +665,108 @@ def submit_anchor_server_side(anchor):
     except Exception:  # pragma: no cover — never break the request
         logger.exception("Server-side anchoring failed for anchor %s", anchor.id)
         return None
+
+
+# ── Confirmation: did a sent transaction actually succeed? ───────────────────
+# Server-signed anchors are recorded as soon as the transaction is broadcast,
+# because waiting for a block would outlast gunicorn's worker timeout (see
+# submit_anchor_server_side). That leaves a gap: a transaction can be sent and
+# still fail on-chain (out of gas, contract rejects it) or be dropped by the
+# network. confirm_anchor() closes that gap by reading the receipt afterwards.
+
+CONFIRMED = "confirmed"   # mined and succeeded — block number saved
+REVERTED = "reverted"     # mined but failed — cleared so it can be retried
+DROPPED = "dropped"       # the network never mined it — cleared likewise
+PENDING = "pending"       # not mined yet — check again later
+UNKNOWN = "unknown"       # the node couldn't be asked — check again later
+
+# A transaction the node has never heard of is only treated as dropped after
+# this long. A freshly broadcast one can take a moment to show up everywhere.
+DROPPED_AFTER = timedelta(hours=1)
+
+
+def web3_client():
+    """A read-only Sepolia connection, or None when web3.py isn't installed."""
+    Web3 = _load_web3()
+    if Web3 is None:
+        return None
+    return Web3(Web3.HTTPProvider(SEPOLIA_RPC_URL))
+
+
+def _not_found(exc):
+    # web3.exceptions.TransactionNotFound, matched by name so web3 stays an
+    # optional import and tests don't need the real package.
+    return exc.__class__.__name__ == "TransactionNotFound"
+
+
+def confirm_anchor(anchor, *, w3, apply=True):
+    """Check one sent anchor against the chain and record what really happened.
+
+    Only meaningful for an anchor that has a tx_hash but no block_number yet.
+    Returns one of CONFIRMED / REVERTED / DROPPED / PENDING / UNKNOWN. With
+    apply=False nothing is saved, so the caller can preview the changes.
+
+    A failed or dropped transaction is CLEARED rather than deleted: the anchor
+    row (and the business record) stays, it simply reads as "not yet anchored"
+    again and can be retried. The failed hash is kept in the audit log, so the
+    history of what was attempted is never lost. Never raises."""
+    tx_hash = anchor.tx_hash
+    if not tx_hash or anchor.block_number is not None:
+        return CONFIRMED if tx_hash else PENDING
+    try:
+        try:
+            receipt = w3.eth.get_transaction_receipt(tx_hash)
+        except Exception as exc:  # noqa: BLE001 — see _not_found
+            if not _not_found(exc):
+                raise
+            receipt = None
+
+        if receipt is not None:
+            if int(receipt["status"]) == 1:
+                if apply:
+                    anchor.block_number = int(receipt["blockNumber"])
+                    anchor.save(update_fields=["block_number"])
+                return CONFIRMED
+            outcome = REVERTED
+        else:
+            try:
+                w3.eth.get_transaction(tx_hash)
+                return PENDING            # known to the network, not mined yet
+            except Exception as exc:  # noqa: BLE001
+                if not _not_found(exc):
+                    raise
+            sent_at = anchor.anchored_at or anchor.created_at
+            if sent_at and timezone.now() - sent_at < DROPPED_AFTER:
+                return PENDING
+            outcome = DROPPED
+
+        if apply:
+            _clear_failed_transaction(anchor, outcome)
+        return outcome
+    except Exception:  # noqa: BLE001 — a confirmation pass must never break anything
+        logger.warning("Could not confirm anchor %s (tx %s)", anchor.id, tx_hash, exc_info=True)
+        return UNKNOWN
+
+
+def _clear_failed_transaction(anchor, outcome):
+    """Undo a transaction that never made it on-chain, and say so in the audit log."""
+    from accounts.audit import log_action  # noqa: PLC0415 — avoid an import cycle
+
+    failed_hash = anchor.tx_hash
+    anchor.tx_hash = ""
+    anchor.block_number = None
+    anchor.actor_address = ""
+    anchor.anchored_at = None
+    anchor.save(update_fields=["tx_hash", "block_number", "actor_address", "anchored_at"])
+    reason = "failed on-chain" if outcome == REVERTED else "was never mined"
+    log_action(
+        None, f"blockchain.{outcome}",
+        entity_type=anchor.entity_type, entity_id=anchor.entity_id,
+        description=(
+            f"{anchor.entity_ref} {anchor.stage}: transaction {failed_hash} {reason}; "
+            "cleared so the record can be anchored again."
+        ),
+    )
 
 
 def read_chain_anchors(entity_ref):

@@ -16,6 +16,7 @@ from rest_framework.views import APIView
 
 from accounts.audit import log_action
 
+from . import blockchain as chain
 from .blockchain import (
     ETHERSCAN_TX_URL,
     LEDGER_CONTRACT_ADDRESS,
@@ -272,6 +273,9 @@ def attach_anchor_transaction(request, *, entity_ref, entity_type, entity_id):
     if anchor.anchored:
         return Response(anchor_summary(anchor))
 
+    if str(request.data.get("server_submit", "")).lower() in {"1", "true"}:
+        return server_submit_anchor(request, anchor)
+
     try:
         attach_transaction(
             anchor,
@@ -288,6 +292,45 @@ def attach_anchor_transaction(request, *, entity_ref, entity_type, entity_id):
         description=f"Anchored {anchor.entity_ref} {anchor.stage} on-chain (tx {anchor.tx_hash}).",
     )
     return Response(anchor_summary(anchor))
+
+
+def server_submit_anchor(request, anchor):
+    """Have the server sign and send an un-anchored record ("Anchor now").
+
+    Reached through the same /anchor/ endpoints as a MetaMask attach, so the
+    same role checks and record scoping apply — nobody can trigger a server
+    transaction for a record they couldn't already anchor themselves.
+
+    The row is locked while the transaction is sent, so a double-click (or two
+    admins at once) can't pay for the same hash twice."""
+    if not chain.SERVER_SIGNING_ENABLED:
+        return Response(
+            {"detail": "Server-side signing is not enabled on this deployment."},
+            status=http_status.HTTP_409_CONFLICT)
+
+    with transaction.atomic():
+        locked = BlockchainAnchor.objects.select_for_update().get(pk=anchor.pk)
+        if locked.anchored:
+            return Response(anchor_summary(locked))
+        submitted = chain.submit_anchor_server_side(locked)
+
+    if submitted is None:
+        # The record itself is untouched and still retryable; the reason is in
+        # the server log (no funds, RPC down, the contract would reject it…).
+        return Response(
+            {"detail": "The server could not anchor this record right now. "
+                       "It is still saved — try again in a moment."},
+            status=http_status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    log_action(
+        request, "blockchain.anchored",
+        entity_type=submitted.entity_type, entity_id=submitted.entity_id,
+        description=(
+            f"Anchored {submitted.entity_ref} {submitted.stage} on-chain "
+            f"(server-signed, tx {submitted.tx_hash})."
+        ),
+    )
+    return Response(anchor_summary(submitted))
 
 
 class PublicAnchorTrailView(APIView):

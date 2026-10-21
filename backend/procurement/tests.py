@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
+from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.files.storage import FileSystemStorage, default_storage
 from django.test import override_settings
@@ -19,7 +20,8 @@ from PIL import Image
 from accounts.models import AuditLog
 
 from .blockchain import (
-    bid_parts, hash_file, hash_payload, record_anchor, submit_anchor_server_side, verify_anchor,
+    anchor_summary, bid_parts, confirm_anchor, hash_file, hash_payload, record_anchor,
+    submit_anchor_server_side, verify_anchor,
 )
 from .models import BID_DOCUMENT_KEYS, Award, Bid, BidProductImage, BlockchainAnchor, Project, Supplier
 
@@ -1037,6 +1039,206 @@ class ServerSideSigningTests(APITestCase):
         self._submit(Web3)
         self.assertEqual(captured["chainId"], 11155111)
         self.assertEqual(captured["from"], "0x" + "11" * 20)
+
+
+class NotFound(Exception):
+    """Stands in for web3.exceptions.TransactionNotFound (matched by name)."""
+
+
+NotFound.__name__ = "TransactionNotFound"
+
+
+class AnchorConfirmationTests(APITestCase):
+    """confirm_anchor / `confirm_anchors`: a record may only stay "On-chain" if
+    the chain agrees. Server-signed transactions are recorded when SENT, so this
+    is the step that catches one that later fails or is never mined."""
+
+    TX = "0x" + "ab" * 32
+
+    def _sent(self, minutes_ago=5):
+        return BlockchainAnchor.objects.create(
+            entity_type=BlockchainAnchor.EntityType.AWARD, entity_ref="P-2026-007",
+            entity_id="31", stage=BlockchainAnchor.Stage.NOA_ISSUED, data_hash="0x" + "cd" * 32,
+            tx_hash=self.TX, actor_address="0x" + "11" * 20,
+            anchored_at=timezone.now() - timedelta(minutes=minutes_ago),
+        )
+
+    def _w3(self, receipt=None, receipt_missing=False, tx_known=True):
+        w3 = MagicMock(name="w3")
+        if receipt_missing:
+            w3.eth.get_transaction_receipt.side_effect = NotFound()
+        else:
+            w3.eth.get_transaction_receipt.return_value = receipt
+        if not tx_known:
+            w3.eth.get_transaction.side_effect = NotFound()
+        return w3
+
+    def test_a_successful_transaction_gets_its_block_number(self):
+        anchor = self._sent()
+        outcome = confirm_anchor(anchor, w3=self._w3({"status": 1, "blockNumber": 11962500}))
+        anchor.refresh_from_db()
+        self.assertEqual(outcome, "confirmed")
+        self.assertEqual(anchor.block_number, 11962500)
+        self.assertEqual(anchor.tx_hash, self.TX)
+
+    def test_a_reverted_transaction_is_cleared_and_audit_logged(self):
+        # Regression: out-of-gas transactions reverted on-chain while the
+        # Awards page kept showing them as anchored.
+        anchor = self._sent()
+        outcome = confirm_anchor(anchor, w3=self._w3({"status": 0, "blockNumber": 11962193}))
+        anchor.refresh_from_db()
+        self.assertEqual(outcome, "reverted")
+        self.assertFalse(anchor.anchored)               # shows "Anchor now" again
+        self.assertIsNone(anchor.block_number)
+        self.assertEqual(anchor.actor_address, "")
+        # The failed attempt is not erased from history.
+        entry = AuditLog.objects.get(action="blockchain.reverted")
+        self.assertIn(self.TX, entry.description)
+
+    def test_a_transaction_still_in_the_mempool_is_left_alone(self):
+        anchor = self._sent()
+        outcome = confirm_anchor(anchor, w3=self._w3(receipt_missing=True, tx_known=True))
+        anchor.refresh_from_db()
+        self.assertEqual(outcome, "pending")
+        self.assertEqual(anchor.tx_hash, self.TX)
+
+    def test_an_unknown_transaction_is_only_dropped_after_the_grace_period(self):
+        w3 = self._w3(receipt_missing=True, tx_known=False)
+        self.assertEqual(confirm_anchor(self._sent(minutes_ago=5), w3=w3), "pending")
+
+        stale = self._sent(minutes_ago=120)
+        self.assertEqual(confirm_anchor(stale, w3=w3), "dropped")
+        stale.refresh_from_db()
+        self.assertFalse(stale.anchored)
+
+    def test_a_node_error_changes_nothing(self):
+        # An RPC outage is not evidence that the transaction failed.
+        anchor = self._sent()
+        w3 = MagicMock()
+        w3.eth.get_transaction_receipt.side_effect = ConnectionError("node down")
+        self.assertEqual(confirm_anchor(anchor, w3=w3), "unknown")
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.tx_hash, self.TX)
+
+    def test_preview_mode_saves_nothing(self):
+        anchor = self._sent()
+        outcome = confirm_anchor(anchor, w3=self._w3({"status": 0, "blockNumber": 1}), apply=False)
+        anchor.refresh_from_db()
+        self.assertEqual(outcome, "reverted")
+        self.assertEqual(anchor.tx_hash, self.TX)
+        self.assertFalse(AuditLog.objects.filter(action="blockchain.reverted").exists())
+
+    def test_the_command_only_changes_data_with_apply(self):
+        anchor = self._sent()
+        w3 = self._w3({"status": 0, "blockNumber": 1})
+        with patch("procurement.blockchain.web3_client", return_value=w3):
+            call_command("confirm_anchors", stdout=io.StringIO())
+            anchor.refresh_from_db()
+            self.assertEqual(anchor.tx_hash, self.TX)
+
+            out = io.StringIO()
+            call_command("confirm_anchors", "--apply", stdout=out)
+        anchor.refresh_from_db()
+        self.assertFalse(anchor.anchored)
+        self.assertIn("1 reverted", out.getvalue())
+
+    def test_the_command_skips_anchors_that_are_already_confirmed(self):
+        BlockchainAnchor.objects.create(
+            entity_type=BlockchainAnchor.EntityType.PROJECT, entity_ref="P-2026-001",
+            stage=BlockchainAnchor.Stage.HEAD_APPROVED, data_hash="0x" + "cd" * 32,
+            tx_hash=self.TX, block_number=100,
+        )
+        w3 = MagicMock()
+        with patch("procurement.blockchain.web3_client", return_value=w3):
+            call_command("confirm_anchors", "--apply", stdout=io.StringIO())
+        w3.eth.get_transaction_receipt.assert_not_called()
+
+    def test_the_command_never_raises(self):
+        # It runs inside the Render build; a failure here must not fail a deploy.
+        self._sent()
+        with patch("procurement.blockchain.web3_client", side_effect=RuntimeError("boom")):
+            call_command("confirm_anchors", "--apply", stdout=io.StringIO(), stderr=io.StringIO())
+
+
+class ServerSubmitRetryTests(APITestCase):
+    """"Anchor now" with server signing on: the server signs the retry, so no
+    one needs MetaMask. It reuses the record's own /anchor/ endpoint, so the
+    same role checks apply as for a MetaMask attach."""
+
+    TX = "0x" + "ef" * 32
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.head = make_head()
+        self.project = make_project(status=Project.Status.PENDING_HEAD)
+        self.client.force_authenticate(user=self.head)
+        res = self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        self.anchor_id = res.data["anchor"]["id"]
+        self.url = f"/api/projects/{self.project.pk}/anchor/"
+        self.body = {"anchor_id": self.anchor_id, "server_submit": True}
+
+    def _fake_submit(self, anchor):
+        anchor.tx_hash = self.TX
+        anchor.actor_address = "0x" + "11" * 20
+        anchor.anchored_at = timezone.now()
+        anchor.save()
+        return anchor
+
+    def _signing(self, enabled=True, **submit):
+        return (
+            patch("procurement.blockchain.SERVER_SIGNING_ENABLED", enabled),
+            patch("procurement.blockchain.submit_anchor_server_side", **submit),
+        )
+
+    def test_server_signs_the_retry(self):
+        on, submit = self._signing(side_effect=self._fake_submit)
+        with on, submit:
+            res = self.client.post(self.url, self.body, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["tx_hash"], self.TX)
+        self.assertTrue(BlockchainAnchor.objects.get(pk=self.anchor_id).anchored)
+        self.assertTrue(AuditLog.objects.filter(
+            action="blockchain.anchored", description__contains="server-signed").exists())
+
+    def test_refused_when_server_signing_is_off(self):
+        off, submit = self._signing(enabled=False)
+        with off, submit as mocked:
+            res = self.client.post(self.url, self.body, format="json")
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        mocked.assert_not_called()
+        self.assertFalse(BlockchainAnchor.objects.get(pk=self.anchor_id).anchored)
+
+    def test_a_failed_submission_leaves_the_record_retryable(self):
+        on, submit = self._signing(return_value=None)
+        with on, submit:
+            res = self.client.post(self.url, self.body, format="json")
+        self.assertEqual(res.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertFalse(BlockchainAnchor.objects.get(pk=self.anchor_id).anchored)
+
+    def test_an_already_anchored_record_is_never_sent_twice(self):
+        BlockchainAnchor.objects.filter(pk=self.anchor_id).update(tx_hash=self.TX)
+        on, submit = self._signing()
+        with on, submit as mocked:
+            res = self.client.post(self.url, self.body, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        mocked.assert_not_called()
+
+    def test_same_role_rules_as_a_metamask_attach(self):
+        supplier = make_supplier(verified=True)
+        self.client.force_authenticate(user=supplier.user)
+        on, submit = self._signing()
+        with on, submit as mocked:
+            res = self.client.post(self.url, self.body, format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        mocked.assert_not_called()
+
+    def test_anchor_summary_tells_the_browser_whether_the_server_signs(self):
+        anchor = BlockchainAnchor.objects.get(pk=self.anchor_id)
+        with patch("procurement.blockchain.SERVER_SIGNING_ENABLED", True):
+            self.assertTrue(anchor_summary(anchor)["server_signing"])
+        with patch("procurement.blockchain.SERVER_SIGNING_ENABLED", False):
+            self.assertFalse(anchor_summary(anchor)["server_signing"])
 
 
 class PayloadVersionTests(APITestCase):
