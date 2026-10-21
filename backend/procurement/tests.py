@@ -932,6 +932,8 @@ class ServerSideSigningTests(APITestCase):
         w3.eth.get_transaction_count.return_value = 7
         w3.eth.gas_price = 10
         w3.to_wei.return_value = 1
+        w3.eth.max_priority_fee = 3
+        w3.eth.get_block.return_value = {"baseFeePerGas": 10}
         if send_raises:
             w3.eth.send_raw_transaction.side_effect = send_raises
         else:
@@ -997,6 +999,18 @@ class ServerSideSigningTests(APITestCase):
         self.assertIsNone(result)
         self.assertFalse(anchor.anchored)
         w3.eth.send_raw_transaction.assert_not_called()
+
+    def test_fee_cap_is_never_below_the_tip_when_gas_is_cheap(self):
+        # Regression: a fixed 1.5 gwei tip against a `gas_price * 2` cap broke
+        # whenever Sepolia gas fell under 0.75 gwei, and the node refused every
+        # server-signed anchor ("max priority fee per gas higher than max fee").
+        Web3, w3, captured = self._fake_web3()
+        w3.eth.gas_price = 100_000_000                       # 0.1 gwei
+        w3.eth.get_block.return_value = {"baseFeePerGas": 50_000_000}
+        w3.eth.max_priority_fee = 1_500_000_000              # 1.5 gwei tip
+        self._submit(Web3)
+        self.assertGreaterEqual(captured["maxFeePerGas"], captured["maxPriorityFeePerGas"])
+        self.assertEqual(captured["maxFeePerGas"], 2 * 50_000_000 + 1_500_000_000)
 
     def test_gas_and_chain_id_target_sepolia(self):
         Web3, _, captured = self._fake_web3()
