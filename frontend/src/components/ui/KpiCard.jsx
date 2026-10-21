@@ -43,6 +43,6 @@ export default function KpiCard({
   return <Link to={to} className={cls} aria-label={`${label}: ${loading ? 'loading' : value}. ${context || ''}`}>{body}</Link>
 }
 
-export function KpiRow({ children }) {
-  return <div className="rf-kpi-row">{children}</div>
+export function KpiRow({ children, cols }) {
+  return <div className={`rf-kpi-row${cols ? ` is-${cols}` : ''}`}>{children}</div>
 }

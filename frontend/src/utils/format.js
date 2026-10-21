@@ -86,6 +86,12 @@ const UNITS = [
 /** "5 minutes ago", "yesterday", "in 3 days". */
 export function relativeTime(v, now = Date.now()) {
   if (!v) return '—'
+  // A date with no time ("2026-10-22") is a calendar day, not UTC midnight.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) {
+    const n = daysUntil(v)
+    if (n === 0) return 'today'
+    return RTF.format(Math.abs(n) >= 30 ? Math.round(n / 30) : n, Math.abs(n) >= 30 ? 'month' : 'day')
+  }
   const t = new Date(v).getTime()
   if (Number.isNaN(t)) return '—'
   const secs = Math.round((t - now) / 1000)
@@ -99,6 +105,7 @@ export function relativeTime(v, now = Date.now()) {
 /** Whole days since `v` (0 = today). */
 export function daysSince(v, now = Date.now()) {
   if (!v) return null
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return Math.max(0, -daysUntil(v))
   const t = new Date(v).getTime()
   return Number.isNaN(t) ? null : Math.max(0, Math.floor((now - t) / DAY))
 }
