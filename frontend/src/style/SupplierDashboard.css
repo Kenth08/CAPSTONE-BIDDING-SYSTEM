@@ -1153,3 +1153,12 @@
 .sd-pimg-locked { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; }
 /* The flagged image-set row stacks: note on top, picker underneath. */
 .sd-revision-row-images { flex-direction: column; align-items: stretch; }
+
+/* Inline upload of a category license in "My Documents" */
+.sd-catdoc-upload {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px;
+  flex-basis: 100%;
+  padding-top: 6px;
+}
+/* Category license rows hold an upload control, so they may wrap. */
+.sd-doc-row:has(.sd-catdoc-upload), .sd-doc-row:has(.sd-reupload-btn) { flex-wrap: wrap; }

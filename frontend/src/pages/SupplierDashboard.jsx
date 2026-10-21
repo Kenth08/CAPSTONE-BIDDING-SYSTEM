@@ -11,9 +11,13 @@ import {
   apiListProjects, apiListMyBids, apiSubmitBid, apiWithdrawBid, apiResubmitBidDocuments,
   apiUploadBidImages, apiDeleteBidImage,
   apiListNotifications, apiMarkNotificationsRead, apiListAwards,
-  apiUpdateMySupplier, apiChangePassword, apiResendVerification,
+  apiUpdateMySupplier, apiChangePassword, apiResendVerification, apiUploadCategoryDocuments,
 } from '../api'
 import { CATEGORIES } from '../constants/categories'
+import CategoryDocumentFields, {
+  appendCategoryDocs, categoryDocsProblem, checkDocFile, pastExpiryProblem, todayIso,
+  useCategoryDocState, useCategoryRequirements,
+} from '../components/CategoryDocuments'
 import { TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import AnchorActivity from '../components/AnchorActivity'
 import AppSidebar from '../components/shell/AppSidebar'
@@ -1125,6 +1129,7 @@ function EmailVerifyBanner({ profile, setToast }) {
 function RevisionPanel({ profile, onResubmitted, setToast }) {
   const flagged = (profile?.documents || []).filter(d => d.review_status === 'needs_revision')
   const [files, setFiles] = useState({})  // { key: File }
+  const [expiries, setExpiries] = useState({})  // { key: 'yyyy-mm-dd' } for category licenses
   const [busy, setBusy] = useState(false)
   const [confirm, setConfirm] = useState(false)
   const refs = useRef({})
@@ -1141,10 +1146,15 @@ function RevisionPanel({ profile, onResubmitted, setToast }) {
   const allReplaced = flagged.every(d => files[d.key])
 
   const doResubmit = async () => {
+    const past = flagged.map(d => pastExpiryProblem(d.label, expiries[d.key])).find(Boolean)
+    if (past) { setToast({ type: 'error', message: past }); setConfirm(false); return }
     setBusy(true)
     try {
       const fd = new FormData()
-      Object.entries(files).forEach(([k, file]) => fd.append(k, file))
+      Object.entries(files).forEach(([k, file]) => {
+        fd.append(k, file)
+        if (expiries[k]) fd.append(`${k}_expiry`, expiries[k])
+      })
       await apiResubmitDocuments(fd)
       setToast({ type: 'success', message: 'Documents resubmitted. Your account is pending review again.' })
       setConfirm(false)
@@ -1182,6 +1192,13 @@ function RevisionPanel({ profile, onResubmitted, setToast }) {
               )}
               <input ref={el => (refs.current[d.key] = el)} type="file" accept=".pdf,.jpg,.jpeg,.png" hidden
                 onChange={e => onFile(d.key, e.target.files[0])} />
+              {d.source === 'category' && d.has_expiry && (
+                <label className="cd-expiry">
+                  <span>New expiry date</span>
+                  <input type="date" min={todayIso()} value={expiries[d.key] || ''}
+                    onChange={e => setExpiries(x => ({ ...x, [d.key]: e.target.value }))} />
+                </label>
+              )}
             </div>
           </div>
         ))}
@@ -1845,12 +1862,99 @@ const DOC_EXPIRY_FIELD = {
   tax_clearance_certificate: 'tax_clearance_expiry',
 }
 function docExpiryInfo(doc, profile) {
+  // Category licenses carry their own expiry date; base documents read it
+  // from the supplier profile.
   const field = DOC_EXPIRY_FIELD[doc.key]
-  const raw = field ? profile?.[field] : null
+  const raw = doc.source === 'category' ? doc.expiry_date : (field ? profile?.[field] : null)
   if (!raw) return null
   const date = new Date(raw)
   const daysLeft = Math.ceil((date - new Date()) / (1000 * 60 * 60 * 24))
   return { date, expired: daysLeft < 0, expiringSoon: daysLeft >= 0 && daysLeft <= 30 }
+}
+
+// Can the supplier upload this category license from My Documents? Mirrors the
+// server rule (SupplierViewSet.my_category_documents): any license of a pending
+// category request, or a current category's license that is missing or was
+// flagged. A flagged document during a full revision goes through the
+// "Documents Needing Revision" panel instead, so it isn't offered twice.
+function canUploadCategoryDoc(doc, profile) {
+  if (doc.source !== 'category') return false
+  const inRevision = profile?.qualification_status === 'needs_revision'
+  if (inRevision && doc.review_status === 'needs_revision') return false
+  // Missing, lost from storage, expired or expiring soon (a renewal) → upload.
+  return doc.pending_category || !!doc.reason || doc.expiring_soon || doc.review_status === 'needs_revision'
+}
+
+// Inline "Upload" for one category license: choose a file (+ expiry date) and send.
+function CategoryDocUpload({ doc, setToast, onUploaded }) {
+  const [open, setOpen] = useState(false)
+  const [file, setFile] = useState(null)
+  const [expiry, setExpiry] = useState('')
+  const [busy, setBusy] = useState(false)
+  const ref = useRef(null)
+
+  const send = async () => {
+    if (!file) { setToast({ type: 'error', message: `Choose a file for ${doc.label}.` }); return }
+    if (doc.has_expiry && !expiry) { setToast({ type: 'error', message: `Enter the expiry date of the ${doc.label}.` }); return }
+    const past = pastExpiryProblem(doc.label, expiry)
+    if (past) { setToast({ type: 'error', message: past }); return }
+    setBusy(true)
+    try {
+      const fd = new FormData()
+      fd.append(`catdoc_${doc.key}`, file)
+      if (doc.has_expiry) fd.append(`catdoc_${doc.key}_expiry`, expiry)
+      await apiUploadCategoryDocuments(fd)
+      setToast({ type: 'success', message: `${doc.label} uploaded. The Admin will review it.` })
+      setOpen(false); setFile(null); setExpiry('')
+      await onUploaded?.()
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'Could not upload the document.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" className="sd-reupload-btn" onClick={() => setOpen(true)}>
+        <Upload size={14} /> Upload
+      </button>
+    )
+  }
+  return (
+    <div className="sd-catdoc-upload">
+      {file ? (
+        <span className="cd-file">
+          <FileText size={14} aria-hidden="true" />
+          <span className="cd-file-name" title={file.name}>{file.name}</span>
+          <button type="button" className="cd-icon-btn" onClick={() => setFile(null)} aria-label="Remove file"><X size={13} /></button>
+        </span>
+      ) : (
+        <button type="button" className="cd-upload-btn" onClick={() => ref.current?.click()}>
+          <Upload size={14} aria-hidden="true" /> Choose file
+        </button>
+      )}
+      <input ref={ref} type="file" accept=".pdf,.jpg,.jpeg,.png" hidden
+        onChange={e => {
+          const f = e.target.files?.[0]
+          e.target.value = ''
+          if (!f) return
+          const msg = checkDocFile(f)
+          if (msg) { setToast({ type: 'error', message: `${doc.label}: ${msg}` }); return }
+          setFile(f)
+        }} />
+      {doc.has_expiry && (
+        <label className="cd-expiry">
+          <span>Expiry date</span>
+          <input type="date" min={todayIso()} value={expiry} onChange={e => setExpiry(e.target.value)} />
+        </label>
+      )}
+      <button type="button" className="sd-btn-primary" onClick={send} disabled={busy}>
+        {busy ? 'Uploading…' : 'Send'}
+      </button>
+      <button type="button" className="sd-btn-cancel" onClick={() => setOpen(false)} disabled={busy}>Cancel</button>
+    </div>
+  )
 }
 
 // Shown by Profile/Settings when the profile could not be loaded. Without this
@@ -1885,7 +1989,7 @@ function ProfileLoadError({ message, onRetry, retrying }) {
   )
 }
 
-function SupplierProfile({ profile, eligible, loading, error, onRetry }) {
+function SupplierProfile({ profile, eligible, loading, error, onRetry, setToast, onUpdated }) {
   if (!profile) {
     return (
       <div className="sd-content">
@@ -1955,13 +2059,46 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry }) {
             const labelEl = (
               <span className="sd-file-rowname">
                 {d.label}{!d.required && <span className="sd-optional"> (optional)</span>}
+                {d.source === 'category' && (
+                  <span className="cd-badge cd-badge-cat" style={{ marginLeft: 8 }}>
+                    {d.category}{d.pending_category ? ' · requested' : ''}
+                  </span>
+                )}
               </span>
             )
-            const expiryEl = expiry && (
-              <span className={`sd-doc-expiry${expiry.expired || expiry.expiringSoon ? ' sd-doc-expiry-warn' : ''}`}>
-                {expiry.expired ? 'Expired ' : 'Expires '}{expiry.date.toLocaleDateString()}
+            // Expired: red badge. Within 30 days: orange "Expires in X days".
+            // Otherwise the plain date. The server decides both (d.expired,
+            // d.expiring_soon), so the page and the approval rules agree.
+            const expiryEl = d.expired ? (
+              <span className="cd-badge cd-badge-missing">
+                Expired {expiry ? expiry.date.toLocaleDateString() : ''}{d.source === 'category' ? ' — please renew' : ''}
               </span>
+            ) : d.expiring_soon ? (
+              <span className="cd-badge cd-badge-warn">
+                Expires in {d.days_left} day{d.days_left === 1 ? '' : 's'}
+              </span>
+            ) : expiry && (
+              <span className="sd-doc-expiry">Expires {expiry.date.toLocaleDateString()}</span>
             )
+            // Category licenses: a "Missing" badge and an upload control right in
+            // the list (base documents are replaced through a revision request).
+            if (d.source === 'category' && (d.missing || canUploadCategoryDoc(d, profile))) {
+              return (
+                <div key={d.key} className={`sd-doc-row${d.url ? '' : ' sd-doc-row-missing'}`}>
+                  {labelEl}
+                  {d.expired
+                    ? null /* the red "Expired — please renew" badge below says it */
+                    : d.missing
+                      ? <span className="cd-badge cd-badge-missing">Missing — please upload</span>
+                      : <span className={`ui-badge ${badge.cls}`}><span className="ui-badge-dot" aria-hidden="true" />{badge.label}</span>}
+                  {expiryEl}
+                  {d.url && <a className="sd-doc-view" href={d.url} target="_blank" rel="noreferrer"><Eye size={13} /> View</a>}
+                  {canUploadCategoryDoc(d, profile) && (
+                    <CategoryDocUpload doc={d} setToast={setToast} onUploaded={onUpdated} />
+                  )}
+                </div>
+              )
+            }
             return d.url ? (
               <a key={d.key} className="sd-doc-row" href={d.url} target="_blank" rel="noreferrer">
                 {labelEl}
@@ -2023,6 +2160,15 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
   const [withdrawing, setWithdrawing] = useState(false)
   const isVerified = profile?.qualification_status === 'verified'
 
+  // Licenses for categories being ADDED (not the approved ones). Anything the
+  // supplier already uploaded for them (e.g. with an earlier request) is skipped.
+  const approvedTypes = profile ? profileBusinessTypes(profile) : []
+  const addedTypes = businessTypes.filter(t => !approvedTypes.includes(t))
+  const addedReq = useCategoryRequirements(addedTypes)
+  const addedDocState = useCategoryDocState()
+  const onFile = new Set((profile?.documents || []).filter(d => d.present).map(d => d.key))
+  const newDocsReq = { ...addedReq, docs: addedReq.docs.filter(d => !onFile.has(d.key)) }
+
   useEffect(() => {
     if (!profile) return
     setFullName(profile.full_name || profile.contact || '')
@@ -2062,6 +2208,9 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
       setProfileError('Select at least one business type.')
       return
     }
+    if (addedReq.loading) { setProfileError('Still checking which documents the new categories need.'); return }
+    const docProblem = categoryDocsProblem(newDocsReq.docs, addedDocState.files, addedDocState.expiries)
+    if (docProblem) { setProfileError(docProblem); return }
     setSavingProfile(true)
     try {
       const before = profile?.category_request_status || ''
@@ -2072,6 +2221,23 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
         company_address: address.trim(),
         business_types: businessTypes,
       })
+      // The licenses go up AFTER the request exists: the server only accepts
+      // documents for categories that are approved or requested.
+      const fd = new FormData()
+      appendCategoryDocs(fd, newDocsReq.docs, addedDocState.files, addedDocState.expiries)
+      if ([...fd.keys()].length > 0) {
+        try {
+          await apiUploadCategoryDocuments(fd)
+          addedDocState.reset()
+        } catch (err) {
+          await onUpdated()
+          setToast({
+            type: 'error',
+            message: `Your changes were saved, but the documents did not upload: ${err.message} You can upload them from My Profile.`,
+          })
+          return
+        }
+      }
       await onUpdated()
       const filedRequest = saved?.category_request_status === 'pending' &&
         (before !== 'pending' || saved?.category_requested_at !== profile?.category_requested_at)
@@ -2155,6 +2321,18 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
             ))}
           </div>
         </div>
+        {(addedReq.loading || addedReq.error || newDocsReq.docs.length > 0) && (
+          <div className="sd-form-group sd-profile-field-full">
+            <label>Documents for the new categories</label>
+            <span className="sd-muted sd-small" style={{ marginBottom: 6 }}>
+              {isVerified
+                ? 'Upload these with your request. The Admin approves the new categories only once the required licenses are on file.'
+                : 'Upload these so the Admin can review them with your registration.'}
+            </span>
+            <CategoryDocumentFields req={newDocsReq} state={addedDocState} idPrefix="sd-catdoc"
+              onError={msg => setToast({ type: 'error', message: msg })} />
+          </div>
+        )}
         {profileError && <span className="sd-field-error sd-profile-field-full">{profileError}</span>}
         <div className="sd-profile-actions">
           <button type="submit" className="sd-btn-primary" disabled={savingProfile}>
@@ -2347,7 +2525,7 @@ export default function SupplierDashboard() {
             <Route path="bids"     element={<SupplierBids bids={bids} awards={awards} onWithdraw={withdrawBid} loading={loadingBids} onResubmitted={loadBids} setToast={setToast} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="reports"  element={<SupplierReportsPage bids={bids} profile={profile} />} />
-            <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} loading={loadingProfile} error={profileError} onRetry={loadProfile} />} />
+            <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} loading={loadingProfile} error={profileError} onRetry={loadProfile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} />} />
             <Route path="settings" element={<SupplierSettings profile={profile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} loading={loadingProfile} error={profileError} onRetry={loadProfile} />} />
             <Route path="*"        element={<SupplierHome projects={projects} bids={bids} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
           </Routes>

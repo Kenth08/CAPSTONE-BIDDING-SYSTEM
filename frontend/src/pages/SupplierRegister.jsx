@@ -6,6 +6,10 @@ import { Loader2,
 } from 'lucide-react'
 import { apiRegisterSupplier } from '../api'
 import { CATEGORIES } from '../constants/categories'
+import CategoryDocumentFields, {
+  appendCategoryDocs, categoryDocsProblem, pastExpiryProblem, todayIso,
+  useCategoryDocState, useCategoryRequirements,
+} from '../components/CategoryDocuments'
 import '../style/SupplierRegister.css'
 
 // ── Static config ─────────────────────────────────────────────────────────────
@@ -83,6 +87,9 @@ export default function SupplierRegister() {
   })
   const [businessTypes, setBusinessTypes] = useState([])
   const [files, setFiles] = useState({}) // { key: File }
+  // Extra licenses the chosen categories require (rules come from the server).
+  const catReq = useCategoryRequirements(businessTypes)
+  const catDocs = useCategoryDocState()
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -117,6 +124,13 @@ export default function SupplierRegister() {
     if (step === 1) {
       const missing = REQUIRED_KEYS.filter(k => !files[k])
       if (missing.length) return `Upload all required documents (${missing.length} missing).`
+      const baseExpiry = pastExpiryProblem("Mayor's Permit", form.mayors_permit_expiry)
+        || pastExpiryProblem('Tax Clearance Certificate', form.tax_clearance_expiry)
+      if (baseExpiry) return baseExpiry
+      if (catReq.loading) return 'Still checking which documents your categories need. Try again in a moment.'
+      if (catReq.error) return 'Could not load the documents your categories need. Use "Try again" in the Category Documents section.'
+      const catProblem = categoryDocsProblem(catReq.docs, catDocs.files, catDocs.expiries)
+      if (catProblem) return catProblem
     }
     if (step === 2 && !form.declaration_accepted) {
       return 'You must accept the declaration to continue.'
@@ -147,6 +161,7 @@ export default function SupplierRegister() {
       fd.append('declaration_accepted', form.declaration_accepted)
       fd.append('business_types', JSON.stringify(businessTypes))
       Object.entries(files).forEach(([k, file]) => fd.append(k, file))
+      appendCategoryDocs(fd, catReq.docs, catDocs.files, catDocs.expiries)
       await apiRegisterSupplier(fd)
       setDone(true)
     } catch (err) {
@@ -207,9 +222,11 @@ export default function SupplierRegister() {
               toggleType={toggleType} showPass={showPass} setShowPass={setShowPass}
               showConfirm={showConfirm} setShowConfirm={setShowConfirm} />}
             {step === 1 && <StepDocuments form={form} set={set} files={files}
-              onFile={onFile} removeFile={removeFile} />}
+              onFile={onFile} removeFile={removeFile}
+              catReq={catReq} catDocs={catDocs} onCatError={showError} />}
             {step === 2 && <StepDeclaration form={form} set={set} />}
-            {step === 3 && <StepReview required={requiredUploaded} optional={optionalUploaded} />}
+            {step === 3 && <StepReview required={requiredUploaded} optional={optionalUploaded}
+              catReq={catReq} catDocs={catDocs} />}
           </div>
 
           {/* Nav */}
@@ -317,7 +334,7 @@ function StepBasic({ form, set, businessTypes, toggleType, showPass, setShowPass
 }
 
 // ── Step 2: Documents ─────────────────────────────────────────────────────────
-function StepDocuments({ form, set, files, onFile, removeFile }) {
+function StepDocuments({ form, set, files, onFile, removeFile, catReq, catDocs, onCatError }) {
   return (
     <>
       <Section title="Legal Documents" desc="Required for company registration and compliance.">
@@ -325,7 +342,7 @@ function StepDocuments({ form, set, files, onFile, removeFile }) {
           {LEGAL_DOCS.map(d => <Uploader key={d.key} doc={d} file={files[d.key]} onFile={onFile} removeFile={removeFile} />)}
         </div>
         <Field label="Mayor's Permit Expiry">
-          <input type="date" value={form.mayors_permit_expiry} onChange={e => set('mayors_permit_expiry', e.target.value)} />
+          <input type="date" min={todayIso()} value={form.mayors_permit_expiry} onChange={e => set('mayors_permit_expiry', e.target.value)} />
         </Field>
       </Section>
 
@@ -335,7 +352,7 @@ function StepDocuments({ form, set, files, onFile, removeFile }) {
         </div>
         <div className="sr-row">
           <Field label="Tax Clearance Expiry">
-            <input type="date" value={form.tax_clearance_expiry} onChange={e => set('tax_clearance_expiry', e.target.value)} />
+            <input type="date" min={todayIso()} value={form.tax_clearance_expiry} onChange={e => set('tax_clearance_expiry', e.target.value)} />
           </Field>
           <Field label="Financial Statement Year" hint="Year digits only.">
             <input value={form.financial_statement_year}
@@ -349,6 +366,13 @@ function StepDocuments({ form, set, files, onFile, removeFile }) {
           {AUTH_DOCS.map(d => <Uploader key={d.key} doc={d} file={files[d.key]} onFile={onFile} removeFile={removeFile} />)}
         </div>
       </Section>
+
+      {(catReq.loading || catReq.error || catReq.docs.length > 0) && (
+        <Section title="Category Documents"
+          desc="Licenses required by the business categories you selected. Required ones must be uploaded to register.">
+          <CategoryDocumentFields req={catReq} state={catDocs} onError={onCatError} idPrefix="sr-catdoc" />
+        </Section>
+      )}
 
       <Section title="Qualifications & Track Record" desc="Optional — demonstrate experience.">
         <div className="sr-grid">
@@ -384,7 +408,10 @@ function StepDeclaration({ form, set }) {
 }
 
 // ── Step 4: Review ────────────────────────────────────────────────────────────
-function StepReview({ required, optional }) {
+function StepReview({ required, optional, catReq, catDocs }) {
+  const catRequired = catReq.docs.filter(d => d.required)
+  const catRequiredDone = catRequired.filter(d => catDocs.files[d.key]).length
+  const catUploaded = catReq.docs.filter(d => catDocs.files[d.key])
   return (
     <Section title="Review & Submit" desc="Verify your information before submitting.">
       <div className="sr-review">
@@ -392,9 +419,29 @@ function StepReview({ required, optional }) {
           <strong className={required === REQUIRED_KEYS.length ? 'ok' : 'warn'}>{required}/{REQUIRED_KEYS.length}</strong>
           <span>Required docs uploaded</span>
         </div>
+        {catRequired.length > 0 && (
+          <div className="sr-stat">
+            <strong className={catRequiredDone === catRequired.length ? 'ok' : 'warn'}>
+              {catRequiredDone}/{catRequired.length}
+            </strong>
+            <span>Required category docs</span>
+          </div>
+        )}
         <div className="sr-stat"><strong>{optional}</strong><span>Optional docs uploaded</span></div>
         <div className="sr-stat"><strong className="pending">Pending Review</strong><span>Status after submission</span></div>
       </div>
+      {catUploaded.length > 0 && (
+        <div className="sr-note">
+          <FileText size={16} />
+          <ul>
+            {catUploaded.map(d => (
+              <li key={d.key}>
+                {d.label} <em>({d.category}{catDocs.expiries[d.key] ? `, expires ${catDocs.expiries[d.key]}` : ''})</em>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="sr-note">
         <AlertCircle size={16} />
         <ul>

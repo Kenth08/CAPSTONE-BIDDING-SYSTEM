@@ -8,7 +8,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import status as http_status
-from rest_framework import mixins, viewsets
+from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -28,6 +28,22 @@ from .blockchain import (
     attach_anchors,
     attach_transaction,
     verify_anchor,
+)
+from .document_requirements import (
+    CATEGORY_DOCUMENT_INDEX,
+    EXPIRY_SUFFIX,
+    UPLOAD_PREFIX,
+    allowed_review_keys,
+    approved_categories,
+    category_requirements,
+    describe,
+    document_categories,
+    document_status,
+    labels,
+    missing_documents,
+    requirements_for,
+    unknown_categories,
+    validate_future_expiry,
 )
 from .documents import DOCUMENT_BUILDERS
 from .models import (
@@ -53,6 +69,7 @@ from .models import (
     Notification,
     Project,
     Supplier,
+    SupplierCategoryDocument,
 )
 from rest_framework import permissions
 
@@ -1165,24 +1182,41 @@ class ProjectViewSet(viewsets.ModelViewSet):
 # goes through a named @action that validates, notifies, logs and anchors.
 class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                       mixins.DestroyModelMixin, viewsets.GenericViewSet):
-    queryset = Supplier.objects.select_related("user").all()
+    queryset = Supplier.objects.select_related("user").prefetch_related("category_documents").all()
     serializer_class = SupplierListSerializer
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     # Admins manage/review suppliers; suppliers may only read/resubmit their own
-    # profile through the `me` / `resubmit` actions.
-    SUPPLIER_ACTIONS = {"me", "resubmit"}
+    # profile through the `me` / `resubmit` / `my_category_documents` actions.
+    SUPPLIER_ACTIONS = {"me", "resubmit", "my_category_documents"}
 
     def get_serializer_class(self):
         if self.action in {"retrieve", "me", "resubmit", "approve", "reject", "request_revision",
-                           "approve_categories", "reject_categories"}:
+                           "approve_categories", "reject_categories", "my_category_documents"}:
             return SupplierDetailSerializer
         return SupplierListSerializer
 
     def get_permissions(self):
+        # Registration is unauthenticated, and it needs to know which extra
+        # documents the chosen categories require.
+        if self.action == "document_requirements":
+            return [permissions.AllowAny()]
         if self.action in self.SUPPLIER_ACTIONS:
             return [IsSupplierRole()]
         return [IsAdminRole()]
+
+    @action(detail=False, methods=["get"], url_path="document-requirements")
+    def document_requirements(self, request):
+        """GET ?categories=Medical Supplies,Construction -> the base documents
+        plus each category's extra documents (document_requirements.py)."""
+        raw = request.query_params.get("categories", "")
+        categories = [c.strip() for c in raw.split(",") if c.strip()]
+        unknown = unknown_categories(categories)
+        if unknown:
+            return Response(
+                {"detail": f"Unknown business category: {', '.join(unknown)}."},
+                status=http_status.HTTP_400_BAD_REQUEST)
+        return Response(requirements_for(categories))
 
     def _detail_response(self, supplier, status_code=http_status.HTTP_200_OK):
         data = SupplierDetailSerializer(supplier, context={"request": self.request}).data
@@ -1305,6 +1339,94 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             link="/admin/suppliers",
         )
 
+    # ── Category documents uploaded by the supplier ──────────────────────
+    @action(detail=False, methods=["post"], url_path="me/category-documents")
+    def my_category_documents(self, request):
+        """Supplier uploads extra licenses: multipart catdoc_<key> (+ catdoc_<key>_expiry).
+
+        Allowed for the categories of a pending change request (so the Admin
+        can review them before approving), and for the supplier's current
+        categories only when that document is missing or was flagged for
+        revision. A verified supplier can't quietly swap a license the Admin
+        already accepted; the Admin flags it first."""
+        supplier = self._own_supplier(request)
+        if supplier is None:
+            return Response({"detail": "No supplier profile found."}, status=http_status.HTTP_404_NOT_FOUND)
+
+        requirements = {r["key"]: r for r in category_requirements(document_categories(supplier))}
+        approved = set(approved_categories(supplier))
+        reviews = dict(supplier.document_reviews or {})
+        rows = {row.key: row for row in supplier.category_documents.all()}
+        date_field = serializers.DateField()
+
+        uploads, errors = [], {}
+        for field, upload in request.FILES.items():
+            key = field[len(UPLOAD_PREFIX):] if field.startswith(UPLOAD_PREFIX) else ""
+            req = requirements.get(key)
+            if req is None:
+                errors[field] = ["This document is not required for your categories or category request."]
+                continue
+            flagged = (reviews.get(key) or {}).get("status") == "needs_revision"
+            # A current category's license may be replaced when it is missing,
+            # expired or about to expire (a renewal), or was flagged.
+            status = document_status(supplier, req, rows=rows)
+            replaceable = flagged or status["reason"] is not None or status["expiring_soon"]
+            if req["category"] in approved and not replaceable:
+                errors[field] = [f"{req['label']} is already on file. Ask the Admin to flag it if it needs replacing."]
+                continue
+            try:
+                validate_upload(upload)
+            except DjangoValidationError as exc:
+                errors[field] = list(exc.messages)
+                continue
+            expiry = None
+            raw_expiry = str(request.data.get(field + EXPIRY_SUFFIX) or "").strip()
+            if req["has_expiry"]:
+                if not raw_expiry:
+                    errors[field + EXPIRY_SUFFIX] = [f"Enter the expiry date of the {req['label']}."]
+                    continue
+                try:
+                    expiry = date_field.to_internal_value(raw_expiry)
+                    validate_future_expiry(expiry, req["label"])
+                except serializers.ValidationError:
+                    errors[field + EXPIRY_SUFFIX] = [f"Enter a valid expiry date for the {req['label']}."]
+                    continue
+                except ValueError as exc:
+                    errors[field + EXPIRY_SUFFIX] = [str(exc)]
+                    continue
+            uploads.append((req, upload, expiry, flagged))
+        if errors:
+            return Response(errors, status=http_status.HTTP_400_BAD_REQUEST)
+        if not uploads:
+            return Response({"detail": "Choose at least one document to upload."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            for req, upload, expiry, flagged in uploads:
+                row = SupplierCategoryDocument.objects.select_for_update().filter(
+                    supplier=supplier, key=req["key"]).first()
+                if row is None:
+                    SupplierCategoryDocument.objects.create(
+                        supplier=supplier, key=req["key"], file=upload, expiry_date=expiry)
+                else:
+                    row.file = upload
+                    row.expiry_date = expiry
+                    row.uploaded_at = timezone.now()
+                    row.save(update_fields=["file", "expiry_date", "uploaded_at"])
+                if flagged:
+                    reviews[req["key"]] = {"status": "resubmitted",
+                                           "note": (reviews.get(req["key"]) or {}).get("note", "")}
+                else:
+                    reviews.pop(req["key"], None)   # a new file waits for review
+            supplier.document_reviews = reviews
+            supplier.save(update_fields=["document_reviews"])
+
+        names = labels([req for req, *_ in uploads])
+        log_action(request, "supplier.category_documents_uploaded", entity_type="Supplier",
+                   entity_id=supplier.id, description=f"{supplier.company} uploaded: {names}.")
+        notify_admins(f"{supplier.company} uploaded category documents: {names}.", link="/admin/suppliers")
+        return self._detail_response(self._own_supplier(request))
+
     # ── Admin decisions on a category change request ─────────────────────
     def _pending_category_request(self, pk):
         """Lock the supplier and return (supplier, None), or (None, 400 Response)
@@ -1327,6 +1449,33 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             # Re-validated: a category could have been retired since the request.
             approved = clean_business_types(supplier.pending_business_types)
             previous = list(supplier.business_types or [])
+            # A NEW category is only granted once its required licenses are on
+            # file (really in storage) and none of them is flagged for revision.
+            added = [c for c in approved if c not in previous]
+            missing = missing_documents(supplier, added, include_base=False)
+            reviews = dict(supplier.document_reviews or {})
+            new_keys = [r["key"] for r in category_requirements(added)]
+            flagged = [CATEGORY_DOCUMENT_INDEX[k][1] for k in new_keys
+                       if (reviews.get(k) or {}).get("status") == "needs_revision"]
+            if missing or flagged:
+                parts = []
+                if missing:
+                    parts.append(f"Missing: {labels(missing)}")
+                if flagged:
+                    parts.append(f"Flagged for revision: {labels(flagged)}")
+                detail = (f"Can't approve {supplier.company}'s new categories yet. "
+                          + ". ".join(parts) + ".")
+                log_action(request, "supplier.category_change_blocked", entity_type="Supplier",
+                           entity_id=supplier.id, description=detail)
+                return Response(
+                    {"detail": detail, "missing": [describe(d) for d in missing],
+                     "flagged": [d["label"] for d in flagged]},
+                    status=http_status.HTTP_400_BAD_REQUEST)
+            uploaded_keys = {row.key for row in supplier.category_documents.all()}
+            for key in new_keys:
+                if key in uploaded_keys:
+                    reviews[key] = {"status": "approved", "note": ""}
+            supplier.document_reviews = reviews
             supplier.business_types = approved
             supplier.business_type = ", ".join(approved)
             supplier.pending_business_types = None
@@ -1335,7 +1484,8 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             supplier.category_reviewed_at = timezone.now()
             supplier.save(update_fields=[
                 "business_types", "business_type", "pending_business_types",
-                "category_request_status", "category_request_note", "category_reviewed_at"])
+                "category_request_status", "category_request_note", "category_reviewed_at",
+                "document_reviews"])
 
         log_action(request, "supplier.category_change_approved", entity_type="Supplier",
                    entity_id=supplier.id,
@@ -1390,40 +1540,77 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         if supplier is None:
             return Response({"detail": "No supplier profile found."}, status=http_status.HTTP_404_NOT_FOUND)
 
-        # Validate every re-uploaded file (type + size) BEFORE touching the DB —
-        # same reasoning as ProjectViewSet.bid(): setattr()/save() never calls
-        # full_clean(), so the model field's validate_upload would otherwise
-        # never run on this path.
-        for key in SUPPLIER_DOCUMENT_KEYS:
-            uploaded = request.FILES.get(key)
-            if uploaded:
-                try:
-                    validate_upload(uploaded)
-                except DjangoValidationError as exc:
-                    return Response({key: exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
+        # Only a supplier the Admin sent back for revision resubmits. Without
+        # this, a VERIFIED supplier calling it put themselves back to pending
+        # (losing bidding) and could swap an accepted document unreviewed.
+        if supplier.qualification_status != Supplier.Qualification.NEEDS_REVISION:
+            return Response(
+                {"detail": "There is nothing to resubmit: your documents are not flagged for revision."},
+                status=http_status.HTTP_400_BAD_REQUEST)
 
         reviews = dict(supplier.document_reviews or {})
+        flagged = {k for k, v in reviews.items() if (v or {}).get("status") == "needs_revision"}
+        allowed = set(allowed_review_keys(supplier))
+
+        # Only flagged documents may be replaced. Validate every file (type +
+        # size) BEFORE touching the DB: setattr()/save() never calls
+        # full_clean(), so the field validators would not run on this path.
+        for key, uploaded in request.FILES.items():
+            if key not in flagged or key not in allowed:
+                return Response(
+                    {key: ["This document was not flagged for revision, so it can't be replaced here."]},
+                    status=http_status.HTTP_400_BAD_REQUEST)
+            try:
+                validate_upload(uploaded)
+            except DjangoValidationError as exc:
+                return Response({key: exc.messages}, status=http_status.HTTP_400_BAD_REQUEST)
+
+        date_field = serializers.DateField()
+        expiries = {}
+        for key in request.FILES:
+            raw = str(request.data.get(key + EXPIRY_SUFFIX) or "").strip()
+            if raw and key in CATEGORY_DOCUMENT_INDEX:
+                try:
+                    expiries[key] = date_field.to_internal_value(raw)
+                    validate_future_expiry(expiries[key], CATEGORY_DOCUMENT_INDEX[key][1]["label"])
+                except serializers.ValidationError:
+                    return Response({key + EXPIRY_SUFFIX: ["Enter a valid expiry date."]},
+                                    status=http_status.HTTP_400_BAD_REQUEST)
+                except ValueError as exc:
+                    return Response({key + EXPIRY_SUFFIX: [str(exc)]},
+                                    status=http_status.HTTP_400_BAD_REQUEST)
+
         updated = []
-        for key in SUPPLIER_DOCUMENT_KEYS:
-            uploaded = request.FILES.get(key)
-            if uploaded:
-                setattr(supplier, key, uploaded)
+        with transaction.atomic():
+            for key, uploaded in request.FILES.items():
+                if key in CATEGORY_DOCUMENT_INDEX:
+                    row = SupplierCategoryDocument.objects.select_for_update().filter(
+                        supplier=supplier, key=key).first()
+                    if row is None:
+                        row = SupplierCategoryDocument(supplier=supplier, key=key)
+                    row.file = uploaded
+                    if key in expiries:
+                        row.expiry_date = expiries[key]
+                    row.uploaded_at = timezone.now()
+                    row.save()
+                else:
+                    setattr(supplier, key, uploaded)
                 prev_note = (reviews.get(key) or {}).get("note", "")
                 # Mark as resubmitted (carry the original note for context) instead
                 # of removing it, so the admin sees exactly what changed.
                 reviews[key] = {"status": "resubmitted", "note": prev_note}
                 updated.append(key)
 
-        if not updated:
-            return Response(
-                {"detail": "Upload at least one document to resubmit."},
-                status=http_status.HTTP_400_BAD_REQUEST,
-            )
+            if not updated:
+                return Response(
+                    {"detail": "Upload at least one document to resubmit."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
 
-        supplier.document_reviews = reviews
-        supplier.qualification_status = Supplier.Qualification.PENDING
-        supplier.reviewed_at = None
-        supplier.save()
+            supplier.document_reviews = reviews
+            supplier.qualification_status = Supplier.Qualification.PENDING
+            supplier.reviewed_at = None
+            supplier.save()
 
         # Tell the admins this supplier re-submitted so it returns to their queue.
         notify_admins(
@@ -1448,6 +1635,18 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                            "resend it from their dashboard)."},
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
+        # Every required document, base and category, must really be in
+        # storage. Only for a NEW approval: re-approving an already-verified
+        # supplier never revokes or blocks anything they already have.
+        if supplier.qualification_status != Supplier.Qualification.VERIFIED:
+            missing = missing_documents(supplier, approved_categories(supplier))
+            if missing:
+                detail = (f"{supplier.company} can't be approved yet. Missing documents: "
+                          f"{labels(missing)}. Request a revision so the supplier can upload them.")
+                log_action(request, "supplier.approval_blocked", entity_type="Supplier",
+                           entity_id=supplier.id, description=detail)
+                return Response({"detail": detail, "missing": [describe(d) for d in missing]},
+                                status=http_status.HTTP_400_BAD_REQUEST)
         supplier.status = Supplier.Status.APPROVED
         supplier.qualification_status = Supplier.Qualification.VERIFIED
         supplier.document_reviews = {}  # clear any outstanding revision flags
@@ -1504,29 +1703,44 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         #  - every other uploaded  -> approved (so the supplier/admin can see the
         #                             rest were accepted and only fix what's flagged)
         reviews = dict(supplier.document_reviews or {})
+        allowed = allowed_review_keys(supplier)
         for key in documents:
-            if key not in SUPPLIER_DOCUMENT_KEYS:
+            if key not in allowed:
                 return Response(
                     {"detail": f"Unknown document '{key}'."},
                     status=http_status.HTTP_400_BAD_REQUEST,
                 )
-        for key in SUPPLIER_DOCUMENT_KEYS:
+        uploaded_keys = {row.key for row in supplier.category_documents.all()}
+        for key in allowed:
+            on_file = getattr(supplier, key, None) if key in SUPPLIER_DOCUMENT_KEYS else key in uploaded_keys
             if key in documents:
                 reviews[key] = {"status": "needs_revision", "note": documents[key] or ""}
-            elif getattr(supplier, key, None):
+            elif on_file:
                 reviews[key] = {"status": "approved", "note": ""}
             else:
                 reviews.pop(key, None)
 
+        # Flagging only documents of a PENDING category request leaves a
+        # verified supplier verified: their approved categories are not in
+        # question, so they keep bidding while they fix the new license
+        # (uploaded through me/category-documents). Anything else sends the
+        # profile back for revision, as before.
+        approved_now = set(approved_categories(supplier))
+        pending_only = {r["key"] for r in category_requirements(document_categories(supplier))
+                        if r["category"] not in approved_now}
+        keep_verified = (supplier.qualification_status == Supplier.Qualification.VERIFIED
+                         and all(key in pending_only for key in documents))
+
         supplier.document_reviews = reviews
-        supplier.qualification_status = Supplier.Qualification.NEEDS_REVISION
-        supplier.admin_notes = request.data.get("note", "")
-        supplier.reviewed_at = timezone.now()
+        if not keep_verified:
+            supplier.qualification_status = Supplier.Qualification.NEEDS_REVISION
+            supplier.admin_notes = request.data.get("note", "")
+            supplier.reviewed_at = timezone.now()
         supplier.save()
 
-        flagged = ", ".join(
-            label for key, label, _ in SUPPLIER_DOCUMENT_FIELDS if key in documents
-        )
+        label_of = {key: label for key, label, _ in SUPPLIER_DOCUMENT_FIELDS}
+        label_of.update({key: doc["label"] for key, (_, doc) in CATEGORY_DOCUMENT_INDEX.items()})
+        flagged = ", ".join(label_of[key] for key in allowed if key in documents)
         notify_supplier(
             supplier,
             f"Revision requested on: {flagged}. Please re-upload the flagged document(s).",

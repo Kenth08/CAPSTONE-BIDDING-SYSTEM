@@ -107,6 +107,7 @@ from .models import (
     BidProductImage,
     Project,
     Supplier,
+    SupplierCategoryDocument,
 )
 
 # Only these fields can ever be addressed, per record kind. This is a strict
@@ -114,6 +115,8 @@ from .models import (
 # would otherwise expose any attribute on the model.
 ALLOWED_FIELDS = {
     "supplier": set(SUPPLIER_DOCUMENT_KEYS),
+    # Category licenses (SupplierCategoryDocument rows), addressed by row id.
+    "supplierdoc": {"file"},
     "project": set(PROCUREMENT_DOCUMENT_KEYS) | {"reference_image"},
     "bid": set(BID_DOCUMENT_KEYS),
     "award": set(AWARD_DOCUMENT_KEYS),
@@ -154,6 +157,8 @@ def _can_read(user, kind, record):
 
     if kind == "supplier":
         return record.pk == supplier.pk
+    if kind == "supplierdoc":
+        return record.supplier_id == supplier.pk
     if kind == "bid":
         return record.supplier_id == supplier.pk
     if kind == "attachment":
@@ -176,6 +181,7 @@ def _can_read(user, kind, record):
 # whatever _can_read needs so the check costs no extra query.
 _LOOKUPS = {
     "supplier": lambda: Supplier.objects.all(),
+    "supplierdoc": lambda: SupplierCategoryDocument.objects.all(),
     "project": lambda: Project.objects.all(),
     "bid": lambda: Bid.objects.select_related("supplier"),
     "award": lambda: Award.objects.select_related("supplier"),

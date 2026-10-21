@@ -1,0 +1,103 @@
+/* Category documents (components/CategoryDocuments.jsx) — shared by the
+   registration forms and the supplier's category editor. Built on tokens.css
+   so it sits naturally inside every role's form. */
+
+.cd-groups { display: grid; gap: var(--sp-3, 12px); }
+
+.cd-group {
+  border: 1px solid var(--border);
+  border-radius: var(--r-card, 12px);
+  padding: 12px 14px 14px;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+  background: var(--surface);
+  min-width: 0;
+}
+.cd-group legend {
+  padding: 0 6px;
+  font-size: var(--fs-caption, 12px);
+  font-weight: var(--fw-bold, 700);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--tone-success-fg);
+}
+
+.cd-row { display: grid; gap: 6px; min-width: 0; }
+.cd-row + .cd-row { border-top: 1px dashed var(--border); padding-top: 12px; }
+.cd-row-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.cd-label { font-size: var(--fs-small, 13px); font-weight: var(--fw-semibold, 600); color: var(--text-strong); }
+.cd-tag { font-size: var(--fs-micro, 11px); font-weight: var(--fw-semibold, 600); color: var(--text-subtle); }
+.cd-tag-req { color: var(--tone-danger-fg); }
+.cd-req { color: var(--tone-danger-fg); }
+.cd-help { margin: 0; font-size: var(--fs-caption, 12px); color: var(--text-subtle); }
+
+.cd-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+
+.cd-upload-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm, 8px);
+  background: var(--surface-muted);
+  color: var(--text-body);
+  font: inherit; font-size: var(--fs-small, 13px);
+  cursor: pointer;
+}
+.cd-upload-btn em { font-style: normal; color: var(--text-faint); font-size: var(--fs-caption, 12px); }
+.cd-upload-btn:hover { border-color: var(--c-primary-500); color: var(--c-primary-700); }
+.cd-upload-btn:focus-visible, .cd-icon-btn:focus-visible { outline: 2px solid var(--c-primary-500); outline-offset: 2px; }
+
+.cd-file {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--tone-success-border);
+  background: var(--tone-success-bg);
+  color: var(--tone-success-fg);
+  border-radius: var(--r-sm, 8px);
+  max-width: 100%;
+  min-width: 0;
+}
+.cd-file-name { font-size: var(--fs-small, 13px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.cd-icon-btn { border: none; background: none; color: inherit; cursor: pointer; display: inline-flex; padding: 2px; border-radius: 4px; }
+
+.cd-expiry { display: grid; gap: 4px; font-size: var(--fs-caption, 12px); color: var(--text-subtle); }
+.cd-expiry input {
+  font: inherit; font-size: var(--fs-small, 13px);
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm, 8px);
+  background: var(--surface);
+  color: var(--text-strong);
+}
+
+.cd-note { margin: 0; font-size: var(--fs-small, 13px); color: var(--text-subtle); }
+.cd-error {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--tone-danger-border);
+  background: var(--tone-danger-bg);
+  color: var(--tone-danger-fg);
+  border-radius: var(--r-sm, 8px);
+  font-size: var(--fs-small, 13px);
+}
+.cd-error button {
+  margin-left: auto;
+  border: 1px solid currentColor; background: none; color: inherit;
+  border-radius: 6px; padding: 3px 10px; font: inherit; font-size: var(--fs-caption, 12px); cursor: pointer;
+}
+
+/* Badges used in the dashboards' document lists */
+.cd-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--fs-micro, 11px); font-weight: var(--fw-semibold, 600);
+  padding: 2px 8px; border-radius: 999px; border: 1px solid;
+  white-space: nowrap;
+}
+.cd-badge-missing { color: var(--tone-danger-fg); background: var(--tone-danger-bg); border-color: var(--tone-danger-border); }
+.cd-badge-cat { color: var(--tone-info-fg); background: var(--tone-info-bg); border-color: var(--tone-info-border); }
+.cd-badge-warn { color: var(--tone-warning-fg); background: var(--tone-warning-bg); border-color: var(--tone-warning-border); }
+
+@media (max-width: 520px) {
+  .cd-file-name { max-width: 170px; }
+}

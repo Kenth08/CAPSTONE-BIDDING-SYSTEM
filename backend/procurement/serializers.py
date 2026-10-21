@@ -1,6 +1,17 @@
 from rest_framework import serializers
 
 from .blockchain import anchor_summary, anchors_for
+from .document_requirements import (
+    BASE_EXPIRY_FIELDS,
+    base_requirements as requirements_base,
+    EXPIRED,
+    approved_categories,
+    category_requirements,
+    document_categories,
+    document_status,
+    expiring_documents,
+    missing_documents,
+)
 from .files import protected_file_url
 from .models import (
     AWARD_DOCUMENT_FIELDS,
@@ -26,17 +37,29 @@ class SupplierListSerializer(serializers.ModelSerializer):
 
     full_name = serializers.CharField(source="user.full_name", read_only=True, default="")
     email = serializers.EmailField(source="user.email", read_only=True, default="")
+    documents_complete = serializers.SerializerMethodField()
 
     class Meta:
         model = Supplier
         fields = [
             "id", "company", "contact", "full_name", "email", "business_type",
             "business_types", "status", "qualification_status", "email_verified", "registered",
-            "category_request_status",
+            "category_request_status", "documents_complete",
         ]
         # Output-only: verification state changes only through the approve /
         # reject / request-revision actions, which are audit-logged.
         read_only_fields = fields
+
+
+    def get_documents_complete(self, obj):
+        # False when a required document is missing or expired, or any uploaded
+        # document is expired or expires within 30 days. Database check only
+        # (check_storage=False): asking storage about every file of every row
+        # would be one network round trip per file on the Suppliers table. The
+        # detail view and the approve action check storage.
+        categories = approved_categories(obj)
+        return not (missing_documents(obj, categories, check_storage=False)
+                    or expiring_documents(obj, categories))
 
 
 # Backwards-compatible alias (other code/imports may still reference SupplierSerializer).
@@ -68,12 +91,34 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
         read_only_fields = fields   # output-only; see SupplierListSerializer
 
     def get_documents(self, obj):
+        """The 10 base documents (same fields as always) followed by the extra
+        licenses for the supplier's categories — approved ones and, while a
+        change request is pending, the requested ones.
+
+        `missing` is True for a required document that isn't really in storage
+        (a file lost to an old Render restart counts as missing)."""
         request = self.context.get("request")
         reviews = obj.document_reviews or {}
+        rows = {row.key: row for row in obj.category_documents.all()} if obj.pk else {}
         result = []
+
+        def status_fields(req):
+            status = document_status(obj, req, rows=rows)
+            return {
+                # "Not uploaded" / "file missing from storage" / "expired", or None.
+                "reason": status["reason"],
+                "present": status["reason"] in (None, EXPIRED),
+                "expired": status["reason"] == EXPIRED,
+                "days_left": status["days_left"],
+                "expiring_soon": status["expiring_soon"],
+                "missing": req["required"] and status["reason"] is not None,
+            }
+
+        base_by_key = {r["key"]: r for r in requirements_base()}
         for key, label, required in SUPPLIER_DOCUMENT_FIELDS:
             url = protected_file_url(request, "supplier", obj, key)
             review = reviews.get(key) or {}
+            expiry_field = BASE_EXPIRY_FIELDS.get(key)
             result.append({
                 "key": key,
                 "label": label,
@@ -81,6 +126,33 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
                 "url": url,
                 "review_status": review.get("status"),
                 "review_note": review.get("note", ""),
+                "source": "base",
+                "category": None,
+                "has_expiry": bool(expiry_field),
+                "expiry_date": getattr(obj, expiry_field) if expiry_field else None,
+                **status_fields(base_by_key[key]),
+            })
+
+        approved = set(approved_categories(obj))
+        for req in category_requirements(document_categories(obj)):
+            row = rows.get(req["key"])
+            review = reviews.get(req["key"]) or {}
+            result.append({
+                "key": req["key"],
+                "label": req["label"],
+                "required": req["required"],
+                "url": protected_file_url(request, "supplierdoc", row, "file") if row else None,
+                "review_status": review.get("status"),
+                "review_note": review.get("note", ""),
+                "source": "category",
+                "category": req["category"],
+                # True when the category is only in a pending change request.
+                "pending_category": req["category"] not in approved,
+                "help_text": req["help_text"],
+                "has_expiry": req["has_expiry"],
+                "expiry_date": row.expiry_date if row else None,
+                "uploaded_at": row.uploaded_at if row else None,
+                **status_fields(req),
             })
         return result
 

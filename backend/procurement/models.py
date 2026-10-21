@@ -258,6 +258,49 @@ class Supplier(models.Model):
         return self.company
 
 
+def supplier_category_doc_path(instance, filename):
+    """Same folder and naming as the base supplier documents."""
+    base, ext = os.path.splitext(filename)
+    base = get_valid_filename(base)[:40] or "doc"
+    ext = ext.lower()[:10]
+    unique = uuid.uuid4().hex[:8]
+    return f"supplier_docs/{instance.supplier_id or 'new'}/{base}_{unique}{ext}"
+
+
+class SupplierCategoryDocument(models.Model):
+    """An extra license a business category requires (e.g. an FDA License to
+    Operate for Medical Supplies), on top of the 10 base documents that stay as
+    FileFields on Supplier.
+
+    Which keys exist, and which are required, is decided by CATEGORY_DOCUMENTS
+    in document_requirements.py. One row per (supplier, key): a re-upload
+    replaces the file on the same row. Review state is kept in
+    Supplier.document_reviews under the same key, so flag / approve / resubmit
+    work exactly like the base documents.
+
+    A separate table rather than new Supplier columns: on deploy, migrate runs
+    while the previous release is still serving, and a new table is invisible
+    to it — nothing it inserts can fail."""
+
+    supplier = models.ForeignKey(
+        Supplier, on_delete=models.CASCADE, related_name="category_documents")
+    key = models.CharField(max_length=64)
+    file = models.FileField(
+        upload_to=supplier_category_doc_path, validators=[validate_upload], max_length=255)
+    expiry_date = models.DateField(null=True, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["supplier_id", "key"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["supplier", "key"], name="unique_supplier_category_document"),
+        ]
+
+    def __str__(self):
+        return f"{self.supplier_id} · {self.key}"
+
+
 class Project(models.Model):
     """A procurement project. Flows: draft -> pending_head -> approved ->
     published -> awarded / closed; or pending_head -> rejected (by the Head);

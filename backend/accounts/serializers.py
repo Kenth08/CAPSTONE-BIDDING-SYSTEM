@@ -11,7 +11,11 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from procurement.models import PROCUREMENT_CATEGORIES, Supplier
+from procurement.document_requirements import (
+    EXPIRY_SUFFIX, UPLOAD_PREFIX, category_requirements, validate_future_expiry,
+)
+from procurement.models import PROCUREMENT_CATEGORIES, Supplier, SupplierCategoryDocument
+from procurement.validators import validate_upload
 
 from .emails import email_verification_token, send_verification_email
 
@@ -166,6 +170,19 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("TIN must contain digits only.")
         return value
 
+    def _not_expired(self, value, label):
+        try:
+            validate_future_expiry(value, label)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
+        return value
+
+    def validate_mayors_permit_expiry(self, value):
+        return self._not_expired(value, "Mayor's / Business Permit")
+
+    def validate_tax_clearance_expiry(self, value):
+        return self._not_expired(value, "Tax Clearance Certificate")
+
     def validate_declaration_accepted(self, value):
         if not value:
             raise serializers.ValidationError("You must accept the declaration to register.")
@@ -179,7 +196,54 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
             validate_password(attrs["password"])
         except DjangoValidationError as exc:
             raise serializers.ValidationError({"password": list(exc.messages)})
+        # Extra licenses the chosen categories require (document_requirements.py).
+        # Kept off `attrs`: they become SupplierCategoryDocument rows, not
+        # Supplier fields.
+        self._category_uploads = self._validate_category_documents(attrs.get("business_types") or [])
         return attrs
+
+    def _validate_category_documents(self, categories):
+        """Check the catdoc_<key> files (and catdoc_<key>_expiry dates) for the
+        chosen categories. Files for categories the supplier didn't pick are
+        ignored. Returns [(requirement, file, expiry_date)] to save."""
+        data = self.initial_data
+        errors, uploads = {}, []
+        date_field = serializers.DateField()
+        for req in category_requirements(categories):
+            field = f"{UPLOAD_PREFIX}{req['key']}"
+            upload = data.get(field)
+            if upload is not None and not hasattr(upload, "read"):
+                upload = None   # a plain string, not a file
+            raw_expiry = str(data.get(field + EXPIRY_SUFFIX) or "").strip()
+
+            if upload is None:
+                if req["required"]:
+                    errors[field] = [f"{req['label']} is required for {req['category']}."]
+                continue
+            try:
+                validate_upload(upload)
+            except DjangoValidationError as exc:
+                errors[field] = list(exc.messages)
+                continue
+
+            expiry = None
+            if req["has_expiry"]:
+                if not raw_expiry:
+                    errors[field + EXPIRY_SUFFIX] = [f"Enter the expiry date of the {req['label']}."]
+                    continue
+                try:
+                    expiry = date_field.to_internal_value(raw_expiry)
+                    validate_future_expiry(expiry, req["label"])
+                except serializers.ValidationError:
+                    errors[field + EXPIRY_SUFFIX] = [f"Enter a valid expiry date for the {req['label']}."]
+                    continue
+                except ValueError as exc:
+                    errors[field + EXPIRY_SUFFIX] = [str(exc)]
+                    continue
+            uploads.append((req, upload, expiry))
+        if errors:
+            raise serializers.ValidationError(errors)
+        return uploads
 
     def create(self, validated_data):
         email = validated_data.pop("email")
@@ -207,12 +271,27 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
             validated_data["contact"] = validated_data.get("representative_name", "")
             validated_data["business_type"] = ", ".join(validated_data.get("business_types", []))
             supplier = Supplier.objects.create(user=user, **validated_data)
+            # Same transaction: a supplier is never created without the
+            # category licenses it was validated with.
+            for req, upload, expiry in getattr(self, "_category_uploads", []):
+                SupplierCategoryDocument.objects.create(
+                    supplier=supplier, key=req["key"], file=upload, expiry_date=expiry)
 
         # Both side effects are best-effort and deliberately OUTSIDE the
         # transaction: neither should be able to roll back a completed
         # registration, and on_commit semantics don't apply to work that is
         # allowed to fail silently.
         send_verification_email(user)
+
+        uploaded = getattr(self, "_category_uploads", [])
+        if uploaded:
+            from accounts.audit import log_action  # noqa: PLC0415 — local like notify_admins below
+            log_action(
+                self.context.get("request"), "supplier.category_documents_uploaded",
+                entity_type="Supplier", entity_id=supplier.id, user=None,
+                description=f"{supplier.company} uploaded at registration: "
+                            + ", ".join(req["label"] for req, _, _ in uploaded) + ".",
+            )
 
         # Let the admins know a new supplier is waiting for verification.
         from procurement.notifications import notify_admins

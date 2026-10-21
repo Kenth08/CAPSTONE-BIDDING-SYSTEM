@@ -31,8 +31,8 @@ from accounts.serializers import RoleTokenObtainPairSerializer
 from accounts.tests import registration_payload
 
 from .management.commands import seed as seed_cmd
-from .models import Award, Bid, BidAttachment, BlockchainAnchor, Project, Supplier
-from .tests import dummy_pdf, make_admin, make_head, make_project, make_supplier
+from .models import Award, Bid, BidAttachment, BlockchainAnchor, Project, Supplier, SupplierCategoryDocument
+from .tests import IN_A_YEAR, IN_TWO_YEARS, attach_base_documents, dummy_pdf, make_admin, make_head, make_project, make_supplier
 
 User = get_user_model()
 
@@ -975,6 +975,7 @@ class EmailVerificationGateTests(APITestCase):
         self.assertFalse(AuditLog.objects.filter(action="supplier.verified").exists())
 
     def test_verified_email_can_be_approved(self):
+        attach_base_documents(self.supplier)   # approval also needs every required document
         self.supplier.email_verified = True
         self.supplier.save()
         self.assertEqual(self._approve().status_code, status.HTTP_200_OK)
@@ -1442,3 +1443,139 @@ class MissingFileAndMailLoggingTests(APITestCase):
                 res = self.client.post("/api/auth/password/reset/",
                                        {"email": self.supplier.user.email})
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
+class SupplierResubmitGuardTests(APITestCase):
+    """resubmit accepted ANY document key, so a supplier could replace a file
+    the Admin had already accepted; and it ran for a VERIFIED supplier too,
+    sending them back to pending (no bidding) with no review requested."""
+
+    def setUp(self):
+        cache.clear()
+        self.supplier = make_supplier(verified=False)
+        self.supplier.valid_id = dummy_pdf("id.pdf")
+        self.supplier.mayors_permit = dummy_pdf("permit.pdf")
+        self.supplier.qualification_status = Supplier.Qualification.NEEDS_REVISION
+        self.supplier.document_reviews = {
+            "valid_id": {"status": "needs_revision", "note": "Blurry"},
+            "mayors_permit": {"status": "approved", "note": ""},
+        }
+        self.supplier.save()
+        self.client.force_authenticate(user=self.supplier.user)
+
+    def test_unflagged_document_is_refused(self):
+        res = self.client.post("/api/suppliers/resubmit/",
+                               {"mayors_permit": dummy_pdf("swap.pdf")}, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.NEEDS_REVISION)
+
+    def test_flagged_document_is_accepted(self):
+        res = self.client.post("/api/suppliers/resubmit/",
+                               {"valid_id": dummy_pdf("id2.pdf")}, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.PENDING)
+        self.assertEqual(self.supplier.document_reviews["valid_id"]["status"], "resubmitted")
+
+    def test_a_flagged_category_document_is_resubmitted_through_the_same_endpoint(self):
+        self.supplier.business_types = ["Medical Supplies"]
+        self.supplier.document_reviews["fda_lto"] = {"status": "needs_revision", "note": "Expired"}
+        self.supplier.save()
+        res = self.client.post("/api/suppliers/resubmit/",
+                               {"fda_lto": dummy_pdf("lto.pdf"), "fda_lto_expiry": IN_TWO_YEARS},
+                               format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        row = SupplierCategoryDocument.objects.get(supplier=self.supplier, key="fda_lto")
+        self.assertEqual(str(row.expiry_date), IN_TWO_YEARS)
+
+    def test_supplier_not_in_revision_cannot_resubmit(self):
+        self.supplier.qualification_status = Supplier.Qualification.VERIFIED
+        self.supplier.save(update_fields=["qualification_status"])
+        res = self.client.post("/api/suppliers/resubmit/",
+                               {"valid_id": dummy_pdf("id2.pdf")}, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.VERIFIED)
+
+
+class SupplierCategoryDocumentAccessTests(APITestCase):
+    """Category licenses go through the same protected file view as every other
+    document: kind "supplierdoc", field "file", strict allow-list, signed links."""
+
+    def setUp(self):
+        cache.clear()
+        self.owner = make_supplier(categories=["Medical Supplies"])
+        self.rival = make_supplier()
+        self.row = SupplierCategoryDocument.objects.create(
+            supplier=self.owner, key="fda_lto", file=dummy_pdf("lto.pdf"), expiry_date=IN_A_YEAR)
+        self.path = f"/api/files/supplierdoc/{self.row.pk}/file/"
+
+    def test_serializer_emits_a_signed_supplierdoc_url(self):
+        self.client.force_authenticate(user=self.owner.user)
+        res = self.client.get("/api/suppliers/me/")
+        doc = next(d for d in res.data["documents"] if d["key"] == "fda_lto")
+        self.assertIn("/api/files/supplierdoc/", doc["url"])
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get(doc["url"]).status_code, status.HTTP_200_OK)
+
+    def test_owner_can_read(self):
+        self.client.force_authenticate(user=self.owner.user)
+        self.assertEqual(self.client.get(self.path).status_code, status.HTTP_200_OK)
+
+    def test_rival_supplier_cannot_read(self):
+        self.client.force_authenticate(user=self.rival.user)
+        self.assertEqual(self.client.get(self.path).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_and_head_can_read(self):
+        for user in (make_admin(), make_head()):
+            with self.subTest(role=user.role):
+                self.client.force_authenticate(user=user)
+                self.assertEqual(self.client.get(self.path).status_code, status.HTTP_200_OK)
+
+    def test_an_unlisted_field_cannot_be_addressed(self):
+        self.client.force_authenticate(user=make_admin())
+        res = self.client.get(f"/api/files/supplierdoc/{self.row.pk}/key/")
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class SupplierCategoryDocumentMigrationTests(TransactionTestCase):
+    """0019 only ADDS a table: existing suppliers are untouched forwards and
+    backwards, and the previous release (which knows nothing of the table) can
+    keep inserting suppliers while migrate runs."""
+
+    BEFORE = [("procurement", "0018_supplier_category_change_request")]
+    AFTER = [("procurement", "0019_supplier_category_document")]
+
+    def _migrate(self, targets):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets)
+        return executor.loader.project_state(targets).apps
+
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+    def test_existing_suppliers_survive_forward_and_backward(self):
+        old = self._migrate(self.BEFORE)
+        OldSupplier = old.get_model("procurement", "Supplier")
+        verified = OldSupplier.objects.create(
+            company="Legacy Medical", contact="x", business_types=["Medical Supplies"],
+            qualification_status="verified", document_reviews={"valid_id": {"status": "approved", "note": ""}})
+
+        new = self._migrate(self.AFTER)
+        NewSupplier = new.get_model("procurement", "Supplier")
+        Row = new.get_model("procurement", "SupplierCategoryDocument")
+        after = NewSupplier.objects.get(pk=verified.pk)
+        self.assertEqual(after.business_types, ["Medical Supplies"])
+        self.assertEqual(after.qualification_status, "verified")
+        self.assertEqual(after.document_reviews, verified.document_reviews)
+        self.assertEqual(Row.objects.count(), 0)
+        Row.objects.create(supplier_id=after.pk, key="fda_lto", file="supplier_docs/1/lto.pdf")
+
+        back = self._migrate(self.BEFORE)
+        BackSupplier = back.get_model("procurement", "Supplier")
+        self.assertEqual(BackSupplier.objects.get(pk=verified.pk).qualification_status, "verified")
+        self.assertNotIn("procurement_suppliercategorydocument", connection.introspection.table_names())

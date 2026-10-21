@@ -1,10 +1,12 @@
 import io
+import json
 import shutil
 import tempfile
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ImproperlyConfigured
 from django.core import mail
 from django.core.cache import cache
 from django.core.management import call_command
@@ -23,7 +25,13 @@ from .blockchain import (
     anchor_summary, bid_parts, confirm_anchor, hash_file, hash_payload, record_anchor,
     submit_anchor_server_side, verify_anchor,
 )
-from .models import BID_DOCUMENT_KEYS, Award, Bid, BidProductImage, BlockchainAnchor, Project, Supplier
+from accounts.tests import registration_payload
+
+from .document_requirements import CATEGORY_DOCUMENTS, requirements_for, validate_registry
+from .models import (
+    BID_DOCUMENT_KEYS, SUPPLIER_DOCUMENT_FIELDS, SUPPLIER_DOCUMENT_KEYS, Award, Bid, BidProductImage,
+    BlockchainAnchor, Project, Supplier, SupplierCategoryDocument,
+)
 
 User = get_user_model()
 
@@ -86,7 +94,9 @@ class SupplierReviewTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_admin_approve_verifies_supplier_and_emails_them(self):
-        # Approval now requires a confirmed email (see EmailVerificationGateTests).
+        # Approval now requires a confirmed email (see EmailVerificationGateTests)
+        # and every required document (see SupplierApprovalDocumentTests).
+        attach_base_documents(self.supplier)
         self.supplier.email_verified = True
         self.supplier.save(update_fields=["email_verified"])
         self.client.force_authenticate(user=self.admin)
@@ -1730,3 +1740,419 @@ class BidProductImageTests(APITestCase):
         # The public trail stays hash-only.
         public = str(self.client.get(f"/api/public/procurement/{self.project.code}/anchors/").data)
         self.assertNotIn("bidimage", public)
+
+
+# ── Category-based supplier documents ────────────────────────────────────────
+
+# Relative dates, so these tests don't start failing once a fixed date passes.
+IN_A_YEAR = (timezone.localdate() + timedelta(days=365)).isoformat()
+IN_TWO_YEARS = (timezone.localdate() + timedelta(days=730)).isoformat()
+LAST_MONTH = (timezone.localdate() - timedelta(days=30)).isoformat()
+
+
+def attach_base_documents(supplier):
+    """Give a supplier every required base document (really written to storage)."""
+    for key, _label, required in SUPPLIER_DOCUMENT_FIELDS:
+        if required:
+            setattr(supplier, key, dummy_pdf(f"{key}.pdf"))
+    supplier.save()
+    return supplier
+
+
+def attach_category_document(supplier, key, expiry=IN_A_YEAR):
+    return SupplierCategoryDocument.objects.create(
+        supplier=supplier, key=key, file=dummy_pdf(f"{key}.pdf"), expiry_date=expiry)
+
+
+class _TempMediaMixin:
+    """Each test writes uploads to its own folder, deleted afterwards."""
+
+    def setUp(self):
+        cache.clear()
+        self._media = tempfile.mkdtemp()
+        self._override = override_settings(MEDIA_ROOT=self._media)
+        self._override.enable()
+        super().setUp()
+
+    def tearDown(self):
+        self._override.disable()
+        shutil.rmtree(self._media, ignore_errors=True)
+
+
+class CategoryDocumentRequirementTests(APITestCase):
+    """requirements_for() and the import-time registry check."""
+
+    def test_single_category_adds_its_documents_after_the_base_set(self):
+        reqs = requirements_for(["Medical Supplies"])
+        self.assertEqual([r["key"] for r in reqs[:10]], SUPPLIER_DOCUMENT_KEYS)
+        extra = reqs[10:]
+        self.assertEqual([r["key"] for r in extra], ["fda_lto"])
+        self.assertTrue(extra[0]["required"])
+        self.assertTrue(extra[0]["has_expiry"])
+        self.assertEqual(extra[0]["category"], "Medical Supplies")
+        self.assertEqual(extra[0]["source"], "category")
+
+    def test_multiple_categories_combine_in_category_order(self):
+        reqs = requirements_for(["Food & Catering", "Construction"])
+        self.assertEqual(
+            [r["key"] for r in reqs if r["source"] == "category"],
+            ["pcab_license", "sanitary_permit", "food_handler_health_certs", "fda_lto_food"])
+
+    def test_categories_without_extras_need_only_the_base_documents(self):
+        for category in ("Office Supplies", "Furniture", "Sports Equipment", "Books & Educational Materials"):
+            with self.subTest(category=category):
+                self.assertEqual(len(requirements_for([category])), len(SUPPLIER_DOCUMENT_KEYS))
+
+    def test_unknown_category_is_rejected(self):
+        with self.assertRaises(ValueError):
+            requirements_for(["Spaceships"])
+
+    def test_requirements_endpoint_is_public_and_validates(self):
+        res = self.client.get("/api/suppliers/document-requirements/",
+                              {"categories": "Medical Supplies,Construction"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        keys = [d["key"] for d in res.data]
+        self.assertIn("fda_lto", keys)
+        self.assertIn("pcab_license", keys)
+        bad = self.client.get("/api/suppliers/document-requirements/", {"categories": "Spaceships"})
+        self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_registry_check_catches_a_bad_category_name(self):
+        with self.assertRaises(ImproperlyConfigured):
+            validate_registry({"Medical Supply": [{"key": "fda_x", "label": "X"}]})
+
+    def test_registry_check_catches_a_key_clashing_with_a_base_document(self):
+        with self.assertRaises(ImproperlyConfigured):
+            validate_registry({"Construction": [{"key": "valid_id", "label": "X"}]})
+
+    def test_registry_check_catches_a_key_used_by_two_categories(self):
+        with self.assertRaises(ImproperlyConfigured):
+            validate_registry({
+                "Construction": [{"key": "shared_doc", "label": "A"}],
+                "Furniture": [{"key": "shared_doc", "label": "B"}],
+            })
+
+    def test_the_shipped_registry_passes_its_own_check(self):
+        validate_registry(CATEGORY_DOCUMENTS)
+
+
+class CategoryDocumentRegistrationTests(_TempMediaMixin, APITestCase):
+    """Registration (self and Admin-assisted) requires each chosen category's
+    required documents, with an expiry date where the document has one."""
+
+    def _payload(self, categories, email="medic@example.com", **files):
+        data = registration_payload(email)
+        data["business_types"] = json.dumps(categories)
+        data.update(files)
+        return data
+
+    def test_missing_required_category_document_is_rejected(self):
+        res = self.client.post("/api/auth/register/supplier/",
+                               self._payload(["Medical Supplies"]), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("catdoc_fda_lto", res.data)
+        self.assertFalse(Supplier.objects.exists())
+        self.assertFalse(User.objects.filter(email="medic@example.com").exists())
+
+    def test_missing_expiry_date_is_rejected(self):
+        res = self.client.post(
+            "/api/auth/register/supplier/",
+            self._payload(["Medical Supplies"], catdoc_fda_lto=dummy_pdf("lto.pdf")),
+            format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("catdoc_fda_lto_expiry", res.data)
+
+    def test_registration_succeeds_with_the_document_and_its_expiry(self):
+        res = self.client.post(
+            "/api/auth/register/supplier/",
+            self._payload(["Medical Supplies"], catdoc_fda_lto=dummy_pdf("lto.pdf"),
+                          catdoc_fda_lto_expiry=IN_A_YEAR),
+            format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        supplier = Supplier.objects.get()
+        row = supplier.category_documents.get()
+        self.assertEqual(row.key, "fda_lto")
+        self.assertEqual(str(row.expiry_date), IN_A_YEAR)
+        self.assertTrue(AuditLog.objects.filter(action="supplier.category_documents_uploaded").exists())
+
+    def test_files_for_categories_not_picked_are_ignored(self):
+        res = self.client.post(
+            "/api/auth/register/supplier/",
+            self._payload(["Furniture"], catdoc_pcab_license=dummy_pdf("pcab.pdf"),
+                          catdoc_pcab_license_expiry=IN_A_YEAR),
+            format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertFalse(SupplierCategoryDocument.objects.exists())
+
+    def test_admin_assisted_registration_follows_the_same_rules(self):
+        self.client.force_authenticate(user=make_admin())
+        res = self.client.post("/api/auth/admin/register-supplier/",
+                               self._payload(["Construction"], email="builder@example.com"),
+                               format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("catdoc_pcab_license", res.data)
+
+        res = self.client.post(
+            "/api/auth/admin/register-supplier/",
+            self._payload(["Construction"], email="builder@example.com",
+                          catdoc_pcab_license=dummy_pdf("pcab.pdf"),
+                          catdoc_pcab_license_expiry=IN_A_YEAR),
+            format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertTrue(SupplierCategoryDocument.objects.filter(key="pcab_license").exists())
+
+
+class SupplierApprovalDocumentTests(_TempMediaMixin, APITestCase):
+    """approve refuses a NEW verification while any required base or category
+    document is missing, including a file the database names but storage lost."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = make_admin()
+        self.supplier = make_supplier(verified=False, categories=["Medical Supplies"])
+        self.supplier.email_verified = True
+        self.supplier.save(update_fields=["email_verified"])
+        self.client.force_authenticate(user=self.admin)
+        self.url = f"/api/suppliers/{self.supplier.pk}/approve/"
+
+    def test_blocked_when_a_base_document_is_missing(self):
+        res = self.client.post(self.url)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("SEC / DTI Certificate", res.data["detail"])
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.PENDING)
+        self.assertTrue(AuditLog.objects.filter(action="supplier.approval_blocked").exists())
+
+    def test_blocked_when_a_category_document_is_missing(self):
+        attach_base_documents(self.supplier)
+        res = self.client.post(self.url)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data["missing"], ["FDA License to Operate (Medical Device Distributor) (not uploaded)"])
+
+    def test_blocked_when_a_file_no_longer_exists_in_storage(self):
+        attach_base_documents(self.supplier)
+        attach_category_document(self.supplier, "fda_lto")
+        default_storage.delete(self.supplier.valid_id.name)   # lost, like an old Render restart
+        res = self.client.post(self.url)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data["missing"], ["Valid Government ID (file missing from storage)"])
+
+    def test_approves_when_everything_is_on_file(self):
+        attach_base_documents(self.supplier)
+        attach_category_document(self.supplier, "fda_lto")
+        res = self.client.post(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.VERIFIED)
+
+    def test_detail_lists_category_documents_with_missing_flag(self):
+        attach_base_documents(self.supplier)
+        res = self.client.get(f"/api/suppliers/{self.supplier.pk}/")
+        doc = next(d for d in res.data["documents"] if d["key"] == "fda_lto")
+        self.assertEqual(doc["category"], "Medical Supplies")
+        self.assertTrue(doc["missing"])
+        self.assertIsNone(doc["url"])
+        base = next(d for d in res.data["documents"] if d["key"] == "valid_id")
+        self.assertFalse(base["missing"])
+
+    def test_list_reports_documents_complete(self):
+        res = self.client.get("/api/suppliers/")
+        self.assertFalse(next(s for s in res.data if s["id"] == self.supplier.pk)["documents_complete"])
+        attach_base_documents(self.supplier)
+        attach_category_document(self.supplier, "fda_lto")
+        res = self.client.get("/api/suppliers/")
+        self.assertTrue(next(s for s in res.data if s["id"] == self.supplier.pk)["documents_complete"])
+
+
+class ExistingVerifiedSupplierTests(APITestCase):
+    """Suppliers verified before category documents existed keep everything."""
+
+    def test_keeps_verification_and_eligibility_without_category_documents(self):
+        supplier = make_supplier(verified=True, categories=["Medical Supplies"])
+        project = make_project(category="Medical Supplies")
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.get("/api/projects/")
+        self.assertIn(project.pk, [p["id"] for p in res.data])
+
+        # Re-approving an already-verified supplier is never blocked.
+        admin = make_admin()
+        self.client.force_authenticate(user=admin)
+        supplier.email_verified = True
+        supplier.save(update_fields=["email_verified"])
+        res = self.client.post(f"/api/suppliers/{supplier.pk}/approve/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        supplier.refresh_from_db()
+        self.assertEqual(supplier.qualification_status, Supplier.Qualification.VERIFIED)
+
+
+class CategoryChangeDocumentTests(_TempMediaMixin, APITestCase):
+    """A new category is only granted once its required licenses are on file."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = make_admin()
+        self.supplier = attach_base_documents(make_supplier(verified=True, categories=["IT Equipment"]))
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.patch("/api/suppliers/me/",
+                                {"business_types": ["IT Equipment", "Construction"]}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def _upload(self, **files):
+        self.client.force_authenticate(user=self.supplier.user)
+        return self.client.post("/api/suppliers/me/category-documents/", files, format="multipart")
+
+    def _approve(self):
+        self.client.force_authenticate(user=self.admin)
+        return self.client.post(f"/api/suppliers/{self.supplier.pk}/approve-categories/")
+
+    def test_approve_categories_blocked_until_the_new_license_is_uploaded(self):
+        res = self._approve()
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("PCAB Contractor's License (not uploaded)", res.data["missing"])
+        self.assertTrue(AuditLog.objects.filter(action="supplier.category_change_blocked").exists())
+
+        res = self._upload(catdoc_pcab_license=dummy_pdf("pcab.pdf"),
+                           catdoc_pcab_license_expiry=IN_A_YEAR)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.assertTrue(AuditLog.objects.filter(action="supplier.category_documents_uploaded").exists())
+
+        res = self._approve()
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.business_types, ["IT Equipment", "Construction"])
+        self.assertEqual(self.supplier.document_reviews["pcab_license"]["status"], "approved")
+
+    def test_upload_requires_the_expiry_date(self):
+        res = self._upload(catdoc_pcab_license=dummy_pdf("pcab.pdf"))
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("catdoc_pcab_license_expiry", res.data)
+
+    def test_upload_for_a_category_not_requested_is_refused(self):
+        res = self._upload(catdoc_fda_lto=dummy_pdf("lto.pdf"), catdoc_fda_lto_expiry=IN_A_YEAR)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(SupplierCategoryDocument.objects.exists())
+
+    def test_an_accepted_license_cannot_be_swapped_without_a_flag(self):
+        supplier = attach_base_documents(make_supplier(verified=True, categories=["Medical Supplies"]))
+        attach_category_document(supplier, "fda_lto")
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.post("/api/suppliers/me/category-documents/",
+                               {"catdoc_fda_lto": dummy_pdf("new.pdf"), "catdoc_fda_lto_expiry": IN_TWO_YEARS},
+                               format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_flagging_a_new_license_keeps_the_supplier_verified(self):
+        self._upload(catdoc_pcab_license=dummy_pdf("pcab.pdf"), catdoc_pcab_license_expiry=IN_A_YEAR)
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(f"/api/suppliers/{self.supplier.pk}/request-revision/",
+                               {"documents": {"pcab_license": "Expired copy"}}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.VERIFIED)
+
+        res = self._approve()
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("PCAB Contractor's License", res.data["flagged"])
+
+        res = self._upload(catdoc_pcab_license=dummy_pdf("pcab2.pdf"), catdoc_pcab_license_expiry=IN_TWO_YEARS)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.document_reviews["pcab_license"]["status"], "resubmitted")
+        self.assertEqual(self._approve().status_code, status.HTTP_200_OK)
+
+
+class CategoryDocumentExpiryTests(_TempMediaMixin, APITestCase):
+    """An expired license counts as missing for NEW approvals; a license about
+    to expire is flagged but still valid; nobody already verified loses access."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = make_admin()
+
+    def _pending(self, categories):
+        supplier = attach_base_documents(make_supplier(verified=False, categories=categories))
+        supplier.email_verified = True
+        supplier.save(update_fields=["email_verified"])
+        return supplier
+
+    def _approve(self, supplier):
+        self.client.force_authenticate(user=self.admin)
+        return self.client.post(f"/api/suppliers/{supplier.pk}/approve/")
+
+    def test_expired_category_license_blocks_approval(self):
+        supplier = self._pending(["Medical Supplies"])
+        attach_category_document(supplier, "fda_lto", expiry=LAST_MONTH)
+        res = self._approve(supplier)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data["missing"],
+                         [f"FDA License to Operate (Medical Device Distributor) (expired {LAST_MONTH})"])
+        self.assertIn(f"expired {LAST_MONTH}", res.data["detail"])
+
+    def test_expired_mayors_permit_blocks_approval(self):
+        supplier = self._pending(["Furniture"])
+        supplier.mayors_permit_expiry = LAST_MONTH
+        supplier.save(update_fields=["mayors_permit_expiry"])
+        res = self._approve(supplier)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(res.data["missing"], [f"Mayor's / Business Permit (expired {LAST_MONTH})"])
+
+    def test_license_expiring_in_ten_days_is_flagged_but_does_not_block(self):
+        supplier = self._pending(["Medical Supplies"])
+        soon = (timezone.localdate() + timedelta(days=10)).isoformat()
+        attach_category_document(supplier, "fda_lto", expiry=soon)
+
+        self.client.force_authenticate(user=self.admin)
+        detail = self.client.get(f"/api/suppliers/{supplier.pk}/").data
+        doc = next(d for d in detail["documents"] if d["key"] == "fda_lto")
+        self.assertTrue(doc["expiring_soon"])
+        self.assertEqual(doc["days_left"], 10)
+        self.assertFalse(doc["missing"])
+        row = next(s for s in self.client.get("/api/suppliers/").data if s["id"] == supplier.pk)
+        self.assertFalse(row["documents_complete"])   # "incomplete or expired" badge
+
+        self.assertEqual(self._approve(supplier).status_code, status.HTTP_200_OK)
+
+    def test_past_expiry_date_is_rejected_at_registration(self):
+        data = registration_payload("late@example.com")
+        data["business_types"] = json.dumps(["Medical Supplies"])
+        data.update(catdoc_fda_lto=dummy_pdf("lto.pdf"), catdoc_fda_lto_expiry=LAST_MONTH)
+        res = self.client.post("/api/auth/register/supplier/", data, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("expired", str(res.data["catdoc_fda_lto_expiry"]))
+
+        data = registration_payload("late2@example.com")
+        data["mayors_permit_expiry"] = LAST_MONTH
+        res = self.client.post("/api/auth/register/supplier/", data, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("mayors_permit_expiry", res.data)
+        self.assertFalse(Supplier.objects.exists())
+
+    def test_past_expiry_date_is_rejected_at_upload(self):
+        supplier = attach_base_documents(make_supplier(verified=True, categories=["IT Equipment"]))
+        self.client.force_authenticate(user=supplier.user)
+        self.client.patch("/api/suppliers/me/", {"business_types": ["IT Equipment", "Construction"]},
+                          format="json")
+        res = self.client.post("/api/suppliers/me/category-documents/",
+                               {"catdoc_pcab_license": dummy_pdf("pcab.pdf"),
+                                "catdoc_pcab_license_expiry": LAST_MONTH}, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("expired", str(res.data["catdoc_pcab_license_expiry"]))
+        self.assertFalse(SupplierCategoryDocument.objects.exists())
+
+    def test_verified_supplier_with_expired_license_keeps_eligibility_and_can_renew(self):
+        supplier = attach_base_documents(make_supplier(verified=True, categories=["Medical Supplies"]))
+        attach_category_document(supplier, "fda_lto", expiry=LAST_MONTH)
+        project = make_project(category="Medical Supplies")
+
+        self.client.force_authenticate(user=supplier.user)
+        self.assertIn(project.pk, [p["id"] for p in self.client.get("/api/projects/").data])
+        doc = next(d for d in self.client.get("/api/suppliers/me/").data["documents"] if d["key"] == "fda_lto")
+        self.assertTrue(doc["expired"])
+
+        res = self.client.post("/api/suppliers/me/category-documents/",
+                               {"catdoc_fda_lto": dummy_pdf("renewed.pdf"),
+                                "catdoc_fda_lto_expiry": IN_A_YEAR}, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        supplier.refresh_from_db()
+        self.assertEqual(supplier.qualification_status, Supplier.Qualification.VERIFIED)
+        self.assertEqual(str(supplier.category_documents.get(key="fda_lto").expiry_date), IN_A_YEAR)

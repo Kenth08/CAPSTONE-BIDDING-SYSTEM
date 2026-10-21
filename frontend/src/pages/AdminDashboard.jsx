@@ -20,6 +20,10 @@ import {
   resubmitProjectDocuments,
 } from '../store/projectsStore'
 import { CATEGORIES } from '../constants/categories'
+import CategoryDocumentFields, {
+  appendCategoryDocs, categoryDocsProblem, pastExpiryProblem, todayIso,
+  useCategoryDocState, useCategoryRequirements,
+} from '../components/CategoryDocuments'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import AppSidebar from '../components/shell/AppSidebar'
 import AppHeader, { storedUser } from '../components/shell/AppHeader'
@@ -1158,8 +1162,12 @@ function SuppliersPage() {
     setRegFiles(f => ({ ...f, [key]: file }))
   }
   const removeRegFile = (key) => setRegFiles(f => { const n = { ...f }; delete n[key]; return n })
+  // Extra licenses the picked categories require (rules come from the server).
+  const regCatReq = useCategoryRequirements(regTypes)
+  const regCatDocs = useCategoryDocState()
   const resetRegForm = () => {
     setRegForm(ASSISTED_EMPTY); setRegTypes([]); setRegFiles({}); setRegErr(''); setShowRegisterForm(false)
+    regCatDocs.reset()
   }
   const handleRegSubmit = async (e) => {
     e.preventDefault()
@@ -1167,6 +1175,8 @@ function SuppliersPage() {
     if (regTypes.length === 0) { setRegErr('Select at least one business type.'); return }
     const missing = ASSISTED_REQUIRED_DOCS.filter(d => !regFiles[d.key])
     if (missing.length) { setRegErr(`Upload all required documents (${missing.length} missing).`); return }
+    const catProblem = categoryDocsProblem(regCatReq.docs, regCatDocs.files, regCatDocs.expiries)
+    if (catProblem) { setRegErr(catProblem); return }
     if (!regForm.declaration_accepted) { setRegErr('Confirm the declaration before submitting.'); return }
     setRegErr(''); setRegSubmitting(true)
     try {
@@ -1175,6 +1185,7 @@ function SuppliersPage() {
       fd.append('declaration_accepted', regForm.declaration_accepted)
       fd.append('business_types', JSON.stringify(regTypes))
       Object.entries(regFiles).forEach(([k, file]) => fd.append(k, file))
+      appendCategoryDocs(fd, regCatReq.docs, regCatDocs.files, regCatDocs.expiries)
       await apiAdminRegisterSupplier(fd)
       resetRegForm()
       showToast('success', 'Supplier registered. Pending admin verification.')
@@ -1253,6 +1264,7 @@ function SuppliersPage() {
             files={regFiles} onFile={onRegDoc} removeFile={removeRegFile}
             error={regErr} setError={setRegErr} submitting={regSubmitting}
             onSubmit={handleRegSubmit} onClose={resetRegForm}
+            catReq={regCatReq} catDocs={regCatDocs}
           />
         )}
 
@@ -1284,6 +1296,10 @@ function SuppliersPage() {
                   <td>
                     <div className="ad-badge-stack">
                       <StatusBadge domain="qualification" status={s.qualification_status} />
+                      {s.documents_complete === false && (
+                        <StatusBadge tone="danger" dot={false} label="Documents incomplete or expired"
+                          title="A required document is missing or expired, or a document expires within 30 days. Open View for details." />
+                      )}
                       {s.category_request_status === 'pending' && (
                         <StatusBadge tone="warning" dot={false} label="Category change"
                           title="This supplier asked to change their business categories" />
@@ -1327,7 +1343,7 @@ function FormField({ id, label, required = true, hint, full, children }) {
 
 const ASSISTED_STEPS = ['Basic Info', 'Documents', 'Declaration', 'Review']
 
-function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, removeFile, error, setError, submitting, onSubmit, onClose }) {
+function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, removeFile, error, setError, submitting, onSubmit, onClose, catReq, catDocs }) {
   const [step, setStep] = useState(0)
 
   const validateStep = () => {
@@ -1345,6 +1361,13 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
     if (step === 1) {
       const missing = ASSISTED_REQUIRED_DOCS.filter(d => !files[d.key])
       if (missing.length) return `Upload all required documents (${missing.length} missing).`
+      const baseExpiry = pastExpiryProblem("Mayor's Permit", form.mayors_permit_expiry)
+        || pastExpiryProblem('Tax Clearance Certificate', form.tax_clearance_expiry)
+      if (baseExpiry) return baseExpiry
+      if (catReq.loading) return 'Still checking which documents the categories need. Try again in a moment.'
+      if (catReq.error) return 'Could not load the category documents. Use "Try again" in that section.'
+      const catProblem = categoryDocsProblem(catReq.docs, catDocs.files, catDocs.expiries)
+      if (catProblem) return catProblem
     }
     if (step === 2 && !form.declaration_accepted) {
       return 'Confirm the declaration before continuing.'
@@ -1362,6 +1385,8 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
 
   const requiredUploaded = ASSISTED_REQUIRED_DOCS.filter(d => files[d.key]).length
   const optionalUploaded = ASSISTED_OPTIONAL_DOCS.filter(d => files[d.key]).length
+  const catRequired = catReq.docs.filter(d => d.required)
+  const catRequiredDone = catRequired.filter(d => catDocs.files[d.key]).length
 
   return (
     <div className="ad-modal-overlay" onClick={onClose}>
@@ -1477,10 +1502,10 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                 <div className="ui-form-section-title">Validity &amp; financials</div>
                 <div className="ad-form-grid">
                   <FormField id="ar-mp-exp" label="Mayor's Permit Expiry" required={false}>
-                    <input id="ar-mp-exp" type="date" value={form.mayors_permit_expiry} onChange={e => set('mayors_permit_expiry', e.target.value)} />
+                    <input id="ar-mp-exp" type="date" min={todayIso()} value={form.mayors_permit_expiry} onChange={e => set('mayors_permit_expiry', e.target.value)} />
                   </FormField>
                   <FormField id="ar-tc-exp" label="Tax Clearance Expiry" required={false}>
-                    <input id="ar-tc-exp" type="date" value={form.tax_clearance_expiry} onChange={e => set('tax_clearance_expiry', e.target.value)} />
+                    <input id="ar-tc-exp" type="date" min={todayIso()} value={form.tax_clearance_expiry} onChange={e => set('tax_clearance_expiry', e.target.value)} />
                   </FormField>
                   <FormField id="ar-fs-year" label="Financial Statement Year" required={false} hint="Four-digit year, e.g. 2026.">
                     <input id="ar-fs-year" inputMode="numeric" autoComplete="off" value={form.financial_statement_year}
@@ -1489,6 +1514,24 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                   </FormField>
                 </div>
               </section>
+
+              {(catReq.loading || catReq.error || catReq.docs.length > 0) && (
+                <section className="ui-form-section">
+                  <div className="ui-form-section-title ad-section-title-row">
+                    <span>Category documents</span>
+                    {catRequired.length > 0 && (
+                      <StatusBadge
+                        tone={catRequiredDone === catRequired.length ? 'success' : 'neutral'}
+                        label={`${catRequiredDone} / ${catRequired.length} required uploaded`}
+                      />
+                    )}
+                  </div>
+                  <p className="ui-hint" style={{ marginTop: -6, marginBottom: 12 }}>
+                    Licenses the selected business categories require. Enter each license's expiry date.
+                  </p>
+                  <CategoryDocumentFields req={catReq} state={catDocs} onError={setError} idPrefix="ar-catdoc" />
+                </section>
+              )}
 
               <section className="ui-form-section">
                 <div className="ui-form-section-title">Optional documents</div>
@@ -1535,6 +1578,11 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                 <Info2 label="Phone" value={form.phone_number} />
                 <Info2 label="Required Docs Uploaded" value={`${requiredUploaded}/${ASSISTED_REQUIRED_DOCS.length}`} />
                 <Info2 label="Optional Docs Uploaded" value={`${optionalUploaded}`} />
+                {catReq.docs.length > 0 && (
+                  <Info2 label="Category Docs Uploaded"
+                    value={`${catReq.docs.filter(d => catDocs.files[d.key]).length}/${catReq.docs.length}`
+                      + (catRequired.length ? ` (${catRequiredDone}/${catRequired.length} required)` : '')} />
+                )}
                 <Info2 label="Status After Submission" value="Pending Verification" />
               </div>
               <div className="ui-callout ui-callout--neutral" style={{ marginTop: 12 }}>
@@ -1594,6 +1642,46 @@ function SupplierDetailSkeleton() {
       ))}
     </div>
   )
+}
+
+// Missing / Expired (red), "Expires in X days" (orange, within 30 days) or the
+// plain expiry date. Expired documents block NEW approvals only; a supplier
+// who is already verified keeps bidding, so this is how the Admin notices.
+function DocExpiryBadges({ doc }) {
+  if (doc.expired) {
+    return (
+      <span className="cd-badge cd-badge-missing" title="Expired documents count as missing for approval.">
+        Expired {fmtDate(doc.expiry_date)}
+      </span>
+    )
+  }
+  return (
+    <>
+      {doc.missing && (
+        <span className="cd-badge cd-badge-missing"
+          title={doc.url ? 'The file is no longer in storage — ask the supplier to upload it again.' : 'Not uploaded yet'}>
+          Missing
+        </span>
+      )}
+      {doc.expiring_soon
+        ? <span className="cd-badge cd-badge-warn">Expires in {doc.days_left} day{doc.days_left === 1 ? '' : 's'}</span>
+        : doc.expiry_date && !doc.missing && <span className="ad-doc-expiry">Expires {fmtDate(doc.expiry_date)}</span>}
+    </>
+  )
+}
+
+// Base documents first, then one group per business category (its extra
+// licenses). `pending` marks a category that is only in a change request.
+function supplierDocGroups(documents = []) {
+  const groups = [{ key: 'base', title: null, pending: false, docs: documents.filter(d => d.source !== 'category') }]
+  const byCategory = {}
+  documents.filter(d => d.source === 'category').forEach(d => {
+    if (!byCategory[d.category]) {
+      byCategory[d.category] = { key: d.category, title: d.category, pending: !!d.pending_category, docs: [] }
+    }
+    byCategory[d.category].docs.push(d)
+  })
+  return [...groups, ...Object.values(byCategory)]
 }
 
 // Builds the initial "needs revision" flags from a supplier's documents.
@@ -1679,7 +1767,9 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
     }
     setConfirm({
       title: 'Request revision?',
-      message: `The supplier will be notified to re-upload ${Object.keys(docs).length} document(s). They cannot bid until re-approved.`,
+      message: decided
+        ? `The supplier will be asked to re-upload ${Object.keys(docs).length} license(s) for the requested categories. They stay verified and keep bidding in their current categories.`
+        : `The supplier will be notified to re-upload ${Object.keys(docs).length} document(s). They cannot bid until re-approved.`,
       tone: 'orange',
       confirmLabel: 'Send Revision Request',
       onConfirm: () => runAction(
@@ -1700,6 +1790,11 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
   // Once a supplier has been approved (or rejected), the modal becomes a
   // read-only profile view — no checkboxes, no decision footer.
   const decided = supplier?.qualification_status === 'verified' || supplier?.qualification_status === 'rejected'
+  // A verified supplier's profile is read-only, except the licenses of a
+  // pending category request: the Admin can flag those without un-verifying them.
+  const canFlag = (d) => !decided || (d.pending_category && supplier?.qualification_status === 'verified')
+  const pendingFlagCount = (supplier?.documents || [])
+    .filter(d => d.pending_category && flags[d.key]?.checked).length
 
   return (
     <div className="ad-modal-overlay" onClick={onClose}>
@@ -1779,15 +1874,23 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                   </span>
                 </div>
               )}
+              {supplierDocGroups(supplier.documents).map(group => (
+              <div className="ad-doc-group" key={group.key}>
+              {group.title && (
+                <div className="ad-doc-group-head">
+                  <span>{group.title} licenses</span>
+                  {group.pending && <span className="cd-badge cd-badge-warn">Requested category</span>}
+                </div>
+              )}
               <div className="ad-docs-list">
-                {supplier.documents.map(d => {
+                {group.docs.map(d => {
                   const checked = !!flags[d.key]?.checked
                   const rs = d.review_status
                   const rowCls = checked ? ' flagged' : rs === 'resubmitted' ? ' resubmitted' : ''
                   return (
                     <div className={`ad-doc-row${rowCls}`} key={d.key}>
                       <div className="ad-doc-main">
-                        {!decided && (
+                        {canFlag(d) && (
                           <label className="ad-doc-check">
                             <input
                               type="checkbox"
@@ -1800,6 +1903,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                         <div className="ad-doc-name">
                           <span className="ad-bold">{d.label}</span>
                           <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+                          <DocExpiryBadges doc={d} />
                           {/* Review state at a glance — the admin can still re-check any doc to double-check it. */}
                           {checked
                             ? <span className="ad-doc-status ad-doc-flag">Flagged for revision</span>
@@ -1829,6 +1933,8 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                   )
                 })}
               </div>
+              </div>
+              ))}
 
               {decided ? (
                 supplier.admin_notes ? (
@@ -1869,6 +1975,13 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                     onClick={handleApprove}
                   >
                     <Check size={14} /> {busy ? 'Working…' : 'Approve'}
+                  </button>
+                </div>
+              )}
+              {decided && pendingFlagCount > 0 && (
+                <div className="ad-modal-footer-actions">
+                  <button className="ad-btn-revision" disabled={busy} onClick={handleRequestRevision}>
+                    <AlertTriangle size={14} /> {busy ? 'Working…' : `Flag ${pendingFlagCount} license(s)`}
                   </button>
                 </div>
               )}
@@ -1936,6 +2049,10 @@ function CategoryRequestPanel({ supplier, busy, onApprove, onReject }) {
   const requested = supplier.pending_business_types || []
   const added = requested.filter(c => !approved.includes(c))
   const removed = approved.filter(c => !requested.includes(c))
+  // Licenses the NEW categories need. approve-categories refuses while a
+  // required one is missing or flagged, so say so before the Admin clicks.
+  const newDocs = (supplier.documents || []).filter(d => d.source === 'category' && added.includes(d.category))
+  const blocking = newDocs.filter(d => d.missing || d.review_status === 'needs_revision')
   return (
     <div className="ad-field">
       <label>Category change request</label>
@@ -1954,6 +2071,34 @@ function CategoryRequestPanel({ supplier, busy, onApprove, onReject }) {
       {removed.length > 0 && (
         <div className="ad-chips" aria-label="Categories to remove">
           {removed.map(t => <span className="ad-chip" key={`rm-${t}`}>− {t}</span>)}
+        </div>
+      )}
+      {newDocs.length > 0 && (
+        <ul className="ad-catreq-docs" aria-label="Licenses for the requested categories">
+          {newDocs.map(d => (
+            <li key={d.key}>
+              <span className="ad-catreq-doc-name">
+                {d.label}
+                <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+              </span>
+              <span className="ad-catreq-doc-state">
+                {d.review_status === 'needs_revision'
+                  ? <span className="cd-badge cd-badge-warn">Flagged</span>
+                  : <DocExpiryBadges doc={d} />}
+                {d.url
+                  ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                  : <span className="ad-doc-missing">Not uploaded</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {blocking.length > 0 && (
+        <div className="ad-modal-error" role="status">
+          <AlertTriangle size={15} />
+          {' '}Can't approve yet: {blocking.map(d => `${d.label} (${
+            d.review_status === 'needs_revision' ? 'flagged' : d.expired ? `expired ${d.expiry_date}` : d.reason || 'missing'
+          })`).join(', ')}.
         </div>
       )}
       <textarea

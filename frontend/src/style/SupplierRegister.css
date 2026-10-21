@@ -173,7 +173,7 @@
 .sr-agree input { accent-color: var(--primary); width: 17px; height: 17px; }
 
 /* Review */
-.sr-review { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.sr-review { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
 .sr-stat {
   border: 1px solid var(--light-border); border-radius: 10px;
   padding: 18px; text-align: center; display: flex; flex-direction: column; gap: 4px;

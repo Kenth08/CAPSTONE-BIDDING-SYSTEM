@@ -109,6 +109,24 @@ export async function apiConfirmPasswordReset(uid, token, newPassword) {
   return res.json()
 }
 
+// Which documents the chosen business categories require: the base documents
+// plus each category's extra licenses. Public (registration has no login yet).
+// Returns [{ key, label, required, has_expiry, help_text, source, category }].
+export async function apiDocumentRequirements(categories) {
+  const qs = new URLSearchParams({ categories: (categories || []).join(',') })
+  let res
+  try {
+    res = await fetch(`${API_URL}/suppliers/document-requirements/?${qs}`)
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw new Error(readError(body, 'Could not load the required documents.'))
+  }
+  return res.json()
+}
+
 // Multi-step supplier registration with document uploads (multipart/form-data).
 // `data` is a FormData instance — do NOT set Content-Type; the browser adds the
 // correct multipart boundary automatically.
@@ -308,6 +326,10 @@ export const apiGetMySupplier = () => apiFetch('/suppliers/me/')
 export const apiUpdateMySupplier = (data) =>
   apiFetch('/suppliers/me/', { method: 'PATCH', body: JSON.stringify(data) })
 export const apiResubmitDocuments = (formData) => apiUpload('/suppliers/resubmit/', formData)
+// Supplier uploads extra licenses for their categories or a pending category
+// request: multipart catdoc_<key> (+ catdoc_<key>_expiry).
+export const apiUploadCategoryDocuments = (formData) =>
+  apiUpload('/suppliers/me/category-documents/', formData)
 
 // ── Account settings (any role) ─────────────────────────────────────────────
 export const apiChangePassword = (currentPassword, newPassword) =>
