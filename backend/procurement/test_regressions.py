@@ -1401,3 +1401,44 @@ class PendingSupplierBidTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
         self.assertIn("pending admin approval", res.json()["detail"])
         self.assertFalse(Bid.objects.filter(supplier=self.supplier).exists())
+
+
+class MissingFileAndMailLoggingTests(APITestCase):
+    """Two production failures that left no trace: a supplier document whose
+    file had been wiped from Render's ephemeral disk came back as a bare 404
+    (indistinguishable from an access denial), and password reset emails were
+    sent with fail_silently=True, so an SMTP error was swallowed before the
+    logging line could run."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.supplier = make_supplier(verified=False)
+        self.supplier.sec_dti_certificate = dummy_pdf("sec.pdf")
+        self.supplier.save()
+
+    def test_admin_gets_an_explanation_when_the_file_is_gone(self):
+        f = self.supplier.sec_dti_certificate
+        f.storage.delete(f.name)
+        self.client.force_authenticate(user=self.admin)
+        with self.assertLogs("procurement.files", level="WARNING"):
+            res = self.client.get(f"/api/files/supplier/{self.supplier.pk}/sec_dti_certificate/")
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertIn("missing from storage", res.json()["detail"])
+
+    def test_outsider_still_gets_a_bare_404(self):
+        f = self.supplier.sec_dti_certificate
+        f.storage.delete(f.name)
+        rival = make_supplier()
+        self.client.force_authenticate(user=rival.user)
+        res = self.client.get(f"/api/files/supplier/{self.supplier.pk}/sec_dti_certificate/")
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertNotIn("missing from storage", res.content.decode())
+
+    def test_password_reset_smtp_failure_is_logged_not_swallowed(self):
+        with mock.patch("django.core.mail.backends.locmem.EmailBackend.send_messages",
+                        side_effect=OSError("smtp blocked")):
+            with self.assertLogs("accounts.views", level="ERROR"):
+                res = self.client.post("/api/auth/password/reset/",
+                                       {"email": self.supplier.user.email})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)

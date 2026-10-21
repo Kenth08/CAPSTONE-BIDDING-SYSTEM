@@ -31,7 +31,10 @@ def email_user(user, subject, message):
             message=message,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[user.email],
-            fail_silently=True,
+            # False on purpose: the try/except around this logs the failure.
+            # fail_silently=True swallowed SMTP errors before the log line ran,
+            # so undelivered mail left no trace anywhere.
+            fail_silently=False,
         )
     except Exception:  # pragma: no cover - email must never break the flow
         logger.exception("Failed to email %s: %s", user.email, subject)
