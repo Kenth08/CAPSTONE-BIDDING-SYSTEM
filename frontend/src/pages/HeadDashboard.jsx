@@ -405,7 +405,7 @@ function HeadHome() {
   const loadSummary = useCallback(() => {
     setSumError('')
     return apiHeadSummary().then(setSummary)
-      .catch(e => setSumError(e.message || 'Could not load your summary.'))
+      .catch(e => setSumError(e instanceof TypeError ? 'Cannot reach the server. Check your connection and try again.' : e.message || 'Could not load your summary.'))
       .finally(() => setSumLoading(false))
   }, [])
   useEffect(() => { loadSummary() }, [loadSummary])
@@ -459,14 +459,14 @@ function HeadHome() {
 
       <KpiRow cols={4}>
         <KpiCard label="Waiting for my approval" icon={Clock} loading={sumLoading} to="/head/pending"
-          tone={k.waiting ? (oldest >= WAIT_WARN_DAYS ? 'warning' : 'info') : 'success'} value={k.waiting ?? 0}
-          context={k.waiting ? `Oldest waiting ${oldest === 0 ? 'since today' : `${oldest} day${oldest === 1 ? '' : 's'}`}` : 'All caught up'} />
+          tone={!summary ? 'neutral' : k.waiting ? (oldest >= WAIT_WARN_DAYS ? 'warning' : 'info') : 'success'} value={k.waiting ?? '—'}
+          context={!summary ? 'Unavailable' : k.waiting ? `Oldest waiting ${oldest === 0 ? 'since today' : `${oldest} day${oldest === 1 ? '' : 's'}`}` : 'All caught up'} />
         <KpiCard label="Approved this month" icon={CheckCircle2} tone="success" loading={sumLoading}
-          value={k.approved_this_month ?? 0} to="/head/approved" context="Sent to the Admin to publish" />
+          value={k.approved_this_month ?? '—'} to="/head/approved" context="Sent to the Admin to publish" />
         <KpiCard label="Returned for revision" icon={AlertTriangle} tone={k.returned_for_revision ? 'warning' : 'neutral'}
-          loading={sumLoading} value={k.returned_for_revision ?? 0} to="/head/approved" context="Waiting on the Admin to fix" />
+          loading={sumLoading} value={k.returned_for_revision ?? '—'} to="/head/approved" context="Waiting on the Admin to fix" />
         <KpiCard label="Rejected" icon={XCircle} tone="neutral" loading={sumLoading}
-          value={k.rejected ?? 0} to="/head/approved" context="All time" />
+          value={k.rejected ?? '—'} to="/head/approved" context="All time" />
       </KpiRow>
 
       <section className="rf-card" aria-labelledby="queue-h">

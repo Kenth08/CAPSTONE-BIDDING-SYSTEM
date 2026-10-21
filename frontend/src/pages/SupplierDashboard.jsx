@@ -1444,7 +1444,7 @@ function DocumentHealth({ profile, setToast, onUploaded }) {
   )
 }
 
-function SupplierHome({ projects, bids, awards = [], onBid, eligible, profile, onResubmitted, setToast, loadingProjects, loadingBids }) {
+function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligible, profile, onResubmitted, setToast, loadingProjects, loadingBids }) {
   const now = useNow()
   const [modal, setModal] = useState(null)
   const [preview, setPreview] = useState(null)   // { images, index, title }
@@ -1494,17 +1494,26 @@ function SupplierHome({ projects, bids, awards = [], onBid, eligible, profile, o
         <RevisionPanel profile={profile} onResubmitted={onResubmitted} setToast={setToast} />
       </div>
 
+      {(failed.projects || failed.bids) && (
+        <div className="ui-callout ui-callout--danger" role="alert">
+          <AlertTriangle size={18} className="ui-callout-icon" />
+          <div>
+            <div className="ui-callout-title">Some of your data could not load</div>
+            <p>{failed.projects ? 'Opportunities' : 'Your bids'} could not be loaded. Refresh the page to try again.</p>
+          </div>
+        </div>
+      )}
       <KpiRow cols={5}>
         <KpiCard label="Open opportunities" icon={FolderOpen} tone="info" loading={loadingProjects}
-          value={open.length} to="/supplier/projects"
+          value={failed.projects ? '—' : open.length} to="/supplier/projects"
           context={newCount ? `${newCount} new in the last 48 hours` : 'In your registered categories'} />
-        <KpiCard label="My active bids" icon={FileText} loading={loadingBids} value={active.length} to="/supplier/bids"
+        <KpiCard label="My active bids" icon={FileText} loading={loadingBids} value={failed.bids ? '—' : active.length} to="/supplier/bids"
           context={`${active.filter(b => b.status === 'under_review').length} under evaluation`} />
         <KpiCard label="Bids won" icon={Trophy} tone={won.length ? 'success' : 'neutral'} loading={loadingBids}
-          value={won.length} to="/supplier/bids"
+          value={failed.bids ? '—' : won.length} to="/supplier/bids"
           context={won.length ? `${pesoCompact(won.reduce((s, b) => s + b.amountRaw, 0))} in contracts` : 'No awards yet'} />
         <KpiCard label="Win rate" icon={BarChart2} loading={loadingBids}
-          value={winRate == null ? '—' : `${winRate}%`} to="/supplier/reports"
+          value={failed.bids || winRate == null ? '—' : `${winRate}%`} to="/supplier/reports"
           context={decided.length ? `${won.length} of ${decided.length} decided bid${decided.length === 1 ? '' : 's'}` : 'No decided bids yet'} />
         <KpiCard label="Documents needing attention" icon={AlertTriangle} loading={!profile}
           tone={problems.some(p => p.tone === 'danger') ? 'danger' : problems.length ? 'warning' : 'success'}
@@ -2620,6 +2629,8 @@ export default function SupplierDashboard() {
   const [awards, setAwards] = useState([])       // this supplier's own awards only
   const [loadingProjects, setLoadingProjects] = useState(true)
   const [loadingBids, setLoadingBids] = useState(true)
+  // Which lists failed to load, so the home shows "—" instead of a false 0.
+  const [loadFailed, setLoadFailed] = useState({ projects: false, bids: false })
   const [toast, setToast] = useState(null)
   const [navOpen, setNavOpen] = useState(false)
   useEffect(() => { setNavOpen(false) }, [loc.pathname])
@@ -2646,11 +2657,17 @@ export default function SupplierDashboard() {
   // Backend returns only the projects this supplier is eligible for.
   const loadProjects = () => {
     setLoadingProjects(true)
-    apiListProjects().then(d => setProjects(d.map(mapProject))).catch(() => {}).finally(() => setLoadingProjects(false))
+    apiListProjects()
+      .then(d => { setProjects(d.map(mapProject)); setLoadFailed(f => ({ ...f, projects: false })) })
+      .catch(() => setLoadFailed(f => ({ ...f, projects: true })))
+      .finally(() => setLoadingProjects(false))
   }
   const loadBids = () => {
     setLoadingBids(true)
-    apiListMyBids().then(d => setBids(d.map(mapBid))).catch(() => {}).finally(() => setLoadingBids(false))
+    apiListMyBids()
+      .then(d => { setBids(d.map(mapBid)); setLoadFailed(f => ({ ...f, bids: false })) })
+      .catch(() => setLoadFailed(f => ({ ...f, bids: true })))
+      .finally(() => setLoadingBids(false))
   }
   // The supplier's OWN awards (scoped server-side) — this is how the winner
   // receives the Notice of Award addressed to them, along with the BAC
@@ -2747,14 +2764,14 @@ export default function SupplierDashboard() {
         {toast && <SupplierToast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
         <div className="sd-body">
           <Routes>
-            <Route index element={<SupplierHome projects={projects} bids={bids} awards={awards} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
+            <Route index element={<SupplierHome projects={projects} bids={bids} awards={awards} failed={loadFailed} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
             <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} loading={loadingProjects} profile={profile} />} />
             <Route path="bids"     element={<SupplierBids bids={bids} awards={awards} onWithdraw={withdrawBid} loading={loadingBids} onResubmitted={loadBids} setToast={setToast} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="reports"  element={<SupplierReportsPage bids={bids} profile={profile} />} />
             <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} loading={loadingProfile} error={profileError} onRetry={loadProfile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} />} />
             <Route path="settings" element={<SupplierSettings profile={profile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} loading={loadingProfile} error={profileError} onRetry={loadProfile} />} />
-            <Route path="*"        element={<SupplierHome projects={projects} bids={bids} awards={awards} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
+            <Route path="*"        element={<SupplierHome projects={projects} bids={bids} awards={awards} failed={loadFailed} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
           </Routes>
         </div>
       </div>

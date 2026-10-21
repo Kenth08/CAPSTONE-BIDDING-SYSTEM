@@ -397,6 +397,7 @@ button.rf-bar-row:focus-visible { outline: none; box-shadow: var(--focus-ring); 
 .rf-checklist li.is-missing { color: var(--tone-danger-fg); background: var(--tone-danger-bg); border-color: var(--tone-danger-border); }
 .rf-checklist li.is-flagged { color: var(--tone-warning-fg); background: var(--tone-warning-bg); border-color: var(--tone-warning-border); }
 .rf-queue-side { display: flex; flex-direction: column; align-items: flex-end; gap: var(--sp-2); }
+.rf-queue-side > .ui-badge { align-self: flex-end; }
 .rf-queue-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* My bids (supplier) */
@@ -436,6 +437,7 @@ button.rf-bar-row:focus-visible { outline: none; box-shadow: var(--focus-ring); 
   .rf-list-row, .rf-doc-row, .rf-bid-row { padding-left: var(--sp-4); padding-right: var(--sp-4); }
   .rf-queue-item { grid-template-columns: auto minmax(0, 1fr); padding: var(--sp-4); }
   .rf-queue-side { grid-column: 1 / -1; align-items: stretch; }
+  .rf-queue-side > .ui-badge { align-self: flex-start; }
   .rf-queue-actions { justify-content: stretch; }
   .rf-queue-actions .ui-btn { flex: 1; }
   .rf-bid-row { grid-template-columns: auto minmax(0, 1fr); }

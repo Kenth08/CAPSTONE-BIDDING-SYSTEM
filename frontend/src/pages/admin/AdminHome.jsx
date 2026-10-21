@@ -144,7 +144,7 @@ export default function AdminHome() {
     setError('')
     return apiAdminSummary()
       .then(setData)
-      .catch((e) => setError(e.message || 'Could not load the dashboard.'))
+      .catch((e) => setError(e instanceof TypeError ? 'Cannot reach the server. Check your connection and try again.' : e.message || 'Could not load the dashboard.'))
       .finally(() => setLoading(false))
   }, [])
   useEffect(() => { load() }, [load])
@@ -186,6 +186,8 @@ export default function AdminHome() {
         </div>
       )}
 
+      {/* No numbers at all rather than misleading zeros when the summary failed. */}
+      {(data || !error) && <>
       <KpiRow cols={6}>
         <KpiCard label="Open biddings" icon={Gavel} tone="info" loading={loading}
           value={k.open_biddings ?? 0} to="/admin/projects?stage=published"
@@ -205,7 +207,7 @@ export default function AdminHome() {
         <KpiCard label="Not yet on-chain" icon={Link2} loading={loading}
           tone={k.anchors_pending ? 'warning' : 'success'}
           value={k.anchors_pending ?? 0} to="/admin#chain"
-          context={k.anchors_pending ? 'Steps waiting for a signature' : 'Every step is anchored'} />
+          context={k.anchors_pending ? 'Steps waiting for a signature' : data?.chain?.anchored ? 'Every step is anchored' : 'Nothing recorded yet'} />
         <KpiCard label="ABC of open biddings" icon={Wallet} loading={loading}
           value={pesoCompact(k.open_abc)} title={peso(k.open_abc)} to="/admin/projects?stage=published"
           context={`Across ${k.open_biddings ?? 0} open bidding${k.open_biddings === 1 ? '' : 's'}`} />
@@ -325,6 +327,7 @@ export default function AdminHome() {
           <ChainHealth chain={data?.chain} loading={loading} onAnchored={load} />
         </section>
       </div>
+      </>}
     </div>
   )
 }
