@@ -2868,7 +2868,7 @@ function BidEvaluationPage() {
       },
     },
     {
-      key: 'supplier', header: 'Supplier', sortValue: b => b.supplier_name,
+      key: 'supplier', header: 'Supplier', mobileLabel: false, sortValue: b => b.supplier_name,
       render: b => (
         <div className="rf-cell-title" style={{ minWidth: 180 }}>
           <div>

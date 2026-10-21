@@ -8,7 +8,8 @@ import { TableSkeleton } from '../Skeleton'
  * chips, row hover and an empty state.
  *
  * columns: [{ key, header, render?(row), sortValue?(row), align?: 'right',
- *             className?, hideBelow?: 'md' }]
+ *             className?, hideBelow?: 'md', mobileLabel?: false }]
+ * Below 640px each row becomes a stacked card; string headers become labels.
  * filters: [{ key, label, test(row) }] — the first is the default ("All").
  * search:  (row) => searchable text; omit to hide the search box.
  */
@@ -71,7 +72,7 @@ export default function DataTable({
         </div>
       )}
       <div className="rf-table-scroll" style={maxHeight ? { maxHeight } : undefined}>
-        <table className="rf-table">
+        <table className="rf-table is-stacking">
           {caption && <caption className="sr-only">{caption}</caption>}
           <thead>
             <tr>
@@ -111,7 +112,8 @@ export default function DataTable({
               <tr key={rowKey(r)} className={onRowClick ? 'is-clickable' : undefined}
                 onClick={onRowClick ? () => onRowClick(r) : undefined}>
                 {columns.map((c) => (
-                  <td key={c.key} className={`${c.align === 'right' ? 'is-num ' : ''}${c.hideBelow ? `rf-hide-${c.hideBelow} ` : ''}${c.className || ''}`}>
+                  <td key={c.key} data-label={c.mobileLabel === false || typeof c.header !== 'string' ? undefined : c.header}
+                    className={`${c.align === 'right' ? 'is-num ' : ''}${c.hideBelow ? `rf-hide-${c.hideBelow} ` : ''}${c.className || ''}`}>
                     {c.render ? c.render(r) : r[c.key]}
                   </td>
                 ))}
