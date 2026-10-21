@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .dashboard import AdminSummaryView, HeadSummaryView, PublicSummaryView
 from .files import ProtectedFileView
 from .views import (
     AwardViewSet,
@@ -25,6 +26,10 @@ router.register(r"notifications", NotificationViewSet, basename="notification")
 # shadowed by an authenticated route).
 urlpatterns = [
     path("public/procurement/", PublicProcurementView.as_view(), name="public-procurement"),
+    # Read-only dashboard summaries (see procurement/dashboard.py).
+    path("public/summary/", PublicSummaryView.as_view(), name="public-summary"),
+    path("dashboard/admin-summary/", AdminSummaryView.as_view(), name="dashboard-admin-summary"),
+    path("dashboard/head-summary/", HeadSummaryView.as_view(), name="dashboard-head-summary"),
     # Public blockchain trail for one procurement code — no login, no wallet.
     path(
         "public/procurement/<str:code>/anchors/",
