@@ -182,6 +182,19 @@ export function attachAnchorTx(anchor, { txHash, blockNumber, actorAddress = '' 
   })
 }
 
+/**
+ * Ask the backend to sign and send this anchor itself (no wallet involved).
+ * Only used when the deployment has server signing on — `anchor.server_signing`
+ * says so. Goes through the record's own /anchor/ endpoint, so the same role
+ * checks apply as for a MetaMask attach. Resolves to the updated anchor.
+ */
+export function serverSubmitAnchor(anchor) {
+  return apiFetch(anchor.attach_url, {
+    method: 'POST',
+    body: JSON.stringify({ anchor_id: anchor.id, stage: anchor.stage, server_submit: true }),
+  })
+}
+
 // ── Reads (no wallet, no gas, works for anonymous visitors) ─────────────────
 
 let readProvider = null
