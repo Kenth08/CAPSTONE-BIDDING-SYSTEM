@@ -10,5 +10,7 @@ import './style/admin-polish.css'
 import './style/head-polish.css'
 import './style/supplier-polish.css'
 import './style/public-polish.css'
+// UI refresh building blocks (KpiCard, DataTable, charts, …) — last on purpose.
+import './style/refresh.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />)

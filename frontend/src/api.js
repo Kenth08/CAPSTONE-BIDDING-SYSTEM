@@ -181,6 +181,19 @@ export async function apiPublicProcurement() {
   return res.json() // { biddings: [...], winners: [...] }
 }
 
+// Live landing-page numbers: open biddings, awards, total ABC published and
+// up to 6 open biddings + 6 recent awards (public fields only). No token.
+export async function apiPublicSummary() {
+  let res
+  try {
+    res = await fetch(`${API_URL}/public/summary/`)
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (!res.ok) throw new Error('Unable to load live procurement numbers right now.')
+  return res.json()
+}
+
 // The public blockchain trail for one procurement code: the hash recorded at
 // each lifecycle step plus the Sepolia transaction that witnesses it. No token —
 // verification is open to anyone, with no account and no wallet.
@@ -447,6 +460,10 @@ export const apiAnchorBid = (bidId, payload) =>
   apiFetch(`/bids/${bidId}/anchor/`, { method: 'POST', body: anchorBody(payload) })
 export const apiAnchorAward = (awardId, payload) =>
   apiFetch(`/awards/${awardId}/anchor/`, { method: 'POST', body: anchorBody(payload) })
+
+// ── Dashboard summaries (read-only) ─────────────────────────────────────────
+export const apiAdminSummary = () => apiFetch('/dashboard/admin-summary/')
+export const apiHeadSummary = () => apiFetch('/dashboard/head-summary/')
 
 // ── Notifications ──────────────────────────────────────────────────────────────
 export const apiListNotifications = () => apiFetch('/notifications/')
