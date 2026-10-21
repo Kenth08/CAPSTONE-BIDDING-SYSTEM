@@ -98,11 +98,11 @@ export function useCategoryDocState() {
   }
 }
 
-function DocRow({ doc, file, expiry, onFile, onRemove, onExpiry, onError, idPrefix }) {
+function DocRow({ doc, file, expiry, onFile, onRemove, onExpiry, onError, idPrefix, error, expiryError }) {
   const ref = useRef(null)
   const inputId = `${idPrefix}-${doc.key}`
   return (
-    <div className="cd-row">
+    <div className={`cd-row${error || expiryError ? ' has-error' : ''}`}>
       <div className="cd-row-head">
         <span className="cd-label">{doc.label}</span>
         <span className={doc.required ? 'cd-tag cd-tag-req' : 'cd-tag'}>{doc.required ? 'Required' : 'Optional'}</span>
@@ -110,7 +110,7 @@ function DocRow({ doc, file, expiry, onFile, onRemove, onExpiry, onError, idPref
       {doc.help_text && <p className="cd-help">{doc.help_text}</p>}
       <div className="cd-controls">
         {file ? (
-          <div className="cd-file">
+          <div className="cd-file" data-invalid={error ? 'true' : undefined}>
             <FileText size={15} aria-hidden="true" />
             <span className="cd-file-name" title={file.name}>{file.name}</span>
             <button type="button" className="cd-icon-btn" onClick={() => onRemove(doc.key)} aria-label={`Remove ${doc.label}`}>
@@ -118,7 +118,7 @@ function DocRow({ doc, file, expiry, onFile, onRemove, onExpiry, onError, idPref
             </button>
           </div>
         ) : (
-          <button type="button" className="cd-upload-btn" onClick={() => ref.current?.click()}>
+          <button type="button" className={`cd-upload-btn${error ? ' cd-invalid' : ''}`} onClick={() => ref.current?.click()}>
             <Upload size={14} aria-hidden="true" /> Choose file <em>PDF, JPG, PNG · max 5 MB</em>
           </button>
         )}
@@ -126,10 +126,16 @@ function DocRow({ doc, file, expiry, onFile, onRemove, onExpiry, onError, idPref
           <label className="cd-expiry" htmlFor={`${inputId}-exp`}>
             <span>Expiry date{file ? <span className="cd-req"> *</span> : null}</span>
             <input id={`${inputId}-exp`} type="date" value={expiry || ''} min={todayIso()}
+              className={expiryError ? 'cd-invalid' : undefined} aria-invalid={!!expiryError}
               onChange={e => onExpiry(doc.key, e.target.value)} />
           </label>
         )}
       </div>
+      {(error || expiryError) && (
+        <small className="cd-error-text" role="alert">
+          <AlertCircle size={13} aria-hidden="true" /> {error || expiryError}
+        </small>
+      )}
       <input ref={ref} id={inputId} type="file" accept=".pdf,.jpg,.jpeg,.png" hidden
         onChange={e => {
           const f = e.target.files?.[0]
@@ -147,7 +153,7 @@ function DocRow({ doc, file, expiry, onFile, onRemove, onExpiry, onError, idPref
  * Uploaders for the category documents, grouped by category.
  * `state` comes from useCategoryDocState(); `req` from useCategoryRequirements().
  */
-export default function CategoryDocumentFields({ req, state, onError, idPrefix = 'catdoc', emptyText }) {
+export default function CategoryDocumentFields({ req, state, onError, idPrefix = 'catdoc', emptyText, errors = {} }) {
   if (req.loading) return <p className="cd-note">Checking which documents your categories need…</p>
   if (req.error) {
     return (
@@ -173,7 +179,8 @@ export default function CategoryDocumentFields({ req, state, onError, idPrefix =
           {docs.map(d => (
             <DocRow key={d.key} doc={d} idPrefix={idPrefix}
               file={state.files[d.key]} expiry={state.expiries[d.key]}
-              onFile={state.setFile} onRemove={state.removeFile} onExpiry={state.setExpiry} onError={onError} />
+              onFile={state.setFile} onRemove={state.removeFile} onExpiry={state.setExpiry} onError={onError}
+              error={errors[`catdoc_${d.key}`]} expiryError={errors[`catdoc_${d.key}_expiry`]} />
           ))}
         </fieldset>
       ))}

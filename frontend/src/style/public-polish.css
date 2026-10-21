@@ -217,13 +217,17 @@
 .login-logo { align-items: center !important; gap: 12px !important; margin-bottom: 28px !important; }
 .login-left-inner h1 { letter-spacing: -0.02em; }
 .login-form .form-group label { font-weight: 600; color: var(--text-strong); }
-.form-group input, .sr-page input, .sr-page textarea, .sr-page select {
+/* Text-like fields only: checkboxes and radios must keep their native size,
+   or they become tall boxes with a large focus shadow around them. */
+.form-group input:not([type='checkbox']):not([type='radio']),
+.sr-page input:not([type='checkbox']):not([type='radio']), .sr-page textarea, .sr-page select {
   border-width: 1px !important;
   border-color: var(--border-strong) !important;
   min-height: 44px;
 }
-.form-group input:focus, .form-group input:focus-visible,
-.sr-page input:focus, .sr-page textarea:focus, .sr-page select:focus {
+.form-group input:not([type='checkbox']):not([type='radio']):focus,
+.form-group input:not([type='checkbox']):not([type='radio']):focus-visible,
+.sr-page input:not([type='checkbox']):not([type='radio']):focus, .sr-page textarea:focus, .sr-page select:focus {
   border-color: var(--c-primary-500) !important;
   box-shadow: var(--focus-ring) !important;
   outline: none !important;

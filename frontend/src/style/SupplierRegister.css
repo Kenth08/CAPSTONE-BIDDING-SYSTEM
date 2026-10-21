@@ -267,3 +267,37 @@
   .sr-nav { flex-wrap: wrap; gap: 10px; }
   .sr-checks { grid-template-columns: 1fr; }
 }
+
+/* ── Field-level errors: the fields "Continue" refused, outlined in red ── */
+.sr-error-text {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 500;
+  color: #dc2626 !important;
+}
+/* !important: public-polish.css forces the normal border colour with !important. */
+.sr-field.has-error input:not([type='checkbox']),
+.sr-field.has-error textarea {
+  border-color: #ef4444 !important;
+  background: #fef2f2;
+}
+.sr-field.has-error input:not([type='checkbox']):focus,
+.sr-field.has-error textarea:focus { border-color: #dc2626 !important; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18) !important; }
+.sr-field.has-error .sr-checks label { border-color: #fca5a5; }
+.sr-upload-field.has-error .sr-upload-btn { border-color: #ef4444; border-style: solid; background: #fef2f2; color: #b91c1c; }
+.sr-agree.has-error { color: #b91c1c; }
+.sr-agree.has-error input { outline: 2px solid #ef4444; outline-offset: 2px; }
+
+/* Checkboxes: the text-input rule (.sr-field input — padding, width:100%,
+   border) also matched them, so each checkbox was a tall padded box and its
+   focus ring drew a large rectangle around it. Reset them to a plain box and
+   show keyboard focus on the whole option card instead. */
+.sr-field .sr-checks input[type="checkbox"] {
+  padding: 0; margin: 0; border: none; background: none;
+  width: 16px; height: 16px; flex-shrink: 0;
+}
+.sr-checks input[type="checkbox"]:focus-visible { outline: none; }
+.sr-checks label:has(input:focus-visible) {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.sr-agree input[type="checkbox"]:focus-visible { outline-offset: 3px; border-radius: 3px; }

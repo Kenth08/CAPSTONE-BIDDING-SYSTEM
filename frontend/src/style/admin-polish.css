@@ -145,7 +145,9 @@
 .ad-bids-count { margin: 0 2px !important; font-size: var(--fs-caption) !important; }
 
 .ad-bid-cards {
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)) !important;
+  /* ~360px cards (4 per row on a wide screen) so the details aren't cramped. */
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)) !important;
+  gap: 20px !important;
   max-height: none !important;
   overflow: visible !important;
   padding-right: 0 !important;
@@ -154,23 +156,23 @@
 .ad-bid-card {
   display: flex; flex-direction: column;
   border-radius: var(--r-card) !important;
-  padding: var(--sp-5) !important;
+  padding: var(--sp-6, 24px) !important;
   box-shadow: var(--shadow-xs);
   transition: border-color var(--ease), box-shadow var(--ease) !important;
 }
 .ad-bid-card:hover { border-color: var(--c-primary-200) !important; box-shadow: var(--shadow-md) !important; }
 .ad-bid-card:focus-visible { outline: none; box-shadow: var(--focus-ring) !important; }
 .ad-bid-card-icon { background: var(--c-primary-50) !important; color: var(--c-primary-600) !important; }
-.ad-bid-card-name { font-size: var(--fs-card-title) !important; line-height: 1.35; margin-bottom: 6px !important; }
+.ad-bid-card-name { font-size: var(--fs-card-title) !important; line-height: 1.35; margin: 4px 0 8px !important; }
 .ad-bid-card-meta {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px;
-  margin: 14px 0 0; padding: 12px 0 0; border-top: 1px dashed var(--border);
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px;
+  margin: 16px 0 0; padding: 16px 0 4px; border-top: 1px dashed var(--border);
 }
 .ad-bid-card-meta dt { font-size: 10px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
-.ad-bid-card-meta dd { margin: 2px 0 0; font-size: var(--fs-small); color: var(--text-body); }
+.ad-bid-card-meta dd { margin: 4px 0 0; font-size: var(--fs-small); color: var(--text-body); }
 .ad-bid-card-meta-full { grid-column: 1 / -1; }
 .ad-bid-card-budget { color: var(--text-strong) !important; font-weight: 700 !important; font-variant-numeric: tabular-nums; margin: 2px 0 0 !important; }
-.ad-bid-card-footer { margin-top: auto !important; padding-top: 14px !important; }
+.ad-bid-card-footer { margin-top: auto !important; padding-top: 16px !important; }
 .ad-bid-card-count { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text-body) !important; font-size: var(--fs-caption) !important; }
 .ad-bid-card-cta { display: inline-flex; align-items: center; gap: 2px; font-size: var(--fs-caption); font-weight: 600; color: var(--c-primary-700); }
 
