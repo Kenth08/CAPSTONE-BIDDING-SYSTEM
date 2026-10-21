@@ -101,3 +101,20 @@
 @media (max-width: 520px) {
   .cd-file-name { max-width: 170px; }
 }
+
+/* Field-level errors (registration "Continue" check) */
+.cd-row.has-error {
+  border-left: 3px solid var(--tone-danger-solid);
+  padding-left: 10px;
+  margin-left: -13px;
+}
+.cd-upload-btn.cd-invalid, .cd-expiry input.cd-invalid {
+  border-color: var(--tone-danger-solid);
+  border-style: solid;
+  background: var(--tone-danger-bg);
+}
+.cd-error-text {
+  display: flex; align-items: center; gap: 5px;
+  font-size: var(--fs-caption, 12px); font-weight: var(--fw-medium, 500);
+  color: var(--tone-danger-fg);
+}
