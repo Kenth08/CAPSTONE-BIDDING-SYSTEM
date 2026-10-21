@@ -565,6 +565,12 @@ def _ledger_abi():
         return json.load(fh)
 
 
+# Margin on top of the node's gas estimate: the estimate is exact for the
+# current chain state, and a little headroom covers the trail growing between
+# estimating and mining. Unused gas is refunded, so this costs nothing extra.
+GAS_HEADROOM = 1.25
+
+
 def _fee_fields(w3):
     """EIP-1559 fee fields that are always valid together.
 
@@ -619,9 +625,16 @@ def submit_anchor_server_side(anchor):
         ledger = w3.eth.contract(
             address=Web3.to_checksum_address(LEDGER_CONTRACT_ADDRESS), abi=_ledger_abi(),
         )
-        tx = ledger.functions.recordEvent(
+        call = ledger.functions.recordEvent(
             anchor.entity_type, anchor.entity_ref, anchor.stage, anchor.data_hash,
-        ).build_transaction({
+        )
+        # Ask the node what this call really costs instead of guessing. Storing
+        # the strings on-chain takes ~1.17M gas; the old fixed 400k limit ran
+        # every transaction out of gas, so it reverted on-chain while the app
+        # still showed "On-chain". estimate_gas also raises if the call would
+        # revert, which leaves the anchor un-anchored and retryable instead.
+        gas = int(call.estimate_gas({"from": account.address}) * GAS_HEADROOM)
+        tx = call.build_transaction({
             "from": account.address,
             # "pending", not the default "latest": awarding issues three
             # documents (BAC Resolution, NOA, NTP) back to back, so the earlier
@@ -630,8 +643,7 @@ def submit_anchor_server_side(anchor):
             # rejected as duplicates.
             "nonce": w3.eth.get_transaction_count(account.address, "pending"),
             "chainId": SEPOLIA_CHAIN_ID,
-            # A tx this small is ~200k gas at most.
-            "gas": 400_000,
+            "gas": gas,
             **_fee_fields(w3),
         })
         signed = account.sign_transaction(tx)
