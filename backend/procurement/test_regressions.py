@@ -1375,3 +1375,29 @@ class SupplierCategoryMigrationTests(TransactionTestCase):
         BackSupplier = back.get_model("procurement", "Supplier")
         self.assertEqual(BackSupplier.objects.get(pk=rows["verified"].pk).business_types,
                          ["IT Equipment", "Furniture"])
+
+
+class PendingSupplierBidTests(APITestCase):
+    """A supplier still awaiting approval who tried to bid was bounced to the
+    login screen, which looked like being logged out. Being blocked must be a 403
+    with a readable reason. A 401 would make the frontend clear the session."""
+
+    def setUp(self):
+        cache.clear()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.supplier = make_supplier(verified=False)
+
+    def test_pending_supplier_still_sees_matching_projects(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.get("/api/projects/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        rows = data["results"] if isinstance(data, dict) else data
+        self.assertEqual([r["id"] for r in rows], [self.project.pk])
+
+    def test_pending_supplier_bid_is_forbidden_not_unauthorized(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.post(f"/api/projects/{self.project.pk}/bid/", {"amount": 1000})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("pending admin approval", res.json()["detail"])
+        self.assertFalse(Bid.objects.filter(supplier=self.supplier).exists())

@@ -645,7 +645,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return Response({"detail": "No supplier profile found."}, status=http_status.HTTP_404_NOT_FOUND)
         if supplier.qualification_status != Supplier.Qualification.VERIFIED:
             return Response(
-                {"detail": "Your account must be approved before you can submit bids."},
+                {"detail": "Your supplier account is pending admin approval. You can view this "
+                            "procurement, but you cannot submit a bid until your account is approved."},
                 status=http_status.HTTP_403_FORBIDDEN,
             )
         if project.status != Project.Status.PUBLISHED:
