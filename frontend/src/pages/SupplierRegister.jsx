@@ -1,47 +1,74 @@
-import { useEffect, useRef, useState } from 'react'
+import { Children, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Loader2,
-  Shield, Eye, EyeOff, ArrowLeft, Check, Upload, FileText, X,
-  CheckCircle2, AlertCircle,
+import {
+  AlertCircle, ArrowLeft, ArrowRight, Check, CheckCircle2, CloudUpload, Eye, EyeOff,
+  FileText, Info, Loader2, Pencil, RefreshCw, Shield, Trash2, X,
 } from 'lucide-react'
 import { apiRegisterSupplier } from '../api'
 import { CATEGORIES } from '../constants/categories'
-import CategoryDocumentFields, {
-  appendCategoryDocs, categoryDocsProblem, pastExpiryProblem, todayIso,
+import {
+  appendCategoryDocs, checkDocFile, pastExpiryProblem, todayIso,
   useCategoryDocState, useCategoryRequirements,
 } from '../components/CategoryDocuments'
 import '../style/SupplierRegister.css'
 
 // ── Static config ─────────────────────────────────────────────────────────────
-const STEPS = ['Basic Info', 'Documents', 'Declaration', 'Submit']
+const STEPS = [
+  { label: 'Basic Info', title: 'Basic information', desc: 'Your sign-in details, company profile and the categories you supply.' },
+  { label: 'Documents', title: 'Company documents', desc: 'Upload scanned copies for admin verification. Files are sent only when you submit on the last step.' },
+  { label: 'Declaration', title: 'Declaration', desc: 'Read and confirm the statements below before reviewing your registration.' },
+  { label: 'Review & Submit', title: 'Review and submit', desc: 'Check everything below. You can go back to any step to make changes.' },
+]
 
 // Shared with the procurement category list so eligibility matching lines up.
 const BUSINESS_TYPES = CATEGORIES
 
-// key = backend field name, required = must upload to register
+// key = backend field name, required = must upload to register.
+// `expiry` / `extra` place a related form field inside the document's card.
 const LEGAL_DOCS = [
   { key: 'sec_dti_certificate', label: 'SEC or DTI Certificate', required: true },
-  { key: 'mayors_permit', label: "Mayor's Permit / Business Permit", required: true },
+  { key: 'mayors_permit', label: "Mayor's Permit / Business Permit", required: true, expiry: 'mayors_permit_expiry' },
   { key: 'philgeps_certificate', label: 'PhilGEPS Registration Certificate', required: true },
-  { key: 'valid_id', label: 'Valid ID (Government-issued)', required: true },
+  { key: 'valid_id', label: 'Valid ID (Government-issued)', required: true, help: 'ID of the authorized representative.' },
 ]
 const FINANCIAL_DOCS = [
-  { key: 'tax_clearance_certificate', label: 'Tax Clearance Certificate', required: true },
-  { key: 'audited_financial_statements', label: 'Audited Financial Statements', required: true },
+  { key: 'tax_clearance_certificate', label: 'Tax Clearance Certificate', required: true, expiry: 'tax_clearance_expiry' },
+  { key: 'audited_financial_statements', label: 'Audited Financial Statements', required: true, extra: 'financial_statement_year' },
   { key: 'bank_reference_letter', label: 'Bank Reference Letter', required: true },
+]
+const AUTH_DOCS = [
+  { key: 'authorization_letter', label: 'Authorization Letter / SPA', required: true },
 ]
 const OPTIONAL_DOCS = [
   { key: 'performance_certificates', label: 'Performance Certificates / ISO', required: false },
   { key: 'past_contracts', label: 'Past Contracts / Purchase Orders', required: false },
 ]
-const AUTH_DOCS = [
-  { key: 'authorization_letter', label: 'Authorization Letter / SPA', required: true },
+const DOC_GROUPS = [
+  { id: 'legal', title: 'Legal and business documents', docs: LEGAL_DOCS },
+  { id: 'financial', title: 'Financial documents', docs: FINANCIAL_DOCS },
+  { id: 'auth', title: 'Representative authorization', docs: AUTH_DOCS },
 ]
 const REQUIRED_KEYS = [...LEGAL_DOCS, ...FINANCIAL_DOCS, ...AUTH_DOCS].map(d => d.key)
-const OPTIONAL_KEYS = OPTIONAL_DOCS.map(d => d.key)
+const ALL_DOC_KEYS = [...REQUIRED_KEYS, ...OPTIONAL_DOCS.map(d => d.key)]
 
-const ALLOWED_EXT = ['pdf', 'jpg', 'jpeg', 'png']
-const MAX_MB = 5
+const FILE_HINT = 'PDF, JPG or PNG · max 5 MB'
+
+// Which step owns each server-side field, so a rejected submission sends the
+// user straight to the field that needs fixing.
+const STEP0_FIELDS = [
+  'full_name', 'email', 'password', 'confirm_password', 'company_name', 'company_address',
+  'phone_number', 'tin', 'representative_name', 'business_types',
+]
+const STEP1_FIELDS = [
+  ...ALL_DOC_KEYS, 'mayors_permit_expiry', 'tax_clearance_expiry',
+  'financial_statement_year', 'track_record_description',
+]
+function stepOfField(key) {
+  if (STEP0_FIELDS.includes(key)) return 0
+  if (STEP1_FIELDS.includes(key) || key.startsWith('catdoc_')) return 1
+  if (key === 'declaration_accepted') return 2
+  return null
+}
 
 // ── Validation helpers ────────────────────────────────────────────────────────
 const PASSWORD_RULES = [
@@ -53,12 +80,23 @@ const PASSWORD_RULES = [
 ]
 const passwordValid = (pw) => PASSWORD_RULES.every(r => r.test(pw))
 
-function validateFile(file) {
-  const ext = file.name.split('.').pop().toLowerCase()
-  if (!ALLOWED_EXT.includes(ext)) return `Unsupported type ".${ext}". Use PDF, JPG, or PNG.`
-  if (file.size > MAX_MB * 1024 * 1024) return `File is too large (max ${MAX_MB} MB).`
-  return null
+const fmtSize = (bytes) => bytes < 1024 * 1024
+  ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+  : `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+
+const fmtDate = (iso) => {
+  if (!iso) return ''
+  const d = new Date(`${iso}T00:00:00`)
+  return Number.isNaN(d.getTime()) ? iso
+    : d.toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })
 }
+
+// Props that tie an input to its label, hint and error message.
+const describe = (id, error, hint) => ({
+  id,
+  'aria-invalid': error ? true : undefined,
+  'aria-describedby': error ? `${id}-err` : hint ? `${id}-hint` : undefined,
+})
 
 export default function SupplierRegister() {
   const navigate = useNavigate()
@@ -68,13 +106,16 @@ export default function SupplierRegister() {
   const [error, setError] = useState('')
   const [errNonce, setErrNonce] = useState(0) // re-triggers the toast even on a repeat message
   const [loading, setLoading] = useState(false)
+  const [submitError, setSubmitError] = useState('')
   const [done, setDone] = useState(false)
+  const submittingRef = useRef(false)
+  const headingRef = useRef(null)
 
-  // Show errors as a floating toast so they're visible regardless of scroll position.
+  // Floating toast: a short summary, visible regardless of scroll position.
   const showError = (msg) => { setError(msg); setErrNonce(n => n + 1) }
   useEffect(() => {
     if (!error) return
-    const t = setTimeout(() => setError(''), 5000)
+    const t = setTimeout(() => setError(''), 6000)
     return () => clearTimeout(t)
   }, [error, errNonce])
 
@@ -86,14 +127,13 @@ export default function SupplierRegister() {
     declaration_accepted: false,
   })
   const [businessTypes, setBusinessTypes] = useState([])
-  const [files, setFiles] = useState({}) // { key: File }
+  const [files, setFiles] = useState({}) // { key: File } — held in memory until submit
   // Extra licenses the chosen categories require (rules come from the server).
   const catReq = useCategoryRequirements(businessTypes)
   const catDocs = useCategoryDocState()
 
-  // Per-field problems from the last Continue: { fieldKey: message }. Each
-  // flagged field is outlined in red with its message, and a field's error
-  // clears as soon as the user changes it.
+  // Per-field problems from the last Continue / submit: { fieldKey: message }.
+  // A field's error clears as soon as the user changes it.
   const [fieldErrors, setFieldErrors] = useState({})
   const clearErr = (...keys) => setFieldErrors(e => {
     if (!keys.some(k => k in e)) return e
@@ -112,33 +152,32 @@ export default function SupplierRegister() {
     clearErr('business_types')
   }
 
+  // Same type/size rules for every upload; a bad file is flagged on its own card.
   const onFile = (key, file) => {
     if (!file) return
-    const msg = validateFile(file)
-    if (msg) { setFieldErrors(e => ({ ...e, [key]: msg })); showError(msg); return }
-    setError('')
+    const msg = checkDocFile(file)
+    if (msg) { setFieldErrors(e => ({ ...e, [key]: msg })); return }
     clearErr(key)
     setFiles(f => ({ ...f, [key]: file }))
   }
   const removeFile = (key) => setFiles(f => { const n = { ...f }; delete n[key]; return n })
 
-  // Category licenses: same red-outline treatment, keyed catdoc_<key>.
-  const catDocsUi = {
-    ...catDocs,
-    setFile: (k, f) => { catDocs.setFile(k, f); clearErr(`catdoc_${k}`) },
-    setExpiry: (k, v) => { catDocs.setExpiry(k, v); clearErr(`catdoc_${k}_expiry`) },
+  const onCatFile = (key, file) => {
+    if (!file) return
+    const msg = checkDocFile(file)
+    if (msg) { setFieldErrors(e => ({ ...e, [`catdoc_${key}`]: msg })); return }
+    clearErr(`catdoc_${key}`)
+    catDocs.setFile(key, file)
   }
-
-  const requiredUploaded = REQUIRED_KEYS.filter(k => files[k]).length
-  const optionalUploaded = OPTIONAL_KEYS.filter(k => files[k]).length
+  const onCatRemove = (key) => { catDocs.removeFile(key); clearErr(`catdoc_${key}_expiry`) }
+  const onCatExpiry = (key, v) => { catDocs.setExpiry(key, v); clearErr(`catdoc_${key}_expiry`) }
 
   // ── Per-step gate ───────────────────────────────────────────────────────────
-  // Collects EVERY problem on the current step (not just the first), so the
-  // user sees all the fields to fix at once. `_general` holds problems that
-  // aren't tied to one field.
-  const collectErrors = () => {
+  // Collects EVERY problem on a step (not just the first), so the user sees all
+  // the fields to fix at once. `_general` holds problems not tied to one field.
+  const collectErrors = (s) => {
     const errs = {}
-    if (step === 0) {
+    if (s === 0) {
       const need = {
         full_name: 'Enter your full name.', email: 'Enter your email address.',
         company_name: 'Enter your company name.', company_address: 'Enter your company address.',
@@ -152,16 +191,16 @@ export default function SupplierRegister() {
       if (!passwordValid(form.password)) errs.password = 'Your password doesn’t meet all the requirements below yet.'
       if (!form.confirm_password) errs.confirm_password = 'Type your password again.'
       else if (form.password !== form.confirm_password) errs.confirm_password = 'Passwords do not match.'
-      if (businessTypes.length === 0) errs.business_types = 'Select at least one business type.'
+      if (businessTypes.length === 0) errs.business_types = 'Select at least one business category.'
     }
-    if (step === 1) {
+    if (s === 1) {
       REQUIRED_KEYS.forEach(k => { if (!files[k]) errs[k] = 'Upload this document.' })
       const mp = pastExpiryProblem("Mayor's Permit", form.mayors_permit_expiry)
       if (mp) errs.mayors_permit_expiry = mp
       const tc = pastExpiryProblem('Tax Clearance Certificate', form.tax_clearance_expiry)
       if (tc) errs.tax_clearance_expiry = tc
-      if (catReq.loading) errs._general = 'Still checking which documents your categories need. Try again in a moment.'
-      else if (catReq.error) errs._general = 'Could not load the documents your categories need. Use "Try again" in the Category Documents section.'
+      if (catReq.loading) errs._general = 'Still checking which licenses your categories need. Try again in a moment.'
+      else if (catReq.error) errs._general = 'Could not load the licenses your categories need. Use "Try again" in the Category-specific licenses section.'
       catReq.docs.forEach(d => {
         const file = catDocs.files[d.key]
         const expiry = catDocs.expiries[d.key]
@@ -175,48 +214,70 @@ export default function SupplierRegister() {
         }
       })
     }
-    if (step === 2 && !form.declaration_accepted) {
+    if (s === 2 && !form.declaration_accepted) {
       errs.declaration_accepted = 'Tick the box to accept the declaration.'
     }
     return errs
   }
 
-  // Scroll to (and focus) the first highlighted field after it renders.
+  // Once every flagged field is fixed, the summary toast has nothing left to say.
+  useEffect(() => { if (Object.keys(fieldErrors).length === 0) setError('') }, [fieldErrors])
+
+  // Scroll to (and focus) the first flagged field after it renders.
   useEffect(() => {
     if (Object.keys(fieldErrors).length === 0) return
-    const el = document.querySelector('.has-error')
+    const el = document.querySelector('.sr-main .has-error')
     if (!el) return
     el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    el.querySelector('input:not([type=file]), textarea')?.focus({ preventScroll: true })
+    const target = el.querySelector('[aria-invalid="true"]')
+      || el.querySelector('input:not([type=file]), textarea, button')
+    target?.focus({ preventScroll: true })
   }, [fieldErrors])
 
-  const next = () => {
-    const errs = collectErrors()
-    const keys = Object.keys(errs)
-    if (keys.length) {
-      setFieldErrors(errs)
-      const fieldCount = keys.filter(k => k !== '_general').length
-      showError(
-        errs._general && fieldCount === 0 ? errs._general
-          : fieldCount === 1 ? errs[keys.find(k => k !== '_general')]
-          : `Please fix the ${fieldCount} highlighted fields.`
-      )
-      return
-    }
-    setFieldErrors({})
+  // Move to a step: top of the page, focus on its heading for screen readers.
+  // `scroll` is false when errors follow: then the error effect does the scrolling.
+  const goTo = (s, scroll = true) => {
+    setStep(s)
     setError('')
-    setStep(s => Math.min(s + 1, STEPS.length - 1))
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-  const back = () => {
-    setError('')
-    setFieldErrors({})
-    setStep(s => Math.max(s - 1, 0))
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+    if (scroll) requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+      headingRef.current?.focus({ preventScroll: true })
+    })
   }
 
+  const flag = (errs) => {
+    setFieldErrors(errs)
+    const keys = Object.keys(errs)
+    const fieldCount = keys.filter(k => k !== '_general').length
+    showError(
+      errs._general && fieldCount === 0 ? errs._general
+        : fieldCount === 1 ? errs[keys.find(k => k !== '_general')]
+        : `Please fix the ${fieldCount} highlighted fields.`
+    )
+  }
+
+  const next = () => {
+    const errs = collectErrors(step)
+    if (Object.keys(errs).length) { flag(errs); return }
+    setFieldErrors({})
+    goTo(Math.min(step + 1, STEPS.length - 1))
+  }
+  const back = () => {
+    setFieldErrors({})
+    goTo(Math.max(step - 1, 0))
+  }
+  // Only earlier steps can be revisited directly; moving forward always validates.
+  const edit = (s) => { if (s < step && !loading) { setFieldErrors({}); goTo(s) } }
+
   const submit = async () => {
-    setError(''); setLoading(true)
+    if (submittingRef.current) return // no double submissions
+    // Re-check every step in case something changed since it was passed.
+    for (let s = 0; s < STEPS.length - 1; s++) {
+      const errs = collectErrors(s)
+      if (Object.keys(errs).length) { goTo(s, false); flag(errs); return }
+    }
+    submittingRef.current = true
+    setError(''); setSubmitError(''); setLoading(true)
     try {
       const fd = new FormData()
       Object.entries(form).forEach(([k, v]) => {
@@ -228,25 +289,46 @@ export default function SupplierRegister() {
       appendCategoryDocs(fd, catReq.docs, catDocs.files, catDocs.expiries)
       await apiRegisterSupplier(fd)
       setDone(true)
+      window.scrollTo({ top: 0 })
     } catch (err) {
-      showError(err.message)
-      setStep(0) // jump back to the fields so they can be fixed
-      window.scrollTo({ top: 0, behavior: 'smooth' })
+      // Put each server message beside its field and open the first step with one.
+      const mapped = {}
+      let firstStep = null
+      Object.entries(err.fields || {}).forEach(([k, v]) => {
+        const s = stepOfField(k)
+        if (s === null) return
+        mapped[k] = Array.isArray(v) ? v.join(' ') : String(v)
+        firstStep = firstStep === null ? s : Math.min(firstStep, s)
+      })
+      if (firstStep !== null) {
+        goTo(firstStep, false)
+        flag(mapped)
+      } else {
+        const fields = err.fields || {}
+        const general = fields.detail || fields.non_field_errors
+        const msg = general ? (Array.isArray(general) ? general.join(' ') : String(general)) : err.message
+        setSubmitError(msg)
+        showError(msg)
+      }
     } finally {
+      submittingRef.current = false
       setLoading(false)
     }
   }
 
   if (done) return <SuccessScreen onContinue={() => navigate('/login')} />
 
+  const current = STEPS[step]
+  const isLast = step === STEPS.length - 1
+
   return (
     <div className="sr-page">
-      {/* Left info panel */}
+      {/* Branding panel (compact top bar on small screens) */}
       <aside className="sr-aside">
-        <div>
-          <Link to="/login" className="sr-back"><ArrowLeft size={16} /> Back to Login</Link>
+        <div className="sr-aside-top">
+          <Link to="/login" className="sr-back"><ArrowLeft size={16} aria-hidden="true" /> Back to Login</Link>
           <div className="sr-logo">
-            <span className="sr-logo-icon"><Shield size={18} /></span>
+            <span className="sr-logo-icon"><Shield size={18} aria-hidden="true" /></span>
             <span>E-Procurement</span>
           </div>
         </div>
@@ -254,54 +336,54 @@ export default function SupplierRegister() {
           <h1>Join as a<br />Supplier</h1>
           <p>Register your company and start bidding on procurement projects with full transparency.</p>
           <ul className="sr-perks">
-            <li><Check size={15} /> Fair evaluation process</li>
-            <li><Check size={15} /> Blockchain-verified results</li>
-            <li><Check size={15} /> Secure bid submission</li>
+            <li><Check size={15} aria-hidden="true" /> Fair evaluation process</li>
+            <li><Check size={15} aria-hidden="true" /> Blockchain-verified results</li>
+            <li><Check size={15} aria-hidden="true" /> Secure bid submission</li>
           </ul>
         </div>
         <div className="sr-aside-foot">Your data is encrypted and only used for admin verification.</div>
       </aside>
 
-      {/* Right form panel */}
       <main className="sr-main">
         <div className="sr-main-inner">
-          <h2>Supplier Registration</h2>
-          <p className="sr-sub">Complete your company profile and upload required documents for admin verification.</p>
+          <header className="sr-header">
+            <p className="sr-eyebrow">Supplier Registration</p>
+            <h2 ref={headingRef} tabIndex={-1}>{current.title}</h2>
+            <p className="sr-sub">{current.desc}</p>
+          </header>
 
-          {/* Stepper */}
-          <div className="sr-stepper">
-            {STEPS.map((label, i) => (
-              <div key={label} className="sr-step-wrap">
-                <div className={`sr-step ${i < step ? 'done' : ''} ${i === step ? 'active' : ''}`}>
-                  {i < step ? <Check size={16} /> : i + 1}
-                </div>
-                <span className={i === step ? 'active' : ''}>{label}</span>
-                {i < STEPS.length - 1 && <div className={`sr-line ${i < step ? 'done' : ''}`} />}
-              </div>
-            ))}
-          </div>
+          <Stepper step={step} onSelect={edit} disabled={loading} />
 
-          <div className="sr-card">
+          <div className="sr-step-body">
             {step === 0 && <StepBasic form={form} set={set} businessTypes={businessTypes}
               toggleType={toggleType} showPass={showPass} setShowPass={setShowPass}
-              showConfirm={showConfirm} setShowConfirm={setShowConfirm} errors={fieldErrors} />}
+              showConfirm={showConfirm} setShowConfirm={setShowConfirm} errors={fieldErrors}
+              catReq={catReq} />}
             {step === 1 && <StepDocuments form={form} set={set} files={files}
-              onFile={onFile} removeFile={removeFile}
-              catReq={catReq} catDocs={catDocsUi} onCatError={showError} errors={fieldErrors} />}
+              onFile={onFile} removeFile={removeFile} businessTypes={businessTypes}
+              catReq={catReq} catDocs={catDocs} onCatFile={onCatFile} onCatRemove={onCatRemove}
+              onCatExpiry={onCatExpiry} errors={fieldErrors} />}
             {step === 2 && <StepDeclaration form={form} set={set} errors={fieldErrors} />}
-            {step === 3 && <StepReview required={requiredUploaded} optional={optionalUploaded}
-              catReq={catReq} catDocs={catDocs} />}
+            {step === 3 && <StepReview form={form} businessTypes={businessTypes} files={files}
+              catReq={catReq} catDocs={catDocs} onEdit={edit} submitError={submitError} />}
           </div>
 
-          {/* Nav */}
-          <div className="sr-nav">
+          {/* Step actions — sticks to the bottom while the step is taller than the screen */}
+          <div className="sr-actions">
             {step > 0
-              ? <button className="sr-btn-ghost" onClick={back}><ArrowLeft size={15} /> Back</button>
+              ? <button type="button" className="sr-btn-ghost" onClick={back} disabled={loading}>
+                  <ArrowLeft size={15} aria-hidden="true" /> Back
+                </button>
               : <span />}
-            {step < STEPS.length - 1
-              ? <button className="sr-btn" onClick={next}>Continue</button>
-              : <button className="sr-btn" onClick={submit} disabled={loading}>
-                  {loading ? <><Loader2 size={15} className="ui-spin" aria-hidden="true" /> Submitting…</> : 'Submit Registration'}
+            <span className="sr-actions-count">Step {step + 1} of {STEPS.length}</span>
+            {!isLast
+              ? <button type="button" className="sr-btn" onClick={next}>
+                  Continue <ArrowRight size={15} aria-hidden="true" />
+                </button>
+              : <button type="button" className="sr-btn" onClick={submit} disabled={loading} aria-busy={loading}>
+                  {loading
+                    ? <><Loader2 size={15} className="ui-spin" aria-hidden="true" /> Submitting…</>
+                    : <>Submit Registration <Check size={15} aria-hidden="true" /></>}
                 </button>}
           </div>
 
@@ -309,10 +391,9 @@ export default function SupplierRegister() {
         </div>
       </main>
 
-      {/* Floating error toast — visible no matter where the user has scrolled */}
       {error && (
         <div className="sr-toast" role="alert">
-          <AlertCircle size={18} />
+          <AlertCircle size={18} aria-hidden="true" />
           <span>{error}</span>
           <button type="button" onClick={() => setError('')} aria-label="Dismiss"><X size={16} /></button>
         </div>
@@ -321,130 +402,258 @@ export default function SupplierRegister() {
   )
 }
 
+// ── Stepper ───────────────────────────────────────────────────────────────────
+function Stepper({ step, onSelect, disabled }) {
+  return (
+    <nav className="sr-stepper" aria-label="Registration progress">
+      <ol>
+        {STEPS.map((s, i) => {
+          const state = i < step ? 'done' : i === step ? 'current' : 'upcoming'
+          const inner = (
+            <>
+              <span className="sr-step-dot" aria-hidden="true">{i < step ? <Check size={15} /> : i + 1}</span>
+              <span className="sr-step-label">
+                {s.label}
+                <span className="sr-visually-hidden">
+                  {state === 'done' ? ' (completed)' : state === 'current' ? ' (current step)' : ''}
+                </span>
+              </span>
+            </>
+          )
+          return (
+            <li key={s.label} className={`sr-step is-${state}`} aria-current={i === step ? 'step' : undefined}>
+              {i < step
+                ? <button type="button" onClick={() => onSelect(i)} disabled={disabled}>{inner}</button>
+                : <div>{inner}</div>}
+            </li>
+          )
+        })}
+      </ol>
+      {/* Compact version for narrow screens */}
+      <div className="sr-stepper-compact" aria-hidden="true">
+        <div className="sr-stepper-compact-text">
+          <span>Step {step + 1} of {STEPS.length}</span>
+          <strong>{STEPS[step].label}</strong>
+        </div>
+        <div className="sr-stepper-bar"><span style={{ width: `${((step + 1) / STEPS.length) * 100}%` }} /></div>
+      </div>
+    </nav>
+  )
+}
+
 // ── Step 1: Basic Info ────────────────────────────────────────────────────────
-function StepBasic({ form, set, businessTypes, toggleType, showPass, setShowPass, showConfirm, setShowConfirm, errors = {} }) {
+function StepBasic({ form, set, businessTypes, toggleType, showPass, setShowPass, showConfirm, setShowConfirm, errors = {}, catReq }) {
+  const text = (name, label, extra = {}) => {
+    const { hint, transform, ...rest } = extra
+    return (
+      <Field id={`sr-${name}`} label={label} required hint={hint} error={errors[name]}>
+        <input {...describe(`sr-${name}`, errors[name], hint)} aria-required="true"
+          value={form[name]}
+          onChange={e => set(name, transform ? transform(e.target.value) : e.target.value)} {...rest} />
+      </Field>
+    )
+  }
+  const password = (name, label, shown, setShown) => (
+    <Field id={`sr-${name}`} label={label} required error={errors[name]}>
+      <div className="sr-pass">
+        <input {...describe(`sr-${name}`, errors[name])} aria-required="true"
+          type={shown ? 'text' : 'password'} autoComplete="new-password" value={form[name]}
+          onChange={e => set(name, e.target.value)} placeholder="••••••••" />
+        <button type="button" onClick={() => setShown(!shown)}
+          aria-label={shown ? 'Hide password' : 'Show password'} aria-pressed={shown}>
+          {shown ? <EyeOff size={16} /> : <Eye size={16} />}
+        </button>
+      </div>
+    </Field>
+  )
+
+  // Categories that will ask for extra licenses on the next step.
+  const licenseCats = [...new Set(catReq.docs.map(d => d.category))]
+  const requiredLicenses = catReq.docs.filter(d => d.required).length
+
   return (
     <>
-      <Section title="Account Information" desc="Your login credentials">
-        <Field label="Full Name" required error={errors.full_name}>
-          <input autoComplete="name" value={form.full_name} onChange={e => set('full_name', e.target.value)} placeholder="Juan Dela Cruz" />
-        </Field>
-        <Field label="Email Address" required error={errors.email}>
-          <input type="email" autoComplete="email" inputMode="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="you@company.com" />
-        </Field>
+      <Section title="Account" desc="You’ll sign in with this email and password.">
         <div className="sr-row">
-          <Field label="Password" required error={errors.password}>
-            <div className="sr-pass">
-              <input type={showPass ? 'text' : 'password'} autoComplete="new-password" value={form.password}
-                onChange={e => set('password', e.target.value)} placeholder="••••••••" />
-              <button type="button" onClick={() => setShowPass(!showPass)}
-                aria-label={showPass ? 'Hide password' : 'Show password'} aria-pressed={showPass}>
-                {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-          </Field>
-          <Field label="Confirm Password" required error={errors.confirm_password}>
-            <div className="sr-pass">
-              <input type={showConfirm ? 'text' : 'password'} autoComplete="new-password" value={form.confirm_password}
-                onChange={e => set('confirm_password', e.target.value)} placeholder="••••••••" />
-              <button type="button" onClick={() => setShowConfirm(!showConfirm)}
-                aria-label={showConfirm ? 'Hide password' : 'Show password'} aria-pressed={showConfirm}>
-                {showConfirm ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-          </Field>
+          {text('full_name', 'Full Name', { autoComplete: 'name', placeholder: 'Juan Dela Cruz' })}
+          {text('email', 'Email Address', { type: 'email', autoComplete: 'email', inputMode: 'email', placeholder: 'you@company.com' })}
+        </div>
+        <div className="sr-row">
+          {password('password', 'Password', showPass, setShowPass)}
+          {password('confirm_password', 'Confirm Password', showConfirm, setShowConfirm)}
         </div>
         {form.password && <PasswordMeter pw={form.password} />}
         {form.confirm_password && (
-          <div className={`sr-match ${form.password === form.confirm_password ? 'ok' : 'bad'}`}>
+          <div className={`sr-match ${form.password === form.confirm_password ? 'ok' : 'bad'}`} aria-live="polite">
             {form.password === form.confirm_password
-              ? <><Check size={13} /> Passwords match</>
-              : <><X size={13} /> Passwords do not match</>}
+              ? <><Check size={13} aria-hidden="true" /> Passwords match</>
+              : <><X size={13} aria-hidden="true" /> Passwords do not match</>}
           </div>
         )}
       </Section>
 
-      <Section title="Company Details" desc="Your business information">
-        <Field label="Company Name" required error={errors.company_name}>
-          <input value={form.company_name} onChange={e => set('company_name', e.target.value)} placeholder="Acme Trading Corp." />
-        </Field>
-        <Field label="Company Address" required error={errors.company_address}>
-          <input value={form.company_address} onChange={e => set('company_address', e.target.value)} placeholder="123 Rizal St, Manila" />
-        </Field>
+      <Section title="Company details" desc="As shown on your SEC or DTI registration.">
+        {text('company_name', 'Company Name', { autoComplete: 'organization', placeholder: 'Acme Trading Corp.' })}
+        {text('company_address', 'Company Address', { autoComplete: 'street-address', placeholder: '123 Rizal St, Manila' })}
         <div className="sr-row">
-          <Field label="Phone Number" required hint="Numbers only." error={errors.phone_number}>
-            <input value={form.phone_number} onChange={e => set('phone_number', e.target.value.replace(/[^\d]/g, ''))} placeholder="09171234567" />
-          </Field>
-          <Field label="TIN" required hint="Numbers only." error={errors.tin}>
-            <input value={form.tin} onChange={e => set('tin', e.target.value.replace(/[^\d-]/g, ''))} placeholder="123-456-789" />
-          </Field>
+          {text('tin', 'TIN', { hint: 'Digits and dashes only.', inputMode: 'numeric', placeholder: '123-456-789', transform: v => v.replace(/[^\d-]/g, '') })}
+          {text('phone_number', 'Phone Number', { hint: 'Digits only.', type: 'tel', inputMode: 'numeric', autoComplete: 'tel', placeholder: '09171234567', transform: v => v.replace(/[^\d]/g, '') })}
         </div>
-        <Field label="Representative Name" required error={errors.representative_name}>
-          <input value={form.representative_name} onChange={e => set('representative_name', e.target.value)} placeholder="Authorized representative" />
-        </Field>
-        <Field label="Business Type" required hint="Select all categories that apply to your company." error={errors.business_types}>
+        {text('representative_name', 'Authorized Representative', { hint: 'The person authorized to transact for the company.', placeholder: 'Full name of representative' })}
+      </Section>
+
+      <Section title="Business categories"
+        desc="Select every category your company supplies. You can only bid on projects in these categories."
+        status={<span className={`sr-pill${businessTypes.length ? ' is-ok' : ''}`}>{businessTypes.length} selected</span>}>
+        <fieldset className={`sr-fieldset${errors.business_types ? ' has-error' : ''}`}
+          aria-describedby={errors.business_types ? 'sr-business_types-err' : undefined}>
+          <legend className="sr-visually-hidden">Business categories (required)</legend>
           <div className="sr-checks">
             {BUSINESS_TYPES.map(t => (
               <label key={t} className={businessTypes.includes(t) ? 'on' : ''}>
-                <input type="checkbox" checked={businessTypes.includes(t)} onChange={() => toggleType(t)} />
-                {t}
+                <input type="checkbox" checked={businessTypes.includes(t)} onChange={() => toggleType(t)}
+                  aria-invalid={errors.business_types ? true : undefined} />
+                <span>{t}</span>
               </label>
             ))}
           </div>
-        </Field>
+          {errors.business_types && <ErrorText id="sr-business_types-err">{errors.business_types}</ErrorText>}
+        </fieldset>
+        {businessTypes.length > 0 && !catReq.loading && !catReq.error && (
+          <p className="sr-inline-note" aria-live="polite">
+            <Info size={15} aria-hidden="true" />
+            {licenseCats.length === 0
+              ? <span>Your selected categories need no licenses beyond the standard documents.</span>
+              : <span>
+                  The next step will also ask for licenses for <b>{licenseCats.join(', ')}</b>
+                  {requiredLicenses > 0 ? ` (${requiredLicenses} required)` : ' (all optional)'}.
+                </span>}
+          </p>
+        )}
       </Section>
     </>
   )
 }
 
 // ── Step 2: Documents ─────────────────────────────────────────────────────────
-function StepDocuments({ form, set, files, onFile, removeFile, catReq, catDocs, onCatError, errors = {} }) {
+function StepDocuments({ form, set, files, onFile, removeFile, businessTypes, catReq, catDocs, onCatFile, onCatRemove, onCatExpiry, errors = {} }) {
+  const reqCatDocs = catReq.docs.filter(d => d.required)
+  const requiredTotal = REQUIRED_KEYS.length + reqCatDocs.length
+  const requiredDone = REQUIRED_KEYS.filter(k => files[k]).length + reqCatDocs.filter(d => catDocs.files[d.key]).length
+
+  const baseCard = (d) => (
+    <DocCard key={d.key} id={`sr-doc-${d.key}`} label={d.label} required={d.required} help={d.help}
+      file={files[d.key]} error={errors[d.key]}
+      onFile={f => onFile(d.key, f)} onRemove={() => removeFile(d.key)}>
+      {d.expiry && (
+        <SubField id={`sr-${d.expiry}`} label="Expiry date" note="Optional" error={errors[d.expiry]}>
+          <input type="date" min={todayIso()} value={form[d.expiry]}
+            {...describe(`sr-${d.expiry}`, errors[d.expiry])}
+            onChange={e => set(d.expiry, e.target.value)} />
+        </SubField>
+      )}
+      {d.extra === 'financial_statement_year' && (
+        <SubField id="sr-financial_statement_year" label="Statement year" note="Optional">
+          <input id="sr-financial_statement_year" inputMode="numeric" placeholder="e.g. 2025"
+            value={form.financial_statement_year}
+            onChange={e => set('financial_statement_year', e.target.value.replace(/[^\d]/g, '').slice(0, 4))} />
+        </SubField>
+      )}
+    </DocCard>
+  )
+
+  // Category licenses, grouped by category (the server lists each license once).
+  const groups = catReq.docs.reduce((acc, d) => { (acc[d.category] ||= []).push(d); return acc }, {})
+  const noExtra = businessTypes.filter(c => !groups[c])
+
   return (
     <>
-      <Section title="Legal Documents" desc="Required for company registration and compliance.">
-        <div className="sr-grid">
-          {LEGAL_DOCS.map(d => <Uploader key={d.key} doc={d} file={files[d.key]} onFile={onFile} removeFile={removeFile} error={errors[d.key]} />)}
+      <div className={`sr-progress-note${requiredDone === requiredTotal && !catReq.loading ? ' is-ok' : ''}`}>
+        <div>
+          <strong>{requiredDone} of {catReq.loading ? '…' : requiredTotal}</strong> required documents selected
         </div>
-        <Field label="Mayor's Permit Expiry" error={errors.mayors_permit_expiry}>
-          <input type="date" min={todayIso()} value={form.mayors_permit_expiry} onChange={e => set('mayors_permit_expiry', e.target.value)} />
-        </Field>
+        <span>{FILE_HINT} each. Files stay on this device until you submit.</span>
+      </div>
+
+      {DOC_GROUPS.map(g => {
+        const done = g.docs.filter(d => files[d.key]).length
+        const desc = g.id === 'auth'
+          ? 'Authorizes your representative to transact on behalf of the company.'
+          : g.id === 'legal' ? 'Proof that your company is registered and permitted to operate.'
+          : 'Used to verify your financial capacity.'
+        return (
+          <Section key={g.id} title={g.title} desc={desc}
+            status={<CountPill done={done} total={g.docs.length} />}>
+            <div className="sr-doc-grid">{g.docs.map(baseCard)}</div>
+          </Section>
+        )
+      })}
+
+      <Section title="Category-specific licenses"
+        desc="Extra licenses for the business categories you selected. Only the ones marked Required are needed to register."
+        status={!catReq.loading && !catReq.error && reqCatDocs.length > 0
+          ? <CountPill done={reqCatDocs.filter(d => catDocs.files[d.key]).length} total={reqCatDocs.length} />
+          : null}>
+        {catReq.loading && (
+          <p className="sr-inline-note"><Loader2 size={15} className="ui-spin" aria-hidden="true" /> Checking which licenses your categories need…</p>
+        )}
+        {catReq.error && (
+          <div className="sr-alert" role="alert">
+            <AlertCircle size={16} aria-hidden="true" />
+            <span>{catReq.error}</span>
+            <button type="button" className="sr-btn-ghost sm" onClick={catReq.reload}>
+              <RefreshCw size={14} aria-hidden="true" /> Try again
+            </button>
+          </div>
+        )}
+        {!catReq.loading && !catReq.error && Object.entries(groups).map(([category, docs]) => (
+          <div key={category} className="sr-catgroup">
+            <div className="sr-catgroup-head">
+              <h4>{category}</h4>
+              <span>
+                {docs.filter(d => d.required).length} required · {docs.filter(d => !d.required).length} optional
+              </span>
+            </div>
+            <div className="sr-doc-grid">
+              {docs.map(d => {
+                const fileErr = errors[`catdoc_${d.key}`]
+                const expErr = errors[`catdoc_${d.key}_expiry`]
+                const expId = `sr-catdoc-${d.key}-expiry`
+                return (
+                  <DocCard key={d.key} id={`sr-catdoc-${d.key}`} label={d.label} required={d.required}
+                    help={d.help_text} file={catDocs.files[d.key]} error={fileErr} hasError={!!expErr}
+                    onFile={f => onCatFile(d.key, f)} onRemove={() => onCatRemove(d.key)}>
+                    {d.has_expiry && (
+                      <SubField id={expId} label="Expiry date"
+                        note={d.required ? 'Required' : 'Required if uploaded'} noteRequired={d.required || !!catDocs.files[d.key]}
+                        error={expErr}>
+                        <input type="date" min={todayIso()} value={catDocs.expiries[d.key] || ''}
+                          {...describe(expId, expErr)}
+                          onChange={e => onCatExpiry(d.key, e.target.value)} />
+                      </SubField>
+                    )}
+                  </DocCard>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+        {!catReq.loading && !catReq.error && noExtra.length > 0 && (
+          <p className="sr-inline-note">
+            <Info size={15} aria-hidden="true" />
+            <span>No extra licenses needed for {noExtra.join(', ')}.</span>
+          </p>
+        )}
       </Section>
 
-      <Section title="Financial Documents" desc="Required to verify financial capacity.">
-        <div className="sr-grid">
-          {FINANCIAL_DOCS.map(d => <Uploader key={d.key} doc={d} file={files[d.key]} onFile={onFile} removeFile={removeFile} error={errors[d.key]} />)}
-        </div>
-        <div className="sr-row">
-          <Field label="Tax Clearance Expiry" error={errors.tax_clearance_expiry}>
-            <input type="date" min={todayIso()} value={form.tax_clearance_expiry} onChange={e => set('tax_clearance_expiry', e.target.value)} />
-          </Field>
-          <Field label="Financial Statement Year" hint="Year digits only.">
-            <input value={form.financial_statement_year}
-              onChange={e => set('financial_statement_year', e.target.value.replace(/[^\d]/g, '').slice(0, 4))} placeholder="e.g. 2026" />
-          </Field>
-        </div>
-      </Section>
-
-      <Section title="Representative Authorization" desc="Required authorization document.">
-        <div className="sr-grid">
-          {AUTH_DOCS.map(d => <Uploader key={d.key} doc={d} file={files[d.key]} onFile={onFile} removeFile={removeFile} error={errors[d.key]} />)}
-        </div>
-      </Section>
-
-      {(catReq.loading || catReq.error || catReq.docs.length > 0) && (
-        <Section title="Category Documents"
-          desc="Licenses required by the business categories you selected. Required ones must be uploaded to register.">
-          <CategoryDocumentFields req={catReq} state={catDocs} onError={onCatError} idPrefix="sr-catdoc" errors={errors} />
-        </Section>
-      )}
-
-      <Section title="Qualifications & Track Record" desc="Optional — demonstrate experience.">
-        <div className="sr-grid">
-          {OPTIONAL_DOCS.map(d => <Uploader key={d.key} doc={d} file={files[d.key]} onFile={onFile} removeFile={removeFile} error={errors[d.key]} />)}
-        </div>
-        <Field label="Track Record Description">
-          <textarea rows={3} value={form.track_record_description}
-            onChange={e => set('track_record_description', e.target.value)} placeholder="Brief description of similar projects" />
+      <Section title="Qualifications and track record" optional
+        desc="Optional. Helps the evaluation committee understand your experience."
+        status={<span className="sr-pill">{OPTIONAL_DOCS.filter(d => files[d.key]).length} added</span>}>
+        <div className="sr-doc-grid">{OPTIONAL_DOCS.map(baseCard)}</div>
+        <Field id="sr-track_record_description" label="Track record description" optional>
+          <textarea id="sr-track_record_description" rows={3} value={form.track_record_description}
+            onChange={e => set('track_record_description', e.target.value)}
+            placeholder="Briefly describe similar projects you have delivered" />
         </Field>
       </Section>
     </>
@@ -453,80 +662,154 @@ function StepDocuments({ form, set, files, onFile, removeFile, catReq, catDocs, 
 
 // ── Step 3: Declaration ───────────────────────────────────────────────────────
 function StepDeclaration({ form, set, errors = {} }) {
+  const err = errors.declaration_accepted
   return (
-    <Section title="Declaration" desc="Read and confirm before submitting.">
-      <div className="sr-declaration">
-        <p>I hereby certify that all information provided in this registration and all uploaded documents are true, accurate, and authentic to the best of my knowledge.</p>
-        <p>I understand that any false statement or falsified document is grounds for disqualification and possible legal action, and that my company will be subject to admin verification before being allowed to submit bids.</p>
-        <p>I consent to the processing of the submitted business information solely for the purpose of supplier verification and procurement.</p>
-      </div>
-      <label className={`sr-agree${errors.declaration_accepted ? ' has-error' : ''}`}>
-        <input type="checkbox" checked={form.declaration_accepted}
+    <Section title="Supplier declaration" desc="By registering, you make the following statements.">
+      <ol className="sr-decl-list">
+        <li>I hereby certify that all information provided in this registration and all uploaded documents are true, accurate, and authentic to the best of my knowledge.</li>
+        <li>I understand that any false statement or falsified document is grounds for disqualification and possible legal action, and that my company will be subject to admin verification before being allowed to submit bids.</li>
+        <li>I consent to the processing of the submitted business information solely for the purpose of supplier verification and procurement.</li>
+      </ol>
+      <div className={`sr-agree${err ? ' has-error' : ''}${form.declaration_accepted ? ' is-on' : ''}`}>
+        <input id="sr-declaration" type="checkbox" checked={form.declaration_accepted}
+          aria-invalid={err ? true : undefined} aria-describedby={err ? 'sr-declaration-err' : undefined}
           onChange={e => set('declaration_accepted', e.target.checked)} />
-        I have read and agree to the declaration above, the{' '}
-        <Link to="/terms" target="_blank" rel="noopener noreferrer">Terms of Service</Link>, and the{' '}
-        <Link to="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</Link>.
-      </label>
-      {errors.declaration_accepted && <small className="sr-error-text" role="alert">{errors.declaration_accepted}</small>}
+        <label htmlFor="sr-declaration">
+          I have read and agree to the declaration above, the{' '}
+          <Link to="/terms" target="_blank" rel="noopener noreferrer">Terms of Service</Link>, and the{' '}
+          <Link to="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</Link>.
+          <span className="sr-req" aria-hidden="true">*</span>
+        </label>
+      </div>
+      {err && <ErrorText id="sr-declaration-err">{err}</ErrorText>}
     </Section>
   )
 }
 
 // ── Step 4: Review ────────────────────────────────────────────────────────────
-function StepReview({ required, optional, catReq, catDocs }) {
-  const catRequired = catReq.docs.filter(d => d.required)
-  const catRequiredDone = catRequired.filter(d => catDocs.files[d.key]).length
-  const catUploaded = catReq.docs.filter(d => catDocs.files[d.key])
+function StepReview({ form, businessTypes, files, catReq, catDocs, onEdit, submitError }) {
+  const rows = [
+    ...LEGAL_DOCS, ...FINANCIAL_DOCS, ...AUTH_DOCS,
+  ].map(d => ({ key: d.key, label: d.label, required: true, file: files[d.key], expiry: d.expiry ? form[d.expiry] : '' }))
+  const catRows = catReq.docs.map(d => ({
+    key: d.key, label: d.label, required: d.required, category: d.category,
+    file: catDocs.files[d.key], expiry: d.has_expiry ? catDocs.expiries[d.key] : '', needsExpiry: d.has_expiry,
+  }))
+  const optRows = OPTIONAL_DOCS.map(d => ({ key: d.key, label: d.label, required: false, file: files[d.key] }))
+  const missing = [...rows, ...catRows].filter(r => r.required && !r.file).length
+    + catRows.filter(r => r.file && r.needsExpiry && !r.expiry).length
+  const ready = missing === 0 && form.declaration_accepted && !catReq.loading && !catReq.error
+
+  const company = [
+    ['Full name', form.full_name], ['Email', form.email],
+    ['Company', form.company_name], ['Address', form.company_address],
+    ['TIN', form.tin], ['Phone', form.phone_number],
+    ['Authorized representative', form.representative_name],
+  ]
+
   return (
-    <Section title="Review & Submit" desc="Verify your information before submitting.">
-      <div className="sr-review">
-        <div className="sr-stat">
-          <strong className={required === REQUIRED_KEYS.length ? 'ok' : 'warn'}>{required}/{REQUIRED_KEYS.length}</strong>
-          <span>Required docs uploaded</span>
-        </div>
-        {catRequired.length > 0 && (
-          <div className="sr-stat">
-            <strong className={catRequiredDone === catRequired.length ? 'ok' : 'warn'}>
-              {catRequiredDone}/{catRequired.length}
-            </strong>
-            <span>Required category docs</span>
-          </div>
-        )}
-        <div className="sr-stat"><strong>{optional}</strong><span>Optional docs uploaded</span></div>
-        <div className="sr-stat"><strong className="pending">Pending Review</strong><span>Status after submission</span></div>
-      </div>
-      {catUploaded.length > 0 && (
-        <div className="sr-note">
-          <FileText size={16} />
-          <ul>
-            {catUploaded.map(d => (
-              <li key={d.key}>
-                {d.label} <em>({d.category}{catDocs.expiries[d.key] ? `, expires ${catDocs.expiries[d.key]}` : ''})</em>
-              </li>
-            ))}
-          </ul>
+    <>
+      {submitError && (
+        <div className="sr-alert" role="alert">
+          <AlertCircle size={16} aria-hidden="true" />
+          <span><b>Registration was not submitted.</b> {submitError}</span>
         </div>
       )}
-      <div className="sr-note">
-        <AlertCircle size={16} />
-        <ul>
-          <li>All files must be 5MB or smaller (PDF, JPG, PNG).</li>
-          <li>Your account will be pending admin verification after submission.</li>
-          <li>You must complete all required documents to submit bids.</li>
-        </ul>
+      <div className={`sr-progress-note${ready ? ' is-ok' : ' is-warn'}`}>
+        <div>
+          {ready
+            ? <><CheckCircle2 size={16} aria-hidden="true" /> <strong>Ready to submit.</strong></>
+            : <><AlertCircle size={16} aria-hidden="true" /> <strong>{missing > 0 ? `${missing} required item${missing === 1 ? '' : 's'} missing.` : 'Some steps are incomplete.'}</strong></>}
+        </div>
+        <span>After you submit, your account stays pending until an admin verifies your documents.</span>
       </div>
-    </Section>
+
+      <Section title="Account and company" action={<EditBtn onClick={() => onEdit(0)} label="account and company details" />}>
+        <dl className="sr-summary">
+          {company.map(([k, v]) => (
+            <div key={k}><dt>{k}</dt><dd>{v || <span className="sr-muted">Not provided</span>}</dd></div>
+          ))}
+        </dl>
+      </Section>
+
+      <Section title="Business categories" action={<EditBtn onClick={() => onEdit(0)} label="business categories" />}>
+        <div className="sr-chips">
+          {businessTypes.map(t => <span key={t} className="sr-chip">{t}</span>)}
+        </div>
+      </Section>
+
+      <Section title="Documents" action={<EditBtn onClick={() => onEdit(1)} label="documents" />}>
+        <ReviewDocList title="Required documents" rows={rows} />
+        {catRows.length > 0 && <ReviewDocList title="Category-specific licenses" rows={catRows} />}
+        <ReviewDocList title="Optional qualifications" rows={optRows} />
+        {(form.financial_statement_year || form.track_record_description) && (
+          <dl className="sr-summary sr-summary-tight">
+            {form.financial_statement_year && <div><dt>Financial statement year</dt><dd>{form.financial_statement_year}</dd></div>}
+            {form.track_record_description && <div className="wide"><dt>Track record</dt><dd className="sr-prewrap">{form.track_record_description}</dd></div>}
+          </dl>
+        )}
+      </Section>
+
+      <Section title="Declaration" action={<EditBtn onClick={() => onEdit(2)} label="declaration" />}>
+        {form.declaration_accepted
+          ? <p className="sr-status-line ok"><CheckCircle2 size={16} aria-hidden="true" /> Declaration, Terms of Service and Privacy Policy accepted.</p>
+          : <p className="sr-status-line bad"><AlertCircle size={16} aria-hidden="true" /> Declaration not yet accepted.</p>}
+      </Section>
+    </>
+  )
+}
+
+function ReviewDocList({ title, rows }) {
+  const today = todayIso()
+  return (
+    <div className="sr-review-group">
+      <h4>{title}</h4>
+      <ul className="sr-doclist">
+        {rows.map(r => {
+          const expired = r.expiry && r.expiry < today
+          const noDate = r.file && r.needsExpiry && !r.expiry
+          const state = !r.file ? (r.required ? 'missing' : 'none')
+            : expired || noDate ? 'invalid' : 'ok'
+          return (
+            <li key={r.key} className={`is-${state}`}>
+              <span className="sr-doclist-icon" aria-hidden="true">
+                {state === 'ok' ? <CheckCircle2 size={16} /> : state === 'none' ? <FileText size={16} /> : <AlertCircle size={16} />}
+              </span>
+              <div className="sr-doclist-main">
+                <span className="sr-doclist-name">
+                  {r.label}{r.category && <span className="sr-doclist-cat"> · {r.category}</span>}
+                </span>
+                <span className="sr-doclist-sub">
+                  {r.file ? <span className="sr-doclist-file" title={r.file.name}>{r.file.name}</span>
+                    : r.required ? 'Missing — required' : 'Not provided (optional)'}
+                  {r.expiry && <span className={expired ? 'sr-bad' : ''}> · {expired ? 'Expired' : 'Expires'} {fmtDate(r.expiry)}</span>}
+                  {noDate && <span className="sr-bad"> · Expiry date missing</span>}
+                </span>
+              </div>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+function EditBtn({ onClick, label }) {
+  return (
+    <button type="button" className="sr-edit" onClick={onClick} aria-label={`Edit ${label}`}>
+      <Pencil size={13} aria-hidden="true" /> Edit
+    </button>
   )
 }
 
 function SuccessScreen({ onContinue }) {
   return (
     <div className="sr-success">
-      <div className="sr-success-card">
-        <span className="sr-success-icon"><CheckCircle2 size={40} /></span>
+      <div className="sr-success-card" role="status">
+        <span className="sr-success-icon"><CheckCircle2 size={40} aria-hidden="true" /></span>
         <h2>Registration Submitted</h2>
         <p>Your supplier account has been created and is now <b>pending admin verification</b>. You'll be able to bid once an admin approves your documents.</p>
-        <button className="sr-btn" onClick={onContinue}>Go to Login</button>
+        <button type="button" className="sr-btn" onClick={onContinue}>Go to Login</button>
       </div>
     </div>
   )
@@ -549,7 +832,7 @@ function PasswordMeter({ pw }) {
       <ul className="sr-pwchecks">
         {checks.map(c => (
           <li key={c.label} className={c.met ? 'met' : ''}>
-            {c.met ? <Check size={13} /> : <span className="sr-pwdot" />}
+            {c.met ? <Check size={13} aria-hidden="true" /> : <span className="sr-pwdot" aria-hidden="true" />}
             {c.label}
           </li>
         ))}
@@ -559,49 +842,115 @@ function PasswordMeter({ pw }) {
 }
 
 // ── Small building blocks ─────────────────────────────────────────────────────
-function Section({ title, desc, children }) {
+function Section({ title, desc, status, action, optional, children }) {
   return (
-    <div className="sr-section">
-      <div className="sr-section-head"><h3>{title}</h3><span>{desc}</span></div>
-      <div className="sr-section-body">{children}</div>
-    </div>
+    <section className="sr-panel">
+      <header className="sr-panel-head">
+        <div className="sr-panel-titles">
+          <h3>{title}{optional && <span className="sr-pill">Optional</span>}</h3>
+          {desc && <p>{desc}</p>}
+        </div>
+        {(status || action) && <div className="sr-panel-aside">{status}{action}</div>}
+      </header>
+      <div className="sr-panel-body">{children}</div>
+    </section>
   )
+}
+
+function CountPill({ done, total }) {
+  return <span className={`sr-pill${done === total ? ' is-ok' : ''}`}>{done} of {total} selected</span>
+}
+
+function ErrorText({ id, children }) {
+  return <p id={id} className="sr-error-text"><AlertCircle size={13} aria-hidden="true" /> {children}</p>
 }
 
 // `error` outlines the field in red and replaces the hint with what to fix.
-function Field({ label, required, hint, error, children }) {
+function Field({ id, label, required, optional, hint, error, children }) {
   return (
     <div className={`sr-field${error ? ' has-error' : ''}`}>
-      <label>{label}{required && <span className="req"> *</span>}</label>
+      <label htmlFor={id}>
+        {label}
+        {required && <span className="sr-req" aria-hidden="true">*</span>}
+        {optional && <span className="sr-optional">Optional</span>}
+      </label>
       {children}
       {error
-        ? <small className="sr-error-text" role="alert"><AlertCircle size={13} aria-hidden="true" /> {error}</small>
-        : hint && <small>{hint}</small>}
+        ? <ErrorText id={`${id}-err`}>{error}</ErrorText>
+        : hint && <p id={`${id}-hint`} className="sr-hint">{hint}</p>}
     </div>
   )
 }
 
-function Uploader({ doc, file, onFile, removeFile, error }) {
-  const ref = useRef(null)
+// A small labelled input inside a document card (expiry date, statement year).
+function SubField({ id, label, note, noteRequired, error, children }) {
   return (
-    <div className={`sr-upload-field${error ? ' has-error' : ''}`}>
-      <div className="sr-upload-label">
-        {doc.label}
-        <span className={doc.required ? 'req-tag' : 'opt-tag'}>{doc.required ? 'Required' : 'Optional'}</span>
+    <div className={`sr-subfield${error ? ' has-error' : ''}`}>
+      <label htmlFor={id}>
+        {label}
+        {note && <span className={noteRequired ? 'sr-subfield-note is-req' : 'sr-subfield-note'}>{note}</span>}
+      </label>
+      {children}
+      {error && <ErrorText id={`${id}-err`}>{error}</ErrorText>}
+    </div>
+  )
+}
+
+// One upload card: name + Required/Optional, a drop zone (or the chosen file
+// with Replace / Remove), then any related fields such as the expiry date.
+// The file is only held in the browser here; it's uploaded on Submit.
+function DocCard({ id, label, required, help, file, error, hasError, onFile, onRemove, children }) {
+  const inputRef = useRef(null)
+  const [drag, setDrag] = useState(false)
+  const pick = () => inputRef.current?.click()
+  const dropProps = {
+    onDragOver: e => { e.preventDefault(); setDrag(true) },
+    onDragLeave: () => setDrag(false),
+    onDrop: e => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files?.[0]; if (f) onFile(f) },
+  }
+  const helpId = help ? `${id}-help` : undefined
+  const errId = error ? `${id}-err` : undefined
+  return (
+    <div className={`sr-doc${file ? ' is-filled' : ''}${error || hasError ? ' has-error' : ''}${drag ? ' is-drag' : ''}`} {...dropProps}>
+      <div className="sr-doc-head">
+        <label htmlFor={id} className="sr-doc-name">{label}</label>
+        <span className={`sr-tag ${required ? 'is-req' : 'is-opt'}`}>{required ? 'Required' : 'Optional'}</span>
       </div>
+      {help && <p id={helpId} className="sr-doc-help">{help}</p>}
+
       {file ? (
-        <div className="sr-file">
-          <FileText size={16} /><span className="sr-file-name" title={file.name}>{file.name}</span>
-          <button type="button" onClick={() => removeFile(doc.key)} aria-label={`Remove ${doc.label}`}><X size={15} /></button>
+        <div className={`sr-file${error ? ' is-invalid' : ''}`}>
+          <span className="sr-file-icon" aria-hidden="true"><FileText size={16} /></span>
+          <div className="sr-file-meta">
+            <span className="sr-file-name" title={file.name}>{file.name}</span>
+            <span className="sr-file-sub">{fmtSize(file.size)} · Not uploaded yet, sent on submit</span>
+          </div>
+          <div className="sr-file-actions">
+            <button type="button" className="sr-file-btn" onClick={pick} aria-label={`Replace ${label}`}>Replace</button>
+            <button type="button" className="sr-file-btn is-icon" onClick={onRemove} aria-label={`Remove ${label}`}>
+              <Trash2 size={15} aria-hidden="true" />
+            </button>
+          </div>
         </div>
       ) : (
-        <button type="button" className="sr-upload-btn" onClick={() => ref.current?.click()}>
-          <Upload size={15} /> Click to upload <em>PDF, JPG, PNG · Max 5MB</em>
+        <button type="button" className="sr-drop" onClick={pick}
+          aria-label={`Upload ${label}`} aria-invalid={error ? true : undefined}
+          aria-describedby={[errId, helpId].filter(Boolean).join(' ') || undefined}>
+          <span className="sr-drop-icon" aria-hidden="true"><CloudUpload size={18} /></span>
+          <span className="sr-drop-text">
+            <span><strong>Choose file</strong> or drag it here</span>
+            <span className="sr-drop-meta">{FILE_HINT}</span>
+          </span>
         </button>
       )}
-      <input ref={ref} type="file" accept=".pdf,.jpg,.jpeg,.png" hidden
-        onChange={e => onFile(doc.key, e.target.files[0])} />
-      {error && <small className="sr-error-text" role="alert"><AlertCircle size={13} aria-hidden="true" /> {error}</small>}
+      <input ref={inputRef} id={id} type="file" accept=".pdf,.jpg,.jpeg,.png" hidden
+        onChange={e => {
+          const f = e.target.files?.[0]
+          e.target.value = '' // lets the same file be chosen again after removing it
+          if (f) onFile(f)
+        }} />
+      {error && <ErrorText id={errId}>{error}</ErrorText>}
+      {Children.toArray(children).length > 0 && <div className="sr-doc-extra">{children}</div>}
     </div>
   )
 }
