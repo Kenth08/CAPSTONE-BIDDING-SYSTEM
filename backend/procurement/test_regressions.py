@@ -80,13 +80,27 @@ class ProjectCodeGenerationTests(APITestCase):
         self.assertEqual(len(codes), 3)
         self.assertIn(fourth.data["code"], codes)
 
-    def test_code_continues_from_the_highest_existing_number(self):
-        self._create()
-        self._create()
-        Project.objects.filter(code__endswith="-001").delete()
-        res = self._create()
-        # 002 exists, so the next is 003 — never a re-used 002.
-        self.assertEqual(res.data["code"][-3:], "003")
+    def test_codes_are_random_and_not_sequential(self):
+        """Sequential codes ("P-2026-001", "-002", ...) let anyone guess every
+        other procurement's reference from one. New codes are long and random."""
+        import re
+        codes = [self._create().data["code"] for _ in range(5)]
+        pattern = re.compile(r"^PRC-\d{4}-[23456789A-HJKMNP-TV-Z]{4}-[23456789A-HJKMNP-TV-Z]{4}$")
+        for code in codes:
+            self.assertRegex(code, pattern)
+            self.assertLessEqual(len(code), Project._meta.get_field("code").max_length)
+        self.assertEqual(len(set(codes)), 5)
+
+    def test_create_retries_when_a_random_code_is_already_taken(self):
+        from unittest import mock
+        existing = self._create().data["code"]
+        with mock.patch(
+            "procurement.views.next_project_code",
+            side_effect=[existing, "PRC-2026-ABCD-EFGH"],
+        ):
+            res = self._create()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data["code"], "PRC-2026-ABCD-EFGH")
 
 
 class PublishRequiresHeadApprovalTests(APITestCase):

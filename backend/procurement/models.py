@@ -317,7 +317,7 @@ class Project(models.Model):
         AWARDED = "awarded", "Awarded"
         CLOSED = "closed", "Closed"
 
-    code = models.CharField(max_length=20, unique=True)  # e.g. P-2026-001
+    code = models.CharField(max_length=20, unique=True)  # e.g. PRC-2026-7K4M-Q9XT (older: P-2026-001)
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)  # Approved Budget (ABC)

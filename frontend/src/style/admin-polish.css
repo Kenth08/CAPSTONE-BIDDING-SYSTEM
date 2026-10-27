@@ -145,9 +145,9 @@
 .ad-bids-count { margin: 0 2px !important; font-size: var(--fs-caption) !important; }
 
 .ad-bid-cards {
-  /* ~360px cards (4 per row on a wide screen) so the details aren't cramped. */
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)) !important;
-  gap: 20px !important;
+  /* ~420px cards (3 per row on a wide screen) so the details aren't cramped. */
+  grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr)) !important;
+  gap: 24px !important;
   max-height: none !important;
   overflow: visible !important;
   padding-right: 0 !important;
@@ -156,25 +156,121 @@
 .ad-bid-card {
   display: flex; flex-direction: column;
   border-radius: var(--r-card) !important;
-  padding: var(--sp-6, 24px) !important;
+  padding: 28px !important;
   box-shadow: var(--shadow-xs);
   transition: border-color var(--ease), box-shadow var(--ease) !important;
 }
 .ad-bid-card:hover { border-color: var(--c-primary-200) !important; box-shadow: var(--shadow-md) !important; }
 .ad-bid-card:focus-visible { outline: none; box-shadow: var(--focus-ring) !important; }
-.ad-bid-card-icon { background: var(--c-primary-50) !important; color: var(--c-primary-600) !important; }
-.ad-bid-card-name { font-size: var(--fs-card-title) !important; line-height: 1.35; margin: 4px 0 8px !important; }
-.ad-bid-card-meta {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px;
-  margin: 16px 0 0; padding: 16px 0 4px; border-top: 1px dashed var(--border);
+.ad-bid-card-top { margin-bottom: 18px !important; }
+.ad-bid-card-icon {
+  width: 48px !important; height: 48px !important; border-radius: 12px !important;
+  background: var(--c-primary-50) !important; color: var(--c-primary-600) !important;
 }
-.ad-bid-card-meta dt { font-size: 10px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
-.ad-bid-card-meta dd { margin: 4px 0 0; font-size: var(--fs-small); color: var(--text-body); }
+.ad-bid-card-name { font-size: 18px !important; line-height: 1.35; margin: 0 0 12px !important; }
+
+/* Status badge and reference chip are shared components; only enlarge them here. */
+.ad-bid-card .ui-badge { font-size: 13px !important; padding: 5px 12px !important; gap: 7px !important; }
+.ad-bid-card .ui-badge-dot { width: 7px !important; height: 7px !important; }
+.ad-bid-card .ad-ref { font-size: 13.5px; padding: 5px 10px; gap: 8px; }
+.ad-bid-card .ad-ref svg { width: 14px; height: 14px; }
+
+.ad-bid-card-meta {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 20px 28px;
+  margin: 20px 0 0; padding: 20px 0 6px; border-top: 1px dashed var(--border-strong, var(--border));
+}
+.ad-bid-card-meta dt { font-size: 11.5px; font-weight: 700; color: var(--text-subtle); text-transform: uppercase; letter-spacing: 0.07em; }
+.ad-bid-card-meta dd { margin: 6px 0 0; font-size: 15.5px; color: var(--text-body); }
 .ad-bid-card-meta-full { grid-column: 1 / -1; }
-.ad-bid-card-budget { color: var(--text-strong) !important; font-weight: 700 !important; font-variant-numeric: tabular-nums; margin: 2px 0 0 !important; }
-.ad-bid-card-footer { margin-top: auto !important; padding-top: 16px !important; }
-.ad-bid-card-count { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text-body) !important; font-size: var(--fs-caption) !important; }
-.ad-bid-card-cta { display: inline-flex; align-items: center; gap: 2px; font-size: var(--fs-caption); font-weight: 600; color: var(--c-primary-700); }
+.ad-bid-card-budget { color: var(--text-strong) !important; font-size: 17px !important; font-weight: 700 !important; font-variant-numeric: tabular-nums; }
+.ad-bid-card-footer { margin-top: auto !important; padding-top: 18px !important; }
+.ad-bid-card-count { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; color: var(--text-body) !important; font-size: 14.5px !important; }
+/* Padded so the whole "Evaluate ›" area is a comfortable target (the card itself is the button). */
+.ad-bid-card-cta {
+  display: inline-flex; align-items: center; gap: 4px;
+  min-height: 36px; padding: 6px 10px 6px 14px; margin-right: -10px;
+  border-radius: var(--r-btn, 8px);
+  font-size: 15px; font-weight: 600; color: var(--c-primary-700);
+  transition: background var(--ease);
+}
+.ad-bid-card:hover .ad-bid-card-cta { background: var(--c-primary-50); }
+.ad-bid-card .ad-bid-card-arrow { color: var(--c-primary-700); }
+
+@media (max-width: 640px) {
+  .ad-bid-card { padding: 22px !important; }
+  .ad-bid-card-meta { gap: 16px 20px; }
+}
+/* Long project names wrap instead of stretching the card. */
+.ad-bid-card-name { overflow-wrap: anywhere; }
+.ad-bid-cards-empty .ad-btn-cancel { gap: 6px; }
+
+/* ── Bid evaluation list: scrolling, sticky filters, pagination ─────────────
+   .ad-content normally has `flex: 1; min-height: 0`, which lets it shrink to
+   the viewport while the cards overflow it — a sticky child would then let go
+   after one screen. This page grows with its content instead. */
+.ad-content.ad-bids-page { flex: 1 0 auto; }
+
+/* The results line is focused after a page change (for keyboard users) — it's
+   not interactive, so no ring. */
+.ad-bids-count:focus { outline: none; }
+.ad-bids-count-page { color: var(--text-faint); }
+
+/* Search + filters stay pinned under the app header while the list scrolls
+   (the header sits outside .ad-body, so top: 0 is directly beneath it). The
+   canvas-coloured padding hides cards sliding underneath; the negative margin
+   keeps the resting layout exactly as before. `top` cancels .ad-body's own top
+   padding, which sticky positioning otherwise leaves as a gap cards show
+   through. Only on screens tall and wide enough — on phones the wrapped
+   toolbar would cover half the list. */
+@media (min-width: 769px) and (min-height: 620px) {
+  .ad-bids-sticky {
+    position: sticky; top: calc(-1 * var(--sp-6)); z-index: 5;
+    margin: -10px 0; padding: 10px 0;
+    background: var(--canvas);
+  }
+}
+
+.ad-pager {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: var(--sp-3) var(--sp-4);
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--border);
+}
+.ad-pager-size { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-small); color: var(--text-subtle); }
+.ad-pager-size select {
+  height: 36px; padding: 0 10px; cursor: pointer;
+  border: 1px solid var(--border-strong); border-radius: var(--r-btn);
+  background: var(--surface); color: var(--text-strong); font-size: var(--fs-small);
+}
+.ad-pager-nav { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.ad-pager-pages { display: flex; align-items: center; gap: 4px; list-style: none; margin: 0; padding: 0; }
+.ad-pager-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  min-width: 38px; height: 38px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: var(--r-btn);
+  background: var(--surface); color: var(--text-body);
+  font: inherit; font-size: var(--fs-small); font-weight: 600; font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background var(--ease), border-color var(--ease), color var(--ease);
+}
+.ad-pager-btn:hover:not(:disabled) { border-color: var(--c-primary-200); background: var(--c-primary-50); color: var(--c-primary-700); }
+.ad-pager-btn:focus-visible, .ad-pager-size select:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--c-primary-500); }
+.ad-pager-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.ad-pager-current, .ad-pager-current:hover:not(:disabled) {
+  background: var(--c-primary-600); border-color: var(--c-primary-600); color: #fff;
+}
+.ad-pager-step { padding: 0 14px; }
+.ad-pager-gap { min-width: 20px; text-align: center; color: var(--text-faint); }
+.ad-pager-mobile-status { display: none; font-size: var(--fs-small); font-weight: 600; color: var(--text-body); padding: 0 6px; }
+
+/* Phones: Previous · 3 / 9 · Next instead of the full number row. */
+@media (max-width: 560px) {
+  .ad-pager { justify-content: center; }
+  .ad-pager-nav { margin-left: 0; width: 100%; justify-content: space-between; }
+  .ad-pager-pages { display: none; }
+  .ad-pager-mobile-status { display: inline; }
+}
 
 /* ── Bid evaluation detail ───────────────────────────────────────────────── */
 .ad-back-link {
