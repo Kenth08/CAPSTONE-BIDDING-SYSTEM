@@ -1529,6 +1529,26 @@ function DocExpiryBadges({ doc }) {
   )
 }
 
+// "View" for a supplier document — only when there's really a file to open.
+// The backend sets `present: false` when a document was never uploaded OR its
+// file is gone from storage (e.g. lost on an old Render restart); in the
+// second case `url` still exists but opening it only returns a 404 page, so
+// show a clear message instead of a link that goes nowhere.
+function SupplierDocView({ doc }) {
+  if (!doc.url) {
+    return <span className="ad-doc-nofile" title="The supplier hasn't uploaded this document."><FileText size={13} aria-hidden="true" /> No file uploaded</span>
+  }
+  if (doc.present === false) {
+    return (
+      <span className="ad-doc-nofile ad-doc-nofile-lost"
+        title="This document is on record, but its file is no longer in storage. Flag it and request a revision so the supplier uploads it again.">
+        <AlertTriangle size={13} aria-hidden="true" /> File not available
+      </span>
+    )
+  }
+  return <a className="ad-doc-view" href={doc.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+}
+
 // Base documents first, then one group per business category (its extra
 // licenses). `pending` marks a category that is only in a change request.
 function supplierDocGroups(documents = []) {
@@ -1772,9 +1792,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                                 ? <span className="ad-doc-status ad-doc-ok"><Check size={11} /> Reviewed</span>
                                 : null}
                         </div>
-                        {d.url
-                          ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
-                          : <span className="ad-doc-missing">Not uploaded</span>}
+                        <SupplierDocView doc={d} />
                       </div>
                       {/* Remind the admin why this doc was sent back, now that it's been re-uploaded. */}
                       {!checked && rs === 'resubmitted' && d.review_note && (
