@@ -131,16 +131,25 @@ export async function apiDocumentRequirements(categories) {
 // `data` is a FormData instance — do NOT set Content-Type; the browser adds the
 // correct multipart boundary automatically.
 export async function apiRegisterSupplier(formData) {
-  const res = await fetch(`${API_URL}/auth/register/supplier/`, {
-    method: 'POST',
-    body: formData,
-  })
+  let res
+  try {
+    res = await fetch(`${API_URL}/auth/register/supplier/`, {
+      method: 'POST',
+      body: formData,
+    })
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     const msg = Object.entries(err)
       .map(([field, val]) => `${field}: ${Array.isArray(val) ? val.join(' ') : val}`)
       .join('\n')
-    throw new Error(msg || 'Registration failed.')
+    const error = new Error(msg || 'Registration failed.')
+    // Raw { field: [messages] } so the form can show each one beside its field.
+    error.fields = err && typeof err === 'object' ? err : {}
+    error.status = res.status
+    throw error
   }
   return res.json()
 }
