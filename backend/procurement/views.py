@@ -1,4 +1,5 @@
 import logging
+import secrets
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -189,39 +190,32 @@ def bid_review_labels(keys):
     return ", ".join(labels)
 
 
+# Crockford-style alphabet: no 0/O, 1/I/L or U, so a code read aloud or typed
+# from a printed NOA can't be mistaken for another one.
+PROJECT_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+PROJECT_CODE_RANDOM_LENGTH = 8
+
+
 def next_project_code():
-    """The next free procurement code for this year, e.g. "P-2026-004".
+    """A new random procurement code for this year, e.g. "PRC-2026-7K4M-Q9XT".
 
-    Derived from the HIGHEST existing code, not from a row count. Counting was
-    wrong in two ways that both ended in an IntegrityError on the unique `code`
-    column — and once a year's numbering collided, no procurement could be
-    created for the rest of that year:
+    Codes used to be sequential ("P-2026-004"), which made every procurement
+    trivially guessable: knowing one code told you all the others. The random
+    part is now 8 characters from a 30-symbol alphabet (~6.5 x 10^11 codes per
+    year) drawn with `secrets`, so codes can't be predicted or enumerated.
 
-      * deleting a project lowered the count, so the next create re-proposed a
-        code that still existed (delete P-2026-002 of three, count+1 == 3, and
-        P-2026-003 is already taken);
-      * two simultaneous creates read the same count and proposed the same code.
+    Older sequential codes stay exactly as they are — the code is the on-chain
+    index for every anchor, so renaming one would orphan its blockchain trail.
 
-    The retry loop closes the concurrency window that remains between reading
-    the maximum and committing the insert: if another request wins the race, the
-    unique constraint rejects this one and we simply take the next number. The
-    caller must therefore be prepared to have `code` re-derived, which is why
-    this is called inside perform_create's save.
+    Collisions are astronomically unlikely, but the unique constraint on `code`
+    is still the real guard: perform_create retries with a fresh code if the
+    insert is ever rejected. The result is 18 characters, within max_length=20.
     """
     year = date.today().year
-    prefix = f"P-{year}-"
-    latest = (
-        Project.objects.filter(code__startswith=prefix)
-        .order_by("-code")
-        .values_list("code", flat=True)
-        .first()
+    chars = "".join(
+        secrets.choice(PROJECT_CODE_ALPHABET) for _ in range(PROJECT_CODE_RANDOM_LENGTH)
     )
-    try:
-        # "P-2026-014" -> 14. A malformed legacy code falls back to the count.
-        nxt = int(latest.rsplit("-", 1)[1]) + 1 if latest else 1
-    except (ValueError, IndexError):
-        nxt = Project.objects.filter(code__startswith=prefix).count() + 1
-    return f"{prefix}{nxt:03d}"
+    return f"PRC-{year}-{chars[:4]}-{chars[4:]}"
 
 
 def close_expired_published_projects():
@@ -906,10 +900,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user if self.request.user.is_authenticated else None
         # Created from Planning → goes straight into the Head's approval queue.
-        # Retried because next_project_code() reads the highest code and another
-        # request can insert between that read and this write; the unique
-        # constraint is what actually settles the race, so losing it just means
-        # taking the next number rather than failing the create.
+        # Retried in the (astronomically unlikely) case a random code is
+        # already taken; the unique constraint settles it, and the retry just
+        # draws a fresh code rather than failing the create.
         for attempt in range(5):
             try:
                 with transaction.atomic():

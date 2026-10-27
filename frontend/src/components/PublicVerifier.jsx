@@ -198,7 +198,7 @@ export default function PublicVerifier() {
           <input
             value={code}
             onChange={(e) => setCode(e.target.value)}
-            placeholder="Procurement reference, e.g. P-2026-001"
+            placeholder="Procurement reference, e.g. PRC-2026-7K4M-Q9XT"
             aria-label="Procurement reference"
             spellCheck={false}
           />
