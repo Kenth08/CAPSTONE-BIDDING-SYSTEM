@@ -127,13 +127,21 @@ class EmailVerifyConfirmView(APIView):
 
 class ResendVerificationEmailView(APIView):
     """POST (authenticated) -> resends the verification link to the caller's
-    own address. Always returns the same generic response and never lets an
-    SMTP failure surface, for the same reasons as PasswordResetRequestView."""
+    own address.
+
+    Unlike the password-reset request, a delivery failure IS reported (503):
+    the caller is signed in and the address is their own, so there is nothing
+    to enumerate, and a false "sent" left suppliers waiting for mail that was
+    never delivered."""
 
     throttle_classes = [EmailVerifyRateThrottle]
 
     def post(self, request):
-        send_verification_email(request.user)
+        if not send_verification_email(request.user):
+            return Response(
+                {"detail": "We couldn't send the verification email right now. Please try again later."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response({"detail": "A verification email has been sent to your address."})
 
 
