@@ -28,6 +28,7 @@ import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import AppSidebar from '../components/shell/AppSidebar'
 import AppHeader, { storedUser } from '../components/shell/AppHeader'
 import StatusBadge from '../components/ui/StatusBadge'
+import { DocFileStatus, DocReviewBadge, DocSummary } from '../components/ui/DocStatus'
 import EmptyState, { TableEmpty } from '../components/ui/EmptyState'
 import PageHeader from '../components/ui/PageHeader'
 import Stepper from '../components/ui/Stepper'
@@ -778,24 +779,22 @@ function ProjectDetailModal({ project, onClose, setToast }) {
           </div>
 
           <div className="ad-docs-head"><FileText size={15} /> Procurement Documents</div>
+          <DocSummary docs={project.documents} />
           <div className="ad-docs-list">
             {project.documents.map(d => {
               const flagged = d.review_status === 'needs_revision'
               return (
                 <div className={`ad-doc-row${flagged ? ' flagged' : ''}`} key={d.key}>
                   <div className="ad-doc-main">
-                    <div className="ad-doc-name">
-                      <span className="ad-bold">{d.label}</span>
-                      <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
-                      {flagged
-                        ? <span className="ad-doc-status ad-doc-flag">Flagged for revision</span>
-                        : d.review_status === 'approved'
-                          ? <span className="ad-doc-status ad-doc-ok"><Check size={11} /> Reviewed</span>
-                          : null}
+                    <div className="ad-doc-info">
+                      <div className="ad-doc-title">
+                        <span className="ad-bold">{d.label}</span>
+                        <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+                        <DocReviewBadge doc={d} />
+                      </div>
+                      <DocFileStatus doc={d} />
                     </div>
-                    {d.url
-                      ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
-                      : <span className="ad-doc-missing">Not uploaded</span>}
+                    {d.url && <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>}
                   </div>
                   {flagged && d.review_note && (
                     <div className="ad-doc-prevnote">Head's note: “{d.review_note}”</div>
@@ -1651,46 +1650,12 @@ function SupplierDetailSkeleton() {
 // Missing / Expired (red), "Expires in X days" (orange, within 30 days) or the
 // plain expiry date. Expired documents block NEW approvals only; a supplier
 // who is already verified keeps bidding, so this is how the Admin notices.
-function DocExpiryBadges({ doc }) {
-  if (doc.expired) {
-    return (
-      <span className="cd-badge cd-badge-missing" title="Expired documents count as missing for approval.">
-        Expired {fmtDate(doc.expiry_date)}
-      </span>
-    )
-  }
-  return (
-    <>
-      {doc.missing && (
-        <span className="cd-badge cd-badge-missing"
-          title={doc.url ? 'The file is no longer in storage — ask the supplier to upload it again.' : 'Not uploaded yet'}>
-          Missing
-        </span>
-      )}
-      {doc.expiring_soon
-        ? <span className="cd-badge cd-badge-warn">Expires in {doc.days_left} day{doc.days_left === 1 ? '' : 's'}</span>
-        : doc.expiry_date && !doc.missing && <span className="ad-doc-expiry">Expires {fmtDate(doc.expiry_date)}</span>}
-    </>
-  )
-}
-
 // "View" for a supplier document — only when there's really a file to open.
-// The backend sets `present: false` when a document was never uploaded OR its
-// file is gone from storage (e.g. lost on an old Render restart); in the
-// second case `url` still exists but opening it only returns a 404 page, so
-// show a clear message instead of a link that goes nowhere.
+// The backend sets `present: false` when a file is gone from storage (e.g.
+// lost on an old Render restart); its `url` would only return a 404, so no
+// link is shown. <DocFileStatus> beside it explains what's wrong.
 function SupplierDocView({ doc }) {
-  if (!doc.url) {
-    return <span className="ad-doc-nofile" title="The supplier hasn't uploaded this document."><FileText size={13} aria-hidden="true" /> No file uploaded</span>
-  }
-  if (doc.present === false) {
-    return (
-      <span className="ad-doc-nofile ad-doc-nofile-lost"
-        title="This document is on record, but its file is no longer in storage. Flag it and request a revision so the supplier uploads it again.">
-        <AlertTriangle size={13} aria-hidden="true" /> File not available
-      </span>
-    )
-  }
+  if (!doc.url || doc.present === false) return null
   return <a className="ad-doc-view" href={doc.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
 }
 
@@ -1898,6 +1863,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                   </span>
                 </div>
               )}
+              <DocSummary docs={supplier.documents || []} />
               {supplierDocGroups(supplier.documents).map(group => (
               <div className="ad-doc-group" key={group.key}>
               {group.title && (
@@ -1924,18 +1890,14 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                             />
                           </label>
                         )}
-                        <div className="ad-doc-name">
-                          <span className="ad-bold">{d.label}</span>
-                          <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
-                          <DocExpiryBadges doc={d} />
-                          {/* Review state at a glance — the admin can still re-check any doc to double-check it. */}
-                          {checked
-                            ? <span className="ad-doc-status ad-doc-flag">Flagged for revision</span>
-                            : rs === 'resubmitted'
-                              ? <span className="ad-doc-status ad-doc-resub">Resubmitted — please review</span>
-                              : rs === 'approved'
-                                ? <span className="ad-doc-status ad-doc-ok"><Check size={11} /> Reviewed</span>
-                                : null}
+                        {/* Submitted? Which file? Reviewed? — readable without opening it. */}
+                        <div className="ad-doc-info">
+                          <div className="ad-doc-title">
+                            <span className="ad-bold">{d.label}</span>
+                            <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+                            <DocReviewBadge doc={d} flagged={checked} />
+                          </div>
+                          <DocFileStatus doc={d} />
                         </div>
                         <SupplierDocView doc={d} />
                       </div>
@@ -2104,12 +2066,9 @@ function CategoryRequestPanel({ supplier, busy, onApprove, onReject }) {
                 <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
               </span>
               <span className="ad-catreq-doc-state">
-                {d.review_status === 'needs_revision'
-                  ? <span className="cd-badge cd-badge-warn">Flagged</span>
-                  : <DocExpiryBadges doc={d} />}
-                {d.url
-                  ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
-                  : <span className="ad-doc-missing">Not uploaded</span>}
+                <DocFileStatus doc={d} />
+                <DocReviewBadge doc={d} />
+                <SupplierDocView doc={d} />
               </span>
             </li>
           ))}
@@ -2815,6 +2774,7 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
                 </span>
               </div>
             )}
+            <DocSummary docs={bid.documents || []} />
             <div className="ad-docs-list">
               {(bid.documents || []).map(d => {
                 const checked = !!flags[d.key]?.checked
@@ -2833,20 +2793,15 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
                           />
                         </label>
                       )}
-                      <div className="ad-doc-name">
-                        <span className="ad-bold">{d.label}{d.count ? ` (${d.count})` : ''}</span>
-                        <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
-                        {checked
-                          ? <span className="ad-doc-status ad-doc-flag">Flagged for revision</span>
-                          : rs === 'resubmitted'
-                            ? <span className="ad-doc-status ad-doc-resub">Resubmitted — please review</span>
-                            : rs === 'approved'
-                              ? <span className="ad-doc-status ad-doc-ok"><Check size={11} /> Reviewed</span>
-                              : null}
+                      <div className="ad-doc-info">
+                        <div className="ad-doc-title">
+                          <span className="ad-bold">{d.label}</span>
+                          <span className={d.required ? 'ad-req-tag' : 'ad-opt-tag'}>{d.required ? 'Required' : 'Optional'}</span>
+                          <DocReviewBadge doc={d} flagged={checked} />
+                        </div>
+                        <DocFileStatus doc={d} />
                       </div>
-                      {d.url
-                        ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
-                        : <span className="ad-doc-missing">Not uploaded</span>}
+                      {d.url && <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>}
                     </div>
                     {!checked && rs === 'resubmitted' && d.review_note && (
                       <div className="ad-doc-prevnote">Previously flagged: “{d.review_note}”</div>

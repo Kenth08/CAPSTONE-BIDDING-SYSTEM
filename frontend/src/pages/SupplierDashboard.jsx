@@ -23,6 +23,7 @@ import AnchorActivity from '../components/AnchorActivity'
 import AppSidebar from '../components/shell/AppSidebar'
 import AppHeader, { storedUser } from '../components/shell/AppHeader'
 import StatusBadge from '../components/ui/StatusBadge'
+import { DocFileStatus, DocReviewBadge, DocSummary } from '../components/ui/DocStatus'
 import EmptyState, { TableEmpty } from '../components/ui/EmptyState'
 import { deadlineMeta } from '../utils/format'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
@@ -1847,31 +1848,6 @@ function CategoryRequestBanner({ profile, onWithdraw, withdrawing }) {
 
 // Maps a document's review state to a badge — "not uploaded" wins over any
 // stale review status, since a missing file can't meaningfully be "approved".
-function docStatusBadge(doc) {
-  if (!doc.url) return { label: 'Not Uploaded', cls: 'badge-gray' }
-  if (doc.review_status === 'approved') return { label: 'Approved', cls: 'badge-green' }
-  if (doc.review_status === 'needs_revision') return { label: 'Needs Revision', cls: 'badge-red' }
-  if (doc.review_status === 'resubmitted') return { label: 'Resubmitted', cls: 'badge-blue' }
-  return { label: 'Pending Review', cls: 'badge-yellow' }
-}
-
-// Only mayors_permit and tax_clearance_certificate carry an expiry date on the
-// Supplier model — every other document type has none.
-const DOC_EXPIRY_FIELD = {
-  mayors_permit: 'mayors_permit_expiry',
-  tax_clearance_certificate: 'tax_clearance_expiry',
-}
-function docExpiryInfo(doc, profile) {
-  // Category licenses carry their own expiry date; base documents read it
-  // from the supplier profile.
-  const field = DOC_EXPIRY_FIELD[doc.key]
-  const raw = doc.source === 'category' ? doc.expiry_date : (field ? profile?.[field] : null)
-  if (!raw) return null
-  const date = new Date(raw)
-  const daysLeft = Math.ceil((date - new Date()) / (1000 * 60 * 60 * 24))
-  return { date, expired: daysLeft < 0, expiringSoon: daysLeft >= 0 && daysLeft <= 30 }
-}
-
 // Can the supplier upload this category license from My Documents? Mirrors the
 // server rule (SupplierViewSet.my_category_documents): any license of a pending
 // category request, or a current category's license that is missing or was
@@ -2053,64 +2029,48 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry, setToast,
           <div><h2>My Documents</h2><p>Registration documents on file with the procuring entity</p></div>
         </div>
         <div className="sd-doc-list" style={{ padding: '8px 24px 20px' }}>
+          <DocSummary docs={profile.documents || []} />
           {(profile.documents || []).map(d => {
-            const badge = docStatusBadge(d)
-            const expiry = docExpiryInfo(d, profile)
-            const labelEl = (
-              <span className="sd-file-rowname">
-                {d.label}{!d.required && <span className="sd-optional"> (optional)</span>}
-                {d.source === 'category' && (
-                  <span className="cd-badge cd-badge-cat" style={{ marginLeft: 8 }}>
-                    {d.category}{d.pending_category ? ' · requested' : ''}
-                  </span>
-                )}
+            // Line one: name (+ category). Line two: submitted or not, which
+            // file, and its expiry. Then the reviewer's verdict and actions.
+            const info = (
+              <span className="sd-doc-info">
+                <span className="sd-file-rowname">
+                  {d.label}{!d.required && <span className="sd-optional"> (optional)</span>}
+                  {d.source === 'category' && (
+                    <span className="cd-badge cd-badge-cat" style={{ marginLeft: 8 }}>
+                      {d.category}{d.pending_category ? ' · requested' : ''}
+                    </span>
+                  )}
+                </span>
+                <DocFileStatus doc={d} />
               </span>
             )
-            // Expired: red badge. Within 30 days: orange "Expires in X days".
-            // Otherwise the plain date. The server decides both (d.expired,
-            // d.expiring_soon), so the page and the approval rules agree.
-            const expiryEl = d.expired ? (
-              <span className="cd-badge cd-badge-missing">
-                Expired {expiry ? expiry.date.toLocaleDateString() : ''}{d.source === 'category' ? ' — please renew' : ''}
-              </span>
-            ) : d.expiring_soon ? (
-              <span className="cd-badge cd-badge-warn">
-                Expires in {d.days_left} day{d.days_left === 1 ? '' : 's'}
-              </span>
-            ) : expiry && (
-              <span className="sd-doc-expiry">Expires {expiry.date.toLocaleDateString()}</span>
-            )
-            // Category licenses: a "Missing" badge and an upload control right in
-            // the list (base documents are replaced through a revision request).
+            const canOpen = d.url && d.present !== false
+            // Category licenses get an upload control right in the list (base
+            // documents are replaced through a revision request).
             if (d.source === 'category' && (d.missing || canUploadCategoryDoc(d, profile))) {
               return (
                 <div key={d.key} className={`sd-doc-row${d.url ? '' : ' sd-doc-row-missing'}`}>
-                  {labelEl}
-                  {d.expired
-                    ? null /* the red "Expired — please renew" badge below says it */
-                    : d.missing
-                      ? <span className="cd-badge cd-badge-missing">Missing — please upload</span>
-                      : <span className={`ui-badge ${badge.cls}`}><span className="ui-badge-dot" aria-hidden="true" />{badge.label}</span>}
-                  {expiryEl}
-                  {d.url && <a className="sd-doc-view" href={d.url} target="_blank" rel="noreferrer"><Eye size={13} /> View</a>}
+                  {info}
+                  <DocReviewBadge doc={d} />
+                  {canOpen && <a className="sd-doc-view" href={d.url} target="_blank" rel="noreferrer"><Eye size={13} /> View</a>}
                   {canUploadCategoryDoc(d, profile) && (
                     <CategoryDocUpload doc={d} setToast={setToast} onUploaded={onUpdated} />
                   )}
                 </div>
               )
             }
-            return d.url ? (
+            return canOpen ? (
               <a key={d.key} className="sd-doc-row" href={d.url} target="_blank" rel="noreferrer">
-                {labelEl}
-                <span className={`ui-badge ${badge.cls}`}><span className="ui-badge-dot" aria-hidden="true" />{badge.label}</span>
-                {expiryEl}
+                {info}
+                <DocReviewBadge doc={d} />
                 <span className="sd-doc-view"><Eye size={13} /> View</span>
               </a>
             ) : (
               <div key={d.key} className="sd-doc-row sd-doc-row-missing">
-                {labelEl}
-                <span className={`ui-badge ${badge.cls}`}><span className="ui-badge-dot" aria-hidden="true" />{badge.label}</span>
-                {expiryEl}
+                {info}
+                <DocReviewBadge doc={d} />
               </div>
             )
           })}

@@ -900,3 +900,10 @@
 .hd-toast button:hover { opacity: 1; }
 @keyframes hd-toast-in { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
+
+/* Document rows: name + review result, then file status (components/ui/DocStatus.jsx). */
+.hd-doc-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.hd-doc-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+
+.hd-bidding-state { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.hd-bidding-state .hd-small { font-size: 11px; }

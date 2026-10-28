@@ -77,6 +77,8 @@ function fromApi(p) {
     productImageInstructions: p.product_image_instructions || '',
     submittedAt: fmtDate(p.created_at),
     reviewedAt: p.reviewed_at ? fmtDate(p.reviewed_at) : null,
+    // Local yyyy-mm-dd of the award, for the History move (see isHistory).
+    awardedRaw: p.awarded_at ? localISO(new Date(p.awarded_at)) : null,
     rejectReason: p.reject_reason || '',
   }
 }
@@ -220,15 +222,39 @@ export const decisionOf = (p) => (p.status === 'rejected' ? 'rejected' : 'approv
 
 // Local 'YYYY-MM-DD' for today — matches the ISO date string the API sends for
 // deadlineRaw, so this is a plain string compare (no Date/timezone parsing).
-function todayISO() {
-  const d = new Date()
+function localISO(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function todayISO() {
+  return localISO(new Date())
+}
+function addDaysISO(iso, days) {
+  const d = new Date(`${iso}T00:00:00`)
+  d.setDate(d.getDate() + days)
+  return localISO(d)
 }
 
 // A project whose bid deadline has passed — the bidding window is over, so it
 // belongs in the History view instead of the active Projects table. The
 // deadline day itself still counts as open.
 export const isExpired = (p) => !!p.deadlineRaw && p.deadlineRaw < todayISO()
+
+// How long a finished bidding stays in the current lists before it moves to
+// History, so a just-closed or just-awarded project doesn't vanish instantly.
+export const HISTORY_GRACE_DAYS = 1
+
+// The first day the bidding was over: the award date, or the day after the
+// deadline (the deadline day itself is still open). Null while still running.
+export const finishedOn = (p) => {
+  if (p.status === 'awarded' && p.awardedRaw) return p.awardedRaw
+  return isExpired(p) ? addDaysISO(p.deadlineRaw, 1) : null
+}
+
+// Finished at least HISTORY_GRACE_DAYS ago — belongs in History.
+export const isHistory = (p) => {
+  const done = finishedOn(p)
+  return !!done && addDaysISO(done, HISTORY_GRACE_DAYS) <= todayISO()
+}
 
 // Display text for the deadline column anywhere a project might still be
 // unpublished: real deadline once it exists, otherwise the configured period

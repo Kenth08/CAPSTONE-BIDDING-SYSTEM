@@ -1,3 +1,6 @@
+import os
+import re
+
 from rest_framework import serializers
 
 from .blockchain import anchor_summary, anchors_for
@@ -62,6 +65,20 @@ class SupplierListSerializer(serializers.ModelSerializer):
                     or expiring_documents(obj, categories))
 
 
+_UNIQUE_SUFFIX = re.compile(r"_[0-9a-f]{8}(?=\.[^.]*$|$)")
+
+
+def display_file_name(field_file):
+    """The name a reviewer recognises, e.g. "sec_certificate.pdf", or None when
+    there's no file. Upload paths add a folder and an 8-character unique suffix
+    (see the *_path functions in models.py); both are stripped. Read-only and
+    shown only to users who can already open the file."""
+    name = getattr(field_file, "name", "") if field_file else ""
+    if not name:
+        return None
+    return _UNIQUE_SUFFIX.sub("", os.path.basename(name))
+
+
 # Backwards-compatible alias (other code/imports may still reference SupplierSerializer).
 SupplierSerializer = SupplierListSerializer
 
@@ -124,6 +141,7 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
                 "label": label,
                 "required": required,
                 "url": url,
+                "file_name": display_file_name(getattr(obj, key, None)),
                 "review_status": review.get("status"),
                 "review_note": review.get("note", ""),
                 "source": "base",
@@ -142,6 +160,7 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
                 "label": req["label"],
                 "required": req["required"],
                 "url": protected_file_url(request, "supplierdoc", row, "file") if row else None,
+                "file_name": display_file_name(row.file) if row else None,
                 "review_status": review.get("status"),
                 "review_note": review.get("note", ""),
                 "source": "category",
@@ -268,6 +287,7 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             review = reviews.get(key) or {}
             out.append({
                 "key": key, "label": label, "required": required, "url": url,
+                "file_name": display_file_name(getattr(obj, key, None)),
                 "review_status": review.get("status"), "review_note": review.get("note", ""),
             })
         return out
@@ -479,6 +499,7 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
                 "label": label,
                 "required": required,
                 "url": self._abs_url(obj, key),
+                "file_name": display_file_name(getattr(obj, key, None)),
                 "review_status": review.get("status"),
                 "review_note": review.get("note", ""),
             })

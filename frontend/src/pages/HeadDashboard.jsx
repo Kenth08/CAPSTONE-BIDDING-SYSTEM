@@ -10,12 +10,13 @@ import { apiLogout } from '../api'
 import {
   useProjects, approveProject as storeApprove, rejectProject as storeReject,
   requestProjectRevision as storeRequestRevision,
-  isReviewed, decisionOf, deadlineLabel, deliveryLabel,
+  isReviewed, decisionOf, deadlineLabel, deliveryLabel, finishedOn, isHistory,
 } from '../store/projectsStore'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
 import AppSidebar from '../components/shell/AppSidebar'
 import AppHeader, { storedUser } from '../components/shell/AppHeader'
 import StatusBadge from '../components/ui/StatusBadge'
+import { DocFileStatus, DocReviewBadge, DocSummary } from '../components/ui/DocStatus'
 import EmptyState from '../components/ui/EmptyState'
 import AnchorActivity from '../components/AnchorActivity'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
@@ -175,6 +176,7 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision }) {
                     Tick a document with a problem, add a note, then click Request Revision below — this does not reject
                     the whole project, the Admin just fixes that one file.
                   </p>
+                  <DocSummary docs={project.documents} />
                   <div className="hd-doc-review-list">
                     {project.documents.map(d => {
                       const checked = !!flags[d.key]?.checked
@@ -189,11 +191,14 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision }) {
                               aria-label={`Flag ${d.label} for revision`}
                             />
                             <FileText size={14} aria-hidden="true" />
-                            <span className="hd-doc-review-label">{d.label}</span>
-                            {checked && <StatusBadge tone="warning" label="Flagged" />}
-                            {d.url
-                              ? <a href={d.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="hd-doc-link" style={{ marginLeft: 'auto' }}>View</a>
-                              : <span className="hd-muted" style={{ marginLeft: 'auto', fontSize: 12 }}>Not provided</span>}
+                            <span className="hd-doc-info">
+                              <span className="hd-doc-title">
+                                <span className="hd-doc-review-label">{d.label}</span>
+                                <DocReviewBadge doc={d} flagged={checked} />
+                              </span>
+                              <DocFileStatus doc={d} />
+                            </span>
+                            {d.url && <a href={d.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="hd-doc-link" style={{ marginLeft: 'auto' }}>View</a>}
                           </label>
                           {checked && (
                             <input
@@ -443,22 +448,28 @@ function PendingPage() {
   )
 }
 
-const REVIEW_TABS = ['All', 'Approved', 'Rejected']
+const REVIEW_TABS = ['All', 'Approved', 'Rejected', 'History']
 
 function ApprovedPage() {
   const { projects, loading } = useProjects()
   const [tab, setTab] = useState('All')
-  const reviewed = projects.filter(isReviewed)
+  const allReviewed = projects.filter(isReviewed)
+  // Biddings that closed or were awarded more than a day ago move to the
+  // History tab, so the main list only shows what is still in progress.
+  const history = allReviewed.filter(isHistory)
+    .sort((a, b) => ((finishedOn(a) || '') < (finishedOn(b) || '') ? 1 : -1))
+  const reviewed = allReviewed.filter(p => !isHistory(p))
   const approvedCount = reviewed.filter(p => decisionOf(p) === 'approved').length
   const rejectedCount = reviewed.filter(p => decisionOf(p) === 'rejected').length
 
   // Apply the active filter tab.
-  const filtered = reviewed.filter(p =>
+  const filtered = tab === 'History' ? history : reviewed.filter(p =>
     tab === 'Approved' ? decisionOf(p) === 'approved' :
     tab === 'Rejected' ? decisionOf(p) === 'rejected' : true
   )
 
-  const tabCount = (t) => t === 'Approved' ? approvedCount : t === 'Rejected' ? rejectedCount : reviewed.length
+  const tabCount = (t) => t === 'Approved' ? approvedCount : t === 'Rejected' ? rejectedCount
+    : t === 'History' ? history.length : reviewed.length
 
   return (
     <div className="hd-content">
@@ -466,7 +477,7 @@ function ApprovedPage() {
         <div className="hd-card-header">
           <div>
             <h2>Reviewed Projects</h2>
-            <p>All projects you have approved or rejected</p>
+            <p>Projects you have approved or rejected. Biddings move to History one day after they close.</p>
           </div>
           <StatusBadge tone="success" label={`${approvedCount} approved`} />
         </div>
@@ -485,12 +496,14 @@ function ApprovedPage() {
           ))}
         </div>
 
-        {loading && reviewed.length === 0 ? (
+        {loading && allReviewed.length === 0 ? (
           <div className="hd-table-wrap"><table className="hd-table"><tbody><TableSkeleton rows={4} cols={7} /></tbody></table></div>
         ) : filtered.length === 0 ? (
           <EmptyState icon={FolderOpen}
-            title={reviewed.length === 0 ? 'No reviewed projects yet' : `No ${tab.toLowerCase()} projects`}
-            description={reviewed.length === 0 ? 'Projects you approve or reject will appear here.' : 'Try another filter.'} />
+            title={tab === 'History' ? 'No finished biddings yet'
+              : allReviewed.length === 0 ? 'No reviewed projects yet' : `No ${tab.toLowerCase()} projects`}
+            description={tab === 'History' ? 'Biddings appear here one day after they close or are awarded.'
+              : allReviewed.length === 0 ? 'Projects you approve or reject will appear here.' : 'Try another filter.'} />
         ) : (
           <div className="hd-table-wrap">
             <table className="hd-table">
@@ -504,7 +517,10 @@ function ApprovedPage() {
                     <td className="hd-bold">{p.name}</td>
                     <td><span className="ui-badge ui-badge--neutral">{p.type}</span></td>
                     <td className="hd-num">{p.budget}</td>
-                    <td className="hd-muted">{deadlineLabel(p)}</td>
+                    <td className="hd-muted">
+                      {deadlineLabel(p)}
+                      <BiddingState p={p} />
+                    </td>
                     <td className="hd-muted hd-nowrap">{p.reviewedAt}</td>
                     <td><StatusBadge domain="decision" status={decisionOf(p)} /></td>
                   </tr>
@@ -515,6 +531,20 @@ function ApprovedPage() {
         )}
       </div>
     </div>
+  )
+}
+
+// Where the bidding stands, under its period: closed/awarded projects say when
+// they'll leave this list, and History rows say how they ended.
+function BiddingState({ p }) {
+  const done = finishedOn(p)
+  if (!done) return null
+  const label = p.status === 'awarded' ? 'Awarded' : 'Bidding closed'
+  return (
+    <span className="hd-bidding-state">
+      <StatusBadge tone={p.status === 'awarded' ? 'success' : 'neutral'} label={label} />
+      {!isHistory(p) && <span className="hd-small">Moves to History tomorrow</span>}
+    </span>
   )
 }
 

@@ -1162,3 +1162,7 @@
 }
 /* Category license rows hold an upload control, so they may wrap. */
 .sd-doc-row:has(.sd-catdoc-upload), .sd-doc-row:has(.sd-reupload-btn) { flex-wrap: wrap; }
+
+/* My Documents: name on line one, file status on line two (components/ui/DocStatus.jsx). */
+.sd-doc-info { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.sd-doc-info .sd-file-rowname { flex: none; }

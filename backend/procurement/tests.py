@@ -2156,3 +2156,32 @@ class CategoryDocumentExpiryTests(_TempMediaMixin, APITestCase):
         supplier.refresh_from_db()
         self.assertEqual(supplier.qualification_status, Supplier.Qualification.VERIFIED)
         self.assertEqual(str(supplier.category_documents.get(key="fda_lto").expiry_date), IN_A_YEAR)
+
+
+class DocumentFileNameTests(APITestCase):
+    """Document lists carry a readable file name, so reviewers can see what
+    was submitted without opening each file."""
+
+    def test_display_file_name_strips_folder_and_unique_suffix(self):
+        from .serializers import display_file_name
+
+        class F:
+            def __init__(self, name):
+                self.name = name
+
+        self.assertEqual(display_file_name(F("supplier_docs/7/sec_certificate_1a2b3c4d.pdf")), "sec_certificate.pdf")
+        self.assertEqual(display_file_name(F("procurement_docs/3/Purchase_Request_deadbeef.PDF")), "Purchase_Request.PDF")
+        # Names without the suffix are left as they are.
+        self.assertEqual(display_file_name(F("legacy/old_name.pdf")), "old_name.pdf")
+        self.assertIsNone(display_file_name(F("")))
+        self.assertIsNone(display_file_name(None))
+
+    def test_supplier_detail_documents_include_file_name(self):
+        from .serializers import SupplierDetailSerializer
+
+        user = User.objects.create_user(username="fn@example.com", email="fn@example.com",
+                                        password="pw", role=User.Role.SUPPLIER)
+        supplier = Supplier.objects.create(user=user, company="FN Co", contact="FN")
+        docs = {d["key"]: d for d in SupplierDetailSerializer(supplier).data["documents"]}
+        self.assertIn("file_name", docs["sec_dti_certificate"])
+        self.assertIsNone(docs["sec_dti_certificate"]["file_name"])
