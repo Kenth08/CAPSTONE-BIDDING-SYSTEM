@@ -187,7 +187,8 @@ Passwords are set when running `python manage.py seed`. Check the seed command o
 | `DEBUG` | `True` for development, `False` in production |
 | `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | PostgreSQL connection (Supabase). Leave unset to use SQLite locally |
 | `FRONTEND_URL` | Frontend origin for CORS and password reset links (e.g. `https://your-app.vercel.app`) |
-| `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` | SMTP settings for email delivery (password reset, MFA codes, email verification). Unset = console backend |
+| `BREVO_API_KEY` | Sends email through Brevo's HTTPS API instead of SMTP. Needed on Render's free plan, which blocks outbound SMTP ports. Takes priority over `EMAIL_HOST`; `DEFAULT_FROM_EMAIL` must be a sender verified in Brevo |
+| `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` | SMTP settings for email delivery (password reset, MFA codes, email verification). Unset (and no `BREVO_API_KEY`) = console backend |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_ENDPOINT_URL` | S3-compatible file storage (Supabase Storage or AWS S3). Unset = local media/ folder |
 | `LEDGER_CONTRACT_ADDRESS`, `SEPOLIA_RPC_URL` | Deployed ProcurementLedger address + Sepolia RPC. Optional — see [BLOCKCHAIN.md](BLOCKCHAIN.md) |
 | `BLOCKCHAIN_ANCHORING_ENABLED` | `False` disables anchoring entirely (default `True`) |

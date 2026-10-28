@@ -93,8 +93,15 @@ services:
       # - key: FRONTEND_URL
       #   value: "https://capstone-bidding-system.vercel.app"
 
-      # SMTP. Unset = Django's console backend: password-reset and email
-      # verification messages are written to the Render log and never delivered.
+      # Email on the FREE plan: Render blocks outbound SMTP ports (25/465/587),
+      # so use Brevo's HTTPS API. Set BREVO_API_KEY and DEFAULT_FROM_EMAIL
+      # (a sender verified in Brevo). This takes priority over EMAIL_HOST.
+      # - key: BREVO_API_KEY
+      #   sync: false
+
+      # SMTP (paid plans only). Unset = Django's console backend: password-reset
+      # and email verification messages are written to the Render log and never
+      # delivered.
       # - key: EMAIL_HOST
       #   sync: false
       # - key: EMAIL_PORT

@@ -1,5 +1,12 @@
+import io
+import json
+import urllib.error
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.mail import send_mail
+from django.test import override_settings
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils.encoding import force_bytes
@@ -9,6 +16,7 @@ from rest_framework.test import APITestCase
 
 from procurement.models import Supplier
 
+from .brevo_backend import BrevoAPIError
 from .emails import email_verification_token
 
 User = get_user_model()
@@ -145,6 +153,67 @@ class EmailVerificationTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, [self.user.email])
+
+    def test_resend_reports_a_delivery_failure(self):
+        # It used to answer "sent" even when the mail server refused the
+        # message, so suppliers waited for an email that never came.
+        self.client.force_authenticate(user=self.user)
+        with mock.patch("accounts.emails.send_mail", side_effect=OSError("network unreachable")):
+            res = self.client.post("/api/auth/verify-email/resend/", {}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertIn("couldn't send", res.data["detail"])
+
+    def test_helper_returns_false_instead_of_raising_when_sending_fails(self):
+        with mock.patch("accounts.emails.send_mail", side_effect=OSError("network unreachable")):
+            from .emails import send_verification_email
+            self.assertFalse(send_verification_email(self.user))
+
+
+class _FakeResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return b'{"messageId": "<abc@smtp-relay.mailin.fr>"}'
+
+
+@override_settings(
+    EMAIL_BACKEND="accounts.brevo_backend.BrevoEmailBackend",
+    BREVO_API_KEY="test-key",
+    DEFAULT_FROM_EMAIL="E-Procurement <sender@example.com>",
+)
+class BrevoEmailBackendTests(APITestCase):
+    def test_sends_through_the_brevo_api(self):
+        with mock.patch("urllib.request.urlopen", return_value=_FakeResponse()) as urlopen:
+            sent = send_mail("Subject", "Body text", None, ["to@example.com"])
+        self.assertEqual(sent, 1)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.brevo.com/v3/smtp/email")
+        self.assertEqual(request.get_header("Api-key"), "test-key")
+        payload = json.loads(request.data)
+        self.assertEqual(payload["sender"], {"email": "sender@example.com", "name": "E-Procurement"})
+        self.assertEqual(payload["to"], [{"email": "to@example.com"}])
+        self.assertEqual(payload["subject"], "Subject")
+        self.assertEqual(payload["textContent"], "Body text")
+
+    def test_api_rejection_raises_without_leaking_the_key(self):
+        error = urllib.error.HTTPError(
+            "https://api.brevo.com/v3/smtp/email", 400, "Bad Request", {},
+            io.BytesIO(b'{"message": "sender not valid"}'),
+        )
+        with mock.patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaises(BrevoAPIError) as ctx:
+                send_mail("Subject", "Body", None, ["to@example.com"])
+        self.assertIn("sender not valid", str(ctx.exception))
+        self.assertNotIn("test-key", str(ctx.exception))
+
+    def test_fail_silently_swallows_errors(self):
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+            sent = send_mail("Subject", "Body", None, ["to@example.com"], fail_silently=True)
+        self.assertEqual(sent, 0)
 
 
 class LoginTests(APITestCase):

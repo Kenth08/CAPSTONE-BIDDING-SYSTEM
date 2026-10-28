@@ -314,8 +314,17 @@ if FRONTEND_URL:
 # fails, it just won't actually deliver mail). Set EMAIL_HOST (+ optionally
 # EMAIL_HOST_USER / EMAIL_HOST_PASSWORD) to send real mail through any SMTP
 # provider (Gmail, SendGrid, etc.) without any code changes.
+#
+# BREVO_API_KEY takes priority over SMTP: Render's free plan blocks outbound
+# SMTP ports, so production sends through Brevo's HTTPS API instead
+# (accounts/brevo_backend.py). DEFAULT_FROM_EMAIL must then be a sender
+# verified in Brevo.
+BREVO_API_KEY = os.environ.get('BREVO_API_KEY', '')
 EMAIL_HOST = os.environ.get('EMAIL_HOST')
-if EMAIL_HOST:
+if BREVO_API_KEY:
+    EMAIL_BACKEND = 'accounts.brevo_backend.BrevoEmailBackend'
+    EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '15'))
+elif EMAIL_HOST:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
     EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
     EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() == 'true'
