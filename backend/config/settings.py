@@ -279,6 +279,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Custom user model
 AUTH_USER_MODEL = 'accounts.User'
 
+# Reverse proxies in front of the app (Render's load balancer = 1). Locally
+# there is none, so the socket address is used. If the audit log shows the same
+# proxy IP for every user after deploying, raise this (see SECURITY.md).
+TRUSTED_PROXY_COUNT = int(os.environ.get('TRUSTED_PROXY_COUNT', '1' if RENDER_HOST else '0'))
+
 # Django REST Framework
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -298,6 +303,12 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
     ),
+    # How many proxies sit in front of Django and append to X-Forwarded-For.
+    # Without this DRF keyed rate limits on the WHOLE header, which the client
+    # controls — sending a different fake X-Forwarded-For per request bypassed
+    # the 5-per-15-minutes login limit completely. With N proxies, the client
+    # IP is the Nth address from the right (the one Render itself appended).
+    'NUM_PROXIES': TRUSTED_PROXY_COUNT,
     'DEFAULT_THROTTLE_RATES': {
         'anon': '60/min',
         'user': '240/min',
@@ -311,9 +322,18 @@ REST_FRAMEWORK = {
 # JWT lifetimes
 from datetime import timedelta  # noqa: E402
 
+# Access tokens live in localStorage (see SECURITY.md for why not cookies), so
+# they are kept short: a stolen one is useful for 15 minutes at most. The
+# frontend renews them silently. Every refresh returns a NEW refresh token and
+# blacklists the old one, so a stolen refresh token stops working as soon as
+# the real user's tab refreshes — and the session slides: it ends after a day
+# of inactivity, not mid-task.
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=12),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'UPDATE_LAST_LOGIN': True,
 }
 
 # CORS — allow the Vite dev frontend to call the API. In production add the
@@ -381,7 +401,13 @@ if not DEBUG:
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True  # admin login session cookie, HTTPS only
     CSRF_COOKIE_SECURE = True     # admin login CSRF cookie, HTTPS only
-    # Start conservative (1 day) rather than the usual 1-year recommendation —
-    # HSTS is cached by the browser, so a mistake here is hard to undo quickly.
-    # Raise this once the HTTPS setup has been running smoothly for a while.
-    SECURE_HSTS_SECONDS = 60 * 60 * 24
+    # One year, subdomains included. Both the API (Render) and the SPA (Vercel)
+    # are HTTPS-only, so there is nothing for HSTS to break.
+    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 365
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+
+# The Django admin lives at a non-default, unguessable path (ADMIN_URL, e.g.
+# "staff-7f3k2q/"). In production it is only mounted when ADMIN_URL is set;
+# locally it stays at admin/ for convenience.
+ADMIN_URL = os.environ.get('ADMIN_URL', 'admin/' if DEBUG else '').strip().strip('/')
+ADMIN_URL = f'{ADMIN_URL}/' if ADMIN_URL else ''

@@ -12,6 +12,7 @@ from .views import (
     PasswordResetRequestView,
     ResendVerificationEmailView,
     SupplierRegisterView,
+    UnlockAccountView,
 )
 
 urlpatterns = [
@@ -26,4 +27,5 @@ urlpatterns = [
     path("password/reset/confirm/", PasswordResetConfirmView.as_view(), name="password-reset-confirm"),
     path("verify-email/confirm/", EmailVerifyConfirmView.as_view(), name="verify-email-confirm"),
     path("verify-email/resend/", ResendVerificationEmailView.as_view(), name="verify-email-resend"),
+    path("users/<int:pk>/unlock/", UnlockAccountView.as_view(), name="unlock-account"),
 ]

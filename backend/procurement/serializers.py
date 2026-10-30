@@ -73,11 +73,19 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(source="user.full_name", read_only=True, default="")
     email = serializers.EmailField(source="user.email", read_only=True, default="")
     documents = serializers.SerializerMethodField()
+    # Sign-in lockout state, so the Admin can unlock the account (accounts/lockout.py).
+    user_id = serializers.IntegerField(source="user.id", read_only=True, default=None)
+    account_locked_until = serializers.SerializerMethodField()
+
+    def get_account_locked_until(self, obj):
+        from accounts.lockout import is_locked
+        return obj.user.locked_until if obj.user_id and is_locked(obj.user) else None
 
     class Meta:
         model = Supplier
         fields = [
-            "id", "company", "contact", "full_name", "email", "business_type",
+            "id", "user_id", "account_locked_until",
+            "company", "contact", "full_name", "email", "business_type",
             "business_types", "company_address", "phone_number", "tin",
             "representative_name", "track_record_description",
             "mayors_permit_expiry", "tax_clearance_expiry", "financial_statement_year",

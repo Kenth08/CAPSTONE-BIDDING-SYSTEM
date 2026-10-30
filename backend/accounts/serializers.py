@@ -17,6 +17,7 @@ from procurement.document_requirements import (
 from procurement.models import PROCUREMENT_CATEGORIES, Supplier, SupplierCategoryDocument
 from procurement.validators import validate_upload
 
+from . import lockout
 from .emails import email_verification_token, send_verification_email
 
 User = get_user_model()
@@ -371,6 +372,7 @@ class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
                 {"detail": "Please enter both your username/email and your password."}
             )
 
+        request = self.context.get("request")
         # Resolve an email to the matching account so login works either way.
         # One query (username OR email) instead of two sequential round-trips.
         user_obj = User.objects.filter(
@@ -378,15 +380,29 @@ class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
         ).first()
         if user_obj is None or not user_obj.is_active:
             # Deliberately indistinguishable from a wrong password — including
-            # for a disabled account, whose existence is equally private.
-            raise serializers.ValidationError({"detail": self.INVALID_CREDENTIALS})
+            # for a disabled account, whose existence is equally private. After
+            # repeated attempts it gets the same "locked" answer a real account
+            # would, so the lock message can't be used to probe for accounts.
+            if lockout.unknown_identifier_locked(identifier):
+                raise serializers.ValidationError({"detail": lockout.LOCKED_MESSAGE})
+            locked = lockout.record_failure(request, None, identifier)
+            raise serializers.ValidationError(
+                {"detail": lockout.LOCKED_MESSAGE if locked else self.INVALID_CREDENTIALS})
+
+        # A locked account is refused before the password is even checked, so
+        # guessing during the lock achieves nothing (accounts/lockout.py).
+        if lockout.is_locked(user_obj):
+            raise serializers.ValidationError({"detail": lockout.LOCKED_MESSAGE})
 
         # Authenticate with the resolved username (SimpleJWT uses USERNAME_FIELD).
         attrs[self.username_field] = user_obj.get_username()
         try:
             data = super().validate(attrs)
         except AuthenticationFailed:
-            raise serializers.ValidationError({"detail": self.INVALID_CREDENTIALS})
+            locked = lockout.record_failure(request, user_obj, identifier)
+            raise serializers.ValidationError(
+                {"detail": lockout.LOCKED_MESSAGE if locked else self.INVALID_CREDENTIALS})
 
+        lockout.record_success(self.user)
         data["user"] = UserSerializer(self.user).data
         return data

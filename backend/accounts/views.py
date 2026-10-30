@@ -16,6 +16,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from procurement.permissions import IsAdminRole
 
+from . import lockout
 from .audit import log_action
 from .emails import send_verification_email
 from .serializers import (
@@ -254,3 +255,21 @@ class LogoutView(APIView):
                 description=f"{request.user.username} logged out.",
             )
         return Response(status=status.HTTP_205_RESET_CONTENT)
+
+
+class UnlockAccountView(APIView):
+    """POST /api/auth/users/<id>/unlock/ — an Admin lifts a temporary lockout
+    early (see accounts/lockout.py). Audit-logged."""
+
+    permission_classes = [IsAdminRole]
+
+    def post(self, request, pk):
+        user = User.objects.filter(pk=pk).first()
+        if user is None:
+            return Response({"detail": "Account not found."}, status=status.HTTP_404_NOT_FOUND)
+        was_locked = lockout.is_locked(user)
+        lockout.unlock(request, user)
+        return Response({
+            "detail": f"{user.username} is unlocked." if was_locked
+            else f"{user.username} was not locked; failed attempts were reset.",
+        })

@@ -225,17 +225,39 @@ export async function apiPublicAnchors(code, { deep = false } = {}) {
 }
 
 // ── Token refresh ─────────────────────────────────────────────────────────────
-// The access token lives 12 hours and the refresh token 7 days, but nothing
-// ever used the refresh token: a 401 simply cleared the session, so anyone
-// still working after 12 hours was thrown out to the login screen mid-task
-// (losing an in-progress bid or procurement form). Now an expired access token
-// is renewed once, transparently, and only a refresh that ALSO fails ends the
-// session — which is the case the 7-day refresh lifetime is actually for.
+// Access tokens live 15 minutes; refresh tokens a day and are ROTATED: every
+// refresh returns a new refresh token and the server blacklists the old one.
+// An expired access token is renewed here, transparently, and the request is
+// retried — users are never logged out mid-task, only after a day idle.
+//
+// Rotation makes concurrency matter. If two requests (or two TABS, which share
+// localStorage) refreshed with the same refresh token, the second would be
+// refused as blacklisted and log the user out. So:
+//   * within a tab, concurrent callers share one in-flight refresh;
+//   * across tabs, the refresh runs under a Web Lock, and a tab that waited
+//     for the lock first checks whether another tab already rotated the token.
 
-// Shared across concurrent callers: a dashboard fires several requests at once,
-// and without this each one would start its own refresh and race the others,
-// with all but the winner then holding a token that has just been rotated away.
 let refreshInflight = null
+const REFRESH_LOCK = 'eprocurement-token-refresh'
+
+async function refreshUnderLock(staleRefresh) {
+  // Another tab may have rotated while we waited — just use its result.
+  const current = localStorage.getItem('refresh')
+  if (!current) return null
+  if (current !== staleRefresh) return localStorage.getItem('access')
+
+  const res = await fetch(`${API_URL}/auth/refresh/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh: current }),
+  })
+  if (!res.ok) return null
+  const data = await res.json()
+  if (!data?.access) return null
+  localStorage.setItem('access', data.access)
+  if (data.refresh) localStorage.setItem('refresh', data.refresh)
+  return data.access
+}
 
 async function refreshAccessToken() {
   const refresh = localStorage.getItem('refresh')
@@ -244,18 +266,10 @@ async function refreshAccessToken() {
 
   refreshInflight = (async () => {
     try {
-      const res = await fetch(`${API_URL}/auth/refresh/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh }),
-      })
-      if (!res.ok) return null
-      const data = await res.json()
-      if (!data?.access) return null
-      localStorage.setItem('access', data.access)
-      // SimpleJWT returns a new refresh token too when rotation is enabled.
-      if (data.refresh) localStorage.setItem('refresh', data.refresh)
-      return data.access
+      const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined
+      return locks
+        ? await locks.request(REFRESH_LOCK, () => refreshUnderLock(refresh))
+        : await refreshUnderLock(refresh)
     } catch {
       return null   // offline / server down — treat as "could not refresh"
     } finally {
@@ -354,6 +368,10 @@ async function apiUpload(path, formData, method = 'POST') {
 // Admin fills out the same registration form on behalf of a supplier who
 // walked in with physical documents (scanned/photographed beforehand).
 export const apiAdminRegisterSupplier = (formData) => apiUpload('/auth/admin/register-supplier/', formData)
+
+// Admin: lift a sign-in lockout early (5 failed attempts lock an account for 15 minutes).
+export const apiUnlockAccount = (userId) =>
+  apiFetch(`/auth/users/${userId}/unlock/`, { method: 'POST', body: '{}' })
 
 // ── Suppliers (admin review + supplier self-service) ───────────────────────────
 export const apiListSuppliers = () => apiFetch('/suppliers/')

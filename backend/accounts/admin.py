@@ -1,16 +1,30 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
+from . import lockout
+from .admin_site import SecureAdminAuthenticationForm
 from .models import AuditLog, User
+
+# The admin login gets the same lockout and audit logging as the API login.
+admin.site.login_form = SecureAdminAuthenticationForm
 
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
-    list_display = ("username", "email", "role", "full_name", "is_staff")
+    list_display = ("username", "email", "role", "full_name", "is_staff", "locked_until")
     list_filter = ("role", "is_staff", "is_superuser")
     fieldsets = UserAdmin.fieldsets + (
         ("Procurement", {"fields": ("role", "full_name")}),
+        ("Sign-in protection", {"fields": ("failed_login_count", "locked_until")}),
     )
+    readonly_fields = ("failed_login_count", "locked_until")
+    actions = ["unlock_accounts"]
+
+    @admin.action(description="Unlock selected accounts")
+    def unlock_accounts(self, request, queryset):
+        for user in queryset:
+            lockout.unlock(request, user)
+        self.message_user(request, f"Unlocked {queryset.count()} account(s).")
 
 
 @admin.register(AuditLog)

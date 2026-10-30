@@ -10,7 +10,7 @@ import {
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
   apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision, apiAdminRegisterSupplier,
-  apiSupplierApproveCategories, apiSupplierRejectCategories,
+  apiSupplierApproveCategories, apiSupplierRejectCategories, apiUnlockAccount,
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
   apiListAwards, apiListDocuments, apiBidRequestRevision,
   apiUploadAwardDocument, apiGenerateAwardDocument,
@@ -1703,6 +1703,17 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                 <div className="ad-modal-error" role="status">
                   <AlertTriangle size={15} /> Email not verified yet — this supplier can't be approved
                   until they open the verification link sent to {supplier.email}.
+                </div>
+              )}
+
+              {supplier.account_locked_until && (
+                <div className="ad-modal-error" role="status">
+                  <AlertTriangle size={15} /> Sign-in locked after repeated wrong passwords, until{' '}
+                  {new Date(supplier.account_locked_until).toLocaleTimeString()}.
+                  <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" style={{ marginLeft: 'auto' }} disabled={busy}
+                    onClick={() => runAction(() => apiUnlockAccount(supplier.user_id), 'Account unlocked.')}>
+                    Unlock account
+                  </button>
                 </div>
               )}
 
