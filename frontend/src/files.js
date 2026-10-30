@@ -13,7 +13,8 @@
 // Rather than rewrite every <a href={doc.url}> in the dashboards, one listener
 // (installProtectedFileLinks, called from main.jsx) intercepts clicks on any
 // link that points at /api/files/ and runs the flow above.
-import { apiFileDownloadLink, protectedFilePath } from './api'
+import { apiFileDownloadLink } from './api'
+import { shouldInterceptFileLink } from './utils/fileUrls'
 import { toast } from './components/ui/Toaster'
 
 /** Start a download of a protected file the signed-in user may read. */
@@ -23,6 +24,9 @@ export async function downloadProtectedFile(url) {
     const a = document.createElement('a')
     a.href = link
     a.rel = 'noopener noreferrer'
+    // Marked so onClick below lets this click through: its href is also an
+    // /api/files/ URL, and intercepting it would request a new link forever.
+    a.dataset.oneTimeLink = 'true'
     // The response is `Content-Disposition: attachment`, so the browser saves
     // the file and the page itself never navigates away.
     document.body.appendChild(a)
@@ -36,7 +40,7 @@ export async function downloadProtectedFile(url) {
 function protectedAnchor(event) {
   const a = event.target?.closest?.('a[href]')
   if (!a) return null
-  return protectedFilePath(a.getAttribute('href')) ? a : null
+  return shouldInterceptFileLink(a.getAttribute('href'), { oneTime: !!a.dataset.oneTimeLink }) ? a : null
 }
 
 function onClick(event) {
