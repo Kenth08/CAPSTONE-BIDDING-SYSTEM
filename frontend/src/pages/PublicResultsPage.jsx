@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { apiPublicProcurement, apiGetMySupplier, getToken, getRole } from '../api'
 import PublicVerifier from '../components/PublicVerifier'
+import { normalizeProcurementCode } from '../utils/procurementCode'
 import { readLedgerTotal } from '../blockchain/anchor'
 import Countdown from '../components/ui/Countdown'
 import DataTable from '../components/ui/DataTable'
@@ -22,7 +23,7 @@ export default function PublicResultsPage() {
   const navigate = useNavigate()
   const loc = useLocation()
   const [params] = useSearchParams()
-  const verifyCode = (params.get('verify') || '').trim().toUpperCase()
+  const verifyCode = normalizeProcurementCode(params.get('verify'))
   const [data, setData] = useState({ biddings: [], winners: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

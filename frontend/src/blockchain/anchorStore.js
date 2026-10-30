@@ -57,7 +57,7 @@ export function dismissAnchorActivity() {
  * Deliberately NOT awaited by callers and never re-throws: the status change has
  * already been saved by the time this runs, so an anchoring problem is feedback,
  * not a failed operation. `label` describes the record for the UI, e.g.
- * "P-2026-001 · Approved by Head".
+ * "PC-7K4M-Q9XT-3HWD · Approved by Head".
  *
  * @returns {Promise<boolean>} whether the anchor made it on-chain.
  */

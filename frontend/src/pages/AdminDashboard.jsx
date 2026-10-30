@@ -76,7 +76,7 @@ const STATUS_CLS = {
 }
 
 // ── Reference Code ────────────────────────────────────────────────────────────
-// Every procurement carries a human-readable reference (e.g. "P-2026-001") that
+// Every procurement carries a human-readable reference (e.g. "PC-7K4M-Q9XT-3HWD") that
 // doubles as its public lookup key: it is what anyone types into the Public
 // Verifier to replay the whole trail from the Sepolia ledger. Admins hand this
 // code out constantly, so it gets a deliberately loud, monospace, click-to-copy

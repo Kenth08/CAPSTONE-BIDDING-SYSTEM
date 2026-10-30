@@ -12,6 +12,7 @@ import ProcurementStepper from '../components/ui/ProcurementStepper'
 import Thumbnail from '../components/ui/Thumbnail'
 import { Skeleton } from '../components/Skeleton'
 import { fmtDate, peso, pesoCompact } from '../utils/format'
+import { EXAMPLE_CODE, normalizeProcurementCode } from '../utils/procurementCode'
 import '../style/LandingPage.css'
 
 // What actually happens at each lifecycle stage in this system.
@@ -74,7 +75,7 @@ function VerifyBox() {
   const [code, setCode] = useState('')
   const submit = (e) => {
     e.preventDefault()
-    const ref = code.trim().toUpperCase()
+    const ref = normalizeProcurementCode(code)
     navigate(ref ? `/public?verify=${encodeURIComponent(ref)}#verify` : '/public#verify')
   }
   return (
@@ -83,7 +84,7 @@ function VerifyBox() {
       <div className="lpx-verify-row">
         <Search size={16} aria-hidden="true" />
         <input id="lpx-verify-input" value={code} onChange={(e) => setCode(e.target.value)}
-          placeholder="Reference number, e.g. P-2026-001" autoComplete="off" spellCheck="false" />
+          placeholder={`Reference number, e.g. ${EXAMPLE_CODE}`} autoComplete="off" spellCheck="false" />
         <button type="submit" className="btn-primary">Verify <ArrowRight size={14} /></button>
       </div>
     </form>

@@ -7,6 +7,7 @@ import {
 import { apiPublicAnchors } from '../api'
 import { readChainTrail, sha256File } from '../blockchain/anchor'
 import { contractUrl, isLedgerConfigured, txUrl, LEDGER_ADDRESS } from '../blockchain/contract'
+import { EXAMPLE_CODE, normalizeProcurementCode } from '../utils/procurementCode'
 import './PublicVerifier.css'
 
 const shortHash = (h) => (h ? `${h.slice(0, 14)}…${h.slice(-8)}` : '—')
@@ -118,7 +119,7 @@ export default function PublicVerifier({ initialCode = '' }) {
 
   const lookup = async (e, { deep = false } = {}) => {
     e?.preventDefault()
-    const ref = code.trim().toUpperCase()
+    const ref = normalizeProcurementCode(code)
     if (!ref) return
     setLoading(true); setError(''); setResult(null); setFileHash(''); setFileName('')
     try {
@@ -204,7 +205,7 @@ export default function PublicVerifier({ initialCode = '' }) {
           <input
             value={code}
             onChange={(e) => setCode(e.target.value)}
-            placeholder="Procurement reference, e.g. PRC-2026-7K4M-Q9XT"
+            placeholder={`Procurement reference, e.g. ${EXAMPLE_CODE}`}
             aria-label="Procurement reference"
             spellCheck={false}
           />
@@ -230,7 +231,7 @@ export default function PublicVerifier({ initialCode = '' }) {
           <Loader2 size={18} className="pv-spin" aria-hidden="true" />
           <div>
             <div className="pv-loading-title">Reading the Sepolia ledger…</div>
-            <div className="pv-loading-sub">Replaying every anchored step for {code.trim().toUpperCase() || 'this reference'}.</div>
+            <div className="pv-loading-sub">Replaying every anchored step for {normalizeProcurementCode(code) || 'this reference'}.</div>
           </div>
         </div>
       )}

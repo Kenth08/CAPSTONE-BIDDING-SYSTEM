@@ -534,6 +534,8 @@ class BlockchainAnchorTests(APITestCase):
     def test_public_anchor_trail_is_open_and_hash_only(self):
         self.client.force_authenticate(user=self.head)
         self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        # Only published/closed/awarded procurements have a public trail.
+        Project.objects.filter(pk=self.project.pk).update(status=Project.Status.PUBLISHED)
 
         self.client.force_authenticate(user=None)  # a member of the public
         res = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/")
@@ -796,6 +798,8 @@ class BlockchainAnchorTests(APITestCase):
     def test_public_trail_reports_tampering_to_anyone(self):
         self.client.force_authenticate(user=self.head)
         self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        # Only published/closed/awarded procurements have a public trail.
+        Project.objects.filter(pk=self.project.pk).update(status=Project.Status.PUBLISHED)
         Project.objects.filter(pk=self.project.pk).update(budget=999999)
 
         self.client.force_authenticate(user=None)   # a member of the public
@@ -807,6 +811,8 @@ class BlockchainAnchorTests(APITestCase):
     def test_public_trail_skips_document_hashing_unless_asked(self):
         self.client.force_authenticate(user=self.head)
         self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        # Only published/closed/awarded procurements have a public trail.
+        Project.objects.filter(pk=self.project.pk).update(status=Project.Status.PUBLISHED)
         self.client.force_authenticate(user=None)
 
         shallow = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/")

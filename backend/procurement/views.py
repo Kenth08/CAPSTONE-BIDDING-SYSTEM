@@ -1,6 +1,6 @@
 import logging
 import secrets
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -193,29 +193,40 @@ def bid_review_labels(keys):
 # Crockford-style alphabet: no 0/O, 1/I/L or U, so a code read aloud or typed
 # from a printed NOA can't be mistaken for another one.
 PROJECT_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
-PROJECT_CODE_RANDOM_LENGTH = 8
+PROJECT_CODE_RANDOM_LENGTH = 12
+PROJECT_CODE_PREFIX = "PC"
+# How many fresh codes perform_create draws before giving up on a create.
+PROJECT_CODE_MAX_ATTEMPTS = 10
 
 
 def next_project_code():
-    """A new random procurement code for this year, e.g. "PRC-2026-7K4M-Q9XT".
+    """A new random public bidding ID, e.g. "PC-7K4M-Q9XT-3HWD".
 
-    Codes used to be sequential ("P-2026-004"), which made every procurement
-    trivially guessable: knowing one code told you all the others. The random
-    part is now 8 characters from a 30-symbol alphabet (~6.5 x 10^11 codes per
-    year) drawn with `secrets`, so codes can't be predicted or enumerated.
+    History — every format below is still live, because the code is the on-chain
+    index (`entityRef`) of every anchor and renaming one would orphan its trail:
 
-    Older sequential codes stay exactly as they are — the code is the on-chain
-    index for every anchor, so renaming one would orphan its blockchain trail.
+      * "P-2026-004"          — sequential; knowing one code revealed them all.
+      * "PRC-2026-7K4M-Q9XT"  — random, but 8 characters and it leaked the year.
+      * "PC-7K4M-Q9XT-3HWD"   — current: 12 characters from a 30-symbol alphabet
+                                (~5.3 x 10^17 codes), drawn with `secrets`, with
+                                no year and no running number in it.
 
-    Collisions are astronomically unlikely, but the unique constraint on `code`
-    is still the real guard: perform_create retries with a fresh code if the
-    insert is ever rejected. The result is 18 characters, within max_length=20.
+    Uniqueness is guaranteed by the unique constraint on Project.code, not by
+    this function: perform_create retries with a fresh code on IntegrityError.
+    17 characters, within max_length=20 and the contract's 64-char entityRef.
     """
-    year = date.today().year
     chars = "".join(
         secrets.choice(PROJECT_CODE_ALPHABET) for _ in range(PROJECT_CODE_RANDOM_LENGTH)
     )
-    return f"PRC-{year}-{chars[:4]}-{chars[4:]}"
+    return f"{PROJECT_CODE_PREFIX}-{chars[:4]}-{chars[4:8]}-{chars[8:]}"
+
+
+def normalize_project_code(raw):
+    """Canonical form of a procurement code typed by a person or taken from a
+    URL: surrounding whitespace removed, upper-cased. Every format ever issued
+    (P-2026-001, PRC-2026-XXXX-XXXX, PC-XXXX-XXXX-XXXX) is upper-case, so this
+    accepts all of them without guessing at a pattern."""
+    return (raw or "").strip().upper()
 
 
 def close_expired_published_projects():
@@ -361,8 +372,19 @@ class PublicAnchorTrailView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
 
+    # Only procurements that have been opened to the public have a public trail.
+    # A draft, a project still with the Head, or one the Head rejected is
+    # internal: answering for it told anyone who guessed an old sequential code
+    # (P-2026-003, ...) the name and status of a procurement nobody had
+    # published. Such codes get the same 404 as a code that doesn't exist, so
+    # the response doesn't even confirm the procurement is real.
+    PUBLIC_STATUSES = (
+        Project.Status.PUBLISHED, Project.Status.CLOSED, Project.Status.AWARDED,
+    )
+
     def get(self, request, code):
-        project = Project.objects.filter(code=code).first()
+        code = normalize_project_code(code)
+        project = Project.objects.filter(code=code, status__in=self.PUBLIC_STATUSES).first()
         if project is None:
             return Response({"detail": "Unknown procurement code."},
                             status=http_status.HTTP_404_NOT_FOUND)
@@ -373,7 +395,7 @@ class PublicAnchorTrailView(APIView):
         # amount, status or date.
         deep = request.query_params.get("deep") in {"1", "true", "yes"}
 
-        anchors = BlockchainAnchor.objects.filter(entity_ref=code)
+        anchors = BlockchainAnchor.objects.filter(entity_ref=project.code)
         integrity = {a.id: verify_anchor(a, deep=deep) for a in anchors}
         trail = [
             {
@@ -903,7 +925,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         # Retried in the (astronomically unlikely) case a random code is
         # already taken; the unique constraint settles it, and the retry just
         # draws a fresh code rather than failing the create.
-        for attempt in range(5):
+        for attempt in range(PROJECT_CODE_MAX_ATTEMPTS):
             try:
                 with transaction.atomic():
                     project = serializer.save(
@@ -911,7 +933,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
                         status=Project.Status.PENDING_HEAD)
                 break
             except IntegrityError:
-                if attempt == 4:
+                if attempt == PROJECT_CODE_MAX_ATTEMPTS - 1:
                     raise
         notify_heads(
             f"New procurement \"{project.name}\" ({project.code}) needs your approval.",

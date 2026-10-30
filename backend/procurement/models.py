@@ -317,7 +317,7 @@ class Project(models.Model):
         AWARDED = "awarded", "Awarded"
         CLOSED = "closed", "Closed"
 
-    code = models.CharField(max_length=20, unique=True)  # e.g. PRC-2026-7K4M-Q9XT (older: P-2026-001)
+    code = models.CharField(max_length=20, unique=True)  # e.g. PC-7K4M-Q9XT-3HWD (older: PRC-2026-7K4M-Q9XT, P-2026-001)
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)  # Approved Budget (ABC)
@@ -617,7 +617,7 @@ class BlockchainAnchor(models.Model):
         NTP_ISSUED = "NTP_ISSUED", "Notice to Proceed issued"
 
     entity_type = models.CharField(max_length=10, choices=EntityType.choices)
-    # The procurement code (e.g. "P-2026-001") for EVERY anchor — project, bid
+    # The procurement code (e.g. "PC-7K4M-Q9XT-3HWD") for EVERY anchor — project, bid
     # and award alike — because that's how the contract indexes anchors, so one
     # on-chain lookup returns a procurement's whole trail.
     entity_ref = models.CharField(max_length=64)
