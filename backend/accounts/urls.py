@@ -7,6 +7,8 @@ from .views import (
     EmailVerifyConfirmView,
     LoginView,
     LogoutView,
+    MfaSetupView,
+    MfaVerifyView,
     MeView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
@@ -18,6 +20,8 @@ from .views import (
 urlpatterns = [
     path("login/", LoginView.as_view(), name="login"),
     path("logout/", LogoutView.as_view(), name="logout"),
+    path("mfa/setup/", MfaSetupView.as_view(), name="mfa-setup"),
+    path("mfa/verify/", MfaVerifyView.as_view(), name="mfa-verify"),
     path("register/supplier/", SupplierRegisterView.as_view(), name="register-supplier"),
     path("admin/register-supplier/", AdminAssistedSupplierRegisterView.as_view(), name="admin-register-supplier"),
     path("refresh/", TokenRefreshView.as_view(), name="token_refresh"),

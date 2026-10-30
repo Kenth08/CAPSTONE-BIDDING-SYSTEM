@@ -71,6 +71,33 @@ export async function apiLogin(identifier, password) {
   return res.json() // { access, refresh, user }
 }
 
+// ── Two-factor sign-in (Admin and Head) ─────────────────────────────────────────
+// After a correct password an MFA account gets { mfa_required, mfa_enrolled,
+// mfa_token } instead of tokens; these finish the sign-in. No JWT yet, so raw fetch.
+async function postMfa(path, body, fallback) {
+  let res
+  try {
+    res = await fetch(`${API_URL}/auth/mfa/${path}/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(readError(data, fallback))
+  return data
+}
+
+/** Start authenticator enrolment → { secret, otpauth_uri, qr } */
+export const apiMfaSetup = (mfaToken) =>
+  postMfa('setup', { mfa_token: mfaToken }, 'Could not start two-factor setup.')
+
+/** Finish sign-in with a 6-digit or backup code → { access, refresh, user, backup_codes? } */
+export const apiMfaVerify = (mfaToken, code) =>
+  postMfa('verify', { mfa_token: mfaToken, code }, 'That code is not valid.')
+
 // Public (no token attached on purpose — see apiLogin above for why these use
 // raw fetch instead of apiFetch: an expired/garbage access token sitting in
 // localStorage would otherwise turn into a spurious 401 on a route that

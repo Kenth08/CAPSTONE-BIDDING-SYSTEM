@@ -24,9 +24,29 @@ class User(AbstractUser):
     # db_default so the previous release can keep creating users mid-deploy.
     failed_login_count = models.PositiveIntegerField(default=0, db_default=0)
     locked_until = models.DateTimeField(null=True, blank=True)
+    # Two-factor authentication (accounts/mfa.py). The secret is encrypted at
+    # rest when FILE_ENCRYPTION_KEY is set; mfa_last_step stops code replay.
+    mfa_enabled = models.BooleanField(default=False, db_default=False)
+    mfa_secret = models.TextField(blank=True, default="", db_default="")
+    mfa_last_step = models.BigIntegerField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.username} ({self.role})"
+
+
+class MFABackupCode(models.Model):
+    """One single-use recovery code for when the authenticator app is lost.
+    Only a salted SHA-256 of the code is stored (accounts/mfa.py)."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="mfa_backup_codes")
+    salt = models.CharField(max_length=32)
+    code_hash = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.user} backup code ({'used' if self.used_at else 'unused'})"
 
 
 class AuditLog(models.Model):

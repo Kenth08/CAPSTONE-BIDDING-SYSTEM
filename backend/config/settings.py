@@ -313,6 +313,7 @@ REST_FRAMEWORK = {
         'anon': '60/min',
         'user': '240/min',
         'login': '5/15m',
+        'mfa': '10/15m',
         'register': '10/h',
         'password_reset': '5/h',
         'email_verify': '5/h',
@@ -411,3 +412,9 @@ if not DEBUG:
 # locally it stays at admin/ for convenience.
 ADMIN_URL = os.environ.get('ADMIN_URL', 'admin/' if DEBUG else '').strip().strip('/')
 ADMIN_URL = f'{ADMIN_URL}/' if ADMIN_URL else ''
+
+# Two-factor authentication (TOTP) for Admin and Head accounts and the Django
+# admin, see accounts/mfa.py. On by default in production; off locally and in
+# tests unless MFA_REQUIRED=True is set explicitly.
+MFA_REQUIRED = os.environ.get(
+    'MFA_REQUIRED', 'False' if (DEBUG or RUNNING_TESTS) else 'True').lower() == 'true'

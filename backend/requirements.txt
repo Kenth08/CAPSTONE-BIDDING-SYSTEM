@@ -24,6 +24,11 @@ Pillow==13.0.0
 # (procurement/storage_crypto.py).
 cryptography==50.0.2
 
+# TOTP two-factor sign-in for Admin/Head (accounts/mfa.py) and the enrolment
+# QR code (segno: pure Python, no image libraries).
+pyotp==2.10.0
+segno==1.6.6
+
 # Server-side blockchain signing (BLOCKCHAIN_SERVER_SIGNING=True): the backend
 # submits anchor transactions itself, so no MetaMask prompt ever appears — for
 # admins, the Head, or suppliers. procurement/blockchain.py imports web3 lazily,

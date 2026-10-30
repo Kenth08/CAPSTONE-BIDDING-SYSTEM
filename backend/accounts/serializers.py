@@ -17,7 +17,7 @@ from procurement.document_requirements import (
 from procurement.models import PROCUREMENT_CATEGORIES, Supplier, SupplierCategoryDocument
 from procurement.validators import validate_upload
 
-from . import lockout
+from . import lockout, mfa
 from .emails import email_verification_token, send_verification_email
 
 User = get_user_model()
@@ -403,6 +403,15 @@ class RoleTokenObtainPairSerializer(TokenObtainPairSerializer):
             raise serializers.ValidationError(
                 {"detail": lockout.LOCKED_MESSAGE if locked else self.INVALID_CREDENTIALS})
 
+        if mfa.mfa_required_for(self.user):
+            # Password accepted, but no tokens until the authenticator code is
+            # entered (accounts/mfa.py). The failure count is deliberately NOT
+            # reset here, so wrong codes keep counting towards the lockout.
+            return {
+                "mfa_required": True,
+                "mfa_enrolled": self.user.mfa_enabled,
+                "mfa_token": mfa.issue_login_ticket(self.user),
+            }
         lockout.record_success(self.user)
         data["user"] = UserSerializer(self.user).data
         return data

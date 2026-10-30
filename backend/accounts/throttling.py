@@ -35,6 +35,15 @@ class LoginRateThrottle(IPRateThrottle):
     scope = "login"
 
 
+class MfaRateThrottle(IPRateThrottle):
+    """Throttle for the two-factor setup/verify routes: 10 per 15 minutes per
+    IP. Separate from the login scope so mistyping a code once or twice does
+    not also burn the password attempts; wrong codes still count towards the
+    per-account lockout (accounts/lockout.py)."""
+
+    scope = "mfa"
+
+
 class RegisterRateThrottle(IPRateThrottle):
     """Throttle for account-creation routes: max 10 registrations per hour per IP.
 
