@@ -108,3 +108,9 @@ setRestricted(true)
 ```
 
 Reads stay open to everyone regardless.
+
+**Before restricting, pick the signer model.** With MetaMask signing, every
+Admin/Head wallet must be whitelisted with `setWriter`, and suppliers' own
+wallets would be rejected, so their bid anchors then need server signing
+(`BLOCKCHAIN_SERVER_SIGNING=True`). With server signing, whitelist only the
+server wallet. Undo with `setRestricted(false)`. See [SECURITY.md](../SECURITY.md#5-blockchain-contract).

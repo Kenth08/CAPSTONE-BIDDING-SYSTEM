@@ -58,6 +58,30 @@ services:
       # - key: SEPOLIA_RPC_URL
       #   value: "https://ethereum-sepolia-rpc.publicnode.com"
 
+      # ── Security (see SECURITY.md) ────────────────────────────────────────
+      # Fernet key that encrypts supplier registration documents, TOTP secrets
+      # and backups at rest. Generate with:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      # Keep a copy in a password manager: files encrypted with a lost key are
+      # unreadable. FILE_ENCRYPTION_OLD_KEYS (comma-separated) is only set
+      # during a key rotation.
+      - key: FILE_ENCRYPTION_KEY
+        sync: false
+      # - key: FILE_ENCRYPTION_OLD_KEYS
+      #   sync: false
+      # Secret path of the Django admin, e.g. "staff-<random>/". With it unset
+      # in production the admin site is not mounted at all.
+      - key: ADMIN_URL
+        sync: false
+      # Two-factor sign-in for Admin/Head and the Django admin. Defaults to
+      # True when DEBUG is False; listed so it is visible and deliberate.
+      - key: MFA_REQUIRED
+        value: "True"
+      # Proxies in front of Django that append to X-Forwarded-For (Render = 1).
+      # Rate limits and audit-log IPs depend on it — see SECURITY.md.
+      - key: TRUSTED_PROXY_COUNT
+        value: "1"
+
       # ── Server-side signing: anchoring with NO MetaMask prompt ────────────
       # OFF by default, and the code path is completely inert until it is on.
       #
