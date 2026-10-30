@@ -673,3 +673,32 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"{self.user} - {self.message[:40]}"
+
+
+class FileDownloadToken(models.Model):
+    """A one-time, short-lived grant to download exactly one file.
+
+    Minted by POST /api/files/<kind>/<pk>/<field>/link/ the moment a signed-in
+    user clicks "download", and redeemed by the browser navigation that follows
+    (which cannot carry the Authorization header). See procurement/files.py.
+
+    Only a SHA-256 of the token is stored, so a database leak does not leak
+    working links. Rows are kept after use as part of the download history and
+    pruned once they are well past expiry.
+    """
+
+    token_hash = models.CharField(max_length=64, unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="file_download_tokens")
+    kind = models.CharField(max_length=20)
+    object_id = models.PositiveBigIntegerField()
+    field = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["expires_at"])]
+
+    def __str__(self):
+        return f"{self.user_id} {self.kind}/{self.object_id}/{self.field}"

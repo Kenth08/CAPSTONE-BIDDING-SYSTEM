@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { ChevronLeft, ChevronRight, ExternalLink, X } from 'lucide-react'
+import SecureImg from './SecureImg'
 
 /**
  * Full-size image viewer. Esc or a click outside closes it, ←/→ flip through
@@ -49,12 +50,12 @@ export default function Lightbox({ images = [], index = 0, onIndex, onClose, tit
         <div className="rf-lightbox-stage">
           {reference?.url && (
             <figure className="rf-lightbox-fig is-ref">
-              <img src={reference.url} alt={reference.caption || 'Project reference image'} />
+              <SecureImg src={reference.url} alt={reference.caption || 'Project reference image'} />
               <figcaption><strong>Reference</strong> {reference.caption}</figcaption>
             </figure>
           )}
           <figure className="rf-lightbox-fig">
-            <img src={img.url} alt={img.caption || `Image ${index + 1} of ${images.length}`} />
+            <SecureImg src={img.url} alt={img.caption || `Image ${index + 1} of ${images.length}`} />
             <figcaption>
               {img.caption || <span className="rf-muted">No caption</span>}
               {images.length > 1 && <span className="rf-muted"> · {index + 1} of {images.length}</span>}

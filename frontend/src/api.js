@@ -1,3 +1,5 @@
+import { protectedFilePath } from './utils/fileUrls'
+
 // Central API layer for talking to the Django backend.
 // In production set VITE_API_URL (e.g. https://api.yourdomain.com/api); locally
 // it falls back to the dev server so nothing changes during development.
@@ -291,6 +293,36 @@ export async function apiFetch(path, options = {}) {
     throw new Error(readError(err, `Request failed (${res.status}).`))
   }
   return res.status === 204 ? null : res.json()
+}
+
+// ── Protected files ───────────────────────────────────────────────────────────
+// File URLs in API responses (e.g. https://api…/api/files/bid/7/quotation_document/)
+// are addresses, not credentials: opening one without a login gives 404.
+// See frontend/src/files.js for how a click becomes a download.
+
+export { protectedFilePath }
+
+/** Ask for a one-time, 2-minute download link for one file (JWT-authenticated). */
+export async function apiFileDownloadLink(url) {
+  const path = protectedFilePath(url)
+  if (!path) throw new Error('This document link is not valid.')
+  const data = await apiFetch(`${path}link/`, { method: 'POST', body: '{}' })
+  return data.url
+}
+
+/** Fetch a protected file's bytes with the JWT (inline images). Resolves to a Blob. */
+export async function apiFetchFileBlob(url) {
+  const path = protectedFilePath(url)
+  if (!path) throw new Error('This image link is not valid.')
+  const send = (token) =>
+    fetch(`${API_URL}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  let res = await send(getToken())
+  if (res.status === 401) {
+    const renewed = await refreshAccessToken()
+    if (renewed) res = await send(renewed)
+  }
+  if (!res.ok) throw new Error(`Image unavailable (${res.status}).`)
+  return res.blob()
 }
 
 // Authenticated multipart upload (no Content-Type header — the browser sets the

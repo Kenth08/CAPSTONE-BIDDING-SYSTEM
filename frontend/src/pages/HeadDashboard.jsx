@@ -28,6 +28,7 @@ import Toaster, { toast } from '../components/ui/Toaster'
 import { useNow } from '../components/ui/Countdown'
 import { runAnchor, isAnchorBusy, useAnchorActivity } from '../blockchain/anchorStore'
 import { daysSince, greeting, peso, todayLong } from '../utils/format'
+import SecureImg from '../components/ui/SecureImg'
 import '../style/HeadDashboard.css'
 
 const NAV_SECTIONS = (pendingCount) => [
@@ -169,7 +170,7 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultE
                 <div className="hd-refimg-section">
                   <span className="hd-refimg-label"><ImageIcon size={13} /> Project Reference Image</span>
                   <a href={project.referenceImage} target="_blank" rel="noopener noreferrer" title="Open full size">
-                    <img src={project.referenceImage} alt="Project reference" className="hd-refimg-thumb" />
+                    <SecureImg src={project.referenceImage} alt="Project reference" className="hd-refimg-thumb" />
                   </a>
                 </div>
               )}

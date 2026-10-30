@@ -2,7 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .dashboard import AdminSummaryView, HeadSummaryView, PublicSummaryView
-from .files import ProtectedFileView
+from .files import ProtectedFileLinkView, ProtectedFileView, PublicNoticeOfAwardView
 from .views import (
     AwardViewSet,
     BidViewSet,
@@ -39,9 +39,22 @@ urlpatterns = [
     # Every uploaded document is served from here, never from MEDIA_URL — the
     # route exists in production (MEDIA_URL's does not) and it enforces who may
     # read what. See procurement/files.py.
+    # The Notice of Award of an AWARDED procurement is public, so anyone can
+    # hash it and compare it with its NOA_ISSUED anchor.
+    path(
+        "public/procurement/<str:code>/notice-of-award/",
+        PublicNoticeOfAwardView.as_view(),
+        name="public-notice-of-award",
+    ),
     path(
         "files/<str:kind>/<int:pk>/<str:field>/",
         ProtectedFileView.as_view(),
         name="protected-file",
+    ),
+    # Mints a one-time, 2-minute download link for the signed-in caller.
+    path(
+        "files/<str:kind>/<int:pk>/<str:field>/link/",
+        ProtectedFileLinkView.as_view(),
+        name="protected-file-link",
     ),
 ] + router.urls

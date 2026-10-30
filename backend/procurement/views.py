@@ -424,8 +424,16 @@ class PublicAnchorTrailView(APIView):
             for a in anchors
         ]
         altered = [t for t in trail if t["integrity"]["status"] == "mismatch"]
+        award = (Award.objects.filter(project=project, status=Award.Status.WON)
+                 .exclude(notice_of_award="").exclude(notice_of_award__isnull=True).first())
+        noa_url = ""
+        if award and project.status == Project.Status.AWARDED:
+            # The one document published to everyone (see files.PublicNoticeOfAwardView).
+            noa_url = request.build_absolute_uri(
+                f"/api/public/procurement/{project.code}/notice-of-award/")
         return Response({
             "code": project.code,
+            "notice_of_award_url": noa_url,
             "name": project.name,
             "status": project.status,
             "category": project.category,

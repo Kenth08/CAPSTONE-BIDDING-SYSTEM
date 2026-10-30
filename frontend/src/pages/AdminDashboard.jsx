@@ -48,6 +48,7 @@ import DataTable from '../components/ui/DataTable'
 import ActionConfirm from '../components/ui/ConfirmDialog'
 import Countdown from '../components/ui/Countdown'
 import ProcurementStepper from '../components/ui/ProcurementStepper'
+import SecureImg from '../components/ui/SecureImg'
 import '../style/AdminDashboard.css'
 
 const NAV_SECTIONS = [
@@ -491,7 +492,7 @@ function ReferenceImageUploader({ file, existingUrl, onFile, onRemove }) {
 
       {shown ? (
         <div className="ad-refimg-preview">
-          <img src={shown} alt="Reference preview" className="ad-refimg-img" />
+          <SecureImg src={shown} alt="Reference preview" className="ad-refimg-img" />
           <button type="button" className="ad-refimg-remove" onClick={onRemove} aria-label="Remove image">
             <X size={14} />
           </button>
@@ -611,7 +612,7 @@ function ProjectDetailModal({ project, onClose, setToast }) {
           {project.referenceImage && (
             <div className="ad-refimg-section">
               <div className="ad-refimg-section-label"><ImageIcon size={14} /> Reference Image</div>
-              <img src={project.referenceImage} alt="Reference" className="ad-refimg-view" />
+              <SecureImg src={project.referenceImage} alt="Reference" className="ad-refimg-view" />
             </div>
           )}
 
@@ -2352,7 +2353,7 @@ function BidProductCell({ bid }) {
           onClick={e => e.stopPropagation()}
           title="Open the full product image"
         >
-          <img src={url} alt={spec ? `${spec} offered by ${bid.supplier_name}` : `Product offered by ${bid.supplier_name}`} loading="lazy" />
+          <SecureImg src={url} alt={spec ? `${spec} offered by ${bid.supplier_name}` : `Product offered by ${bid.supplier_name}`} loading="lazy" />
         </a>
       ) : (
         <span className="ad-prod-thumb ad-prod-thumb-empty" title="No product image submitted">
@@ -2512,7 +2513,7 @@ function ImageLightbox({ images, index, onIndex, onClose }) {
     <div className="ad-lightbox" role="dialog" aria-modal="true" aria-label="Product image" onClick={onClose}>
       <div className="ad-lightbox-inner" onClick={e => e.stopPropagation()}>
         <button className="ad-lightbox-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
-        <img src={img.url} alt={img.caption || `Product image ${index + 1}`} />
+        <SecureImg src={img.url} alt={img.caption || `Product image ${index + 1}`} />
         <div className="ad-lightbox-bar">
           <button disabled={index === 0} onClick={() => onIndex(index - 1)} aria-label="Previous image">‹</button>
           <span>
@@ -2544,7 +2545,7 @@ function BidProductGallery({ bid }) {
         {images.map((img, i) => (
           <button type="button" key={img.id} className="ad-img-card ad-img-card-btn" onClick={() => setOpen(i)}
             title={img.caption || 'View larger'}>
-            <img src={img.url} alt={img.caption || `Product image ${i + 1}`} loading="lazy" />
+            <SecureImg src={img.url} alt={img.caption || `Product image ${i + 1}`} loading="lazy" />
             <span className="ad-img-cap">{img.caption || `Image ${i + 1}`}</span>
           </button>
         ))}
@@ -2622,7 +2623,7 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
               <div className="ad-img-grid">
                 {images.map((f, i) => (
                   <a key={i} className="ad-img-card" href={f.url} target="_blank" rel="noreferrer" title={f.name}>
-                    <img src={f.url} alt={f.name} loading="lazy" />
+                    <SecureImg src={f.url} alt={f.name} loading="lazy" />
                     <span className="ad-img-cap">{f.label}</span>
                   </a>
                 ))}

@@ -12,7 +12,7 @@ from .document_requirements import (
     expiring_documents,
     missing_documents,
 )
-from .files import protected_file_url
+from .files import SUPPLIER_VISIBLE_PROJECT_FIELDS, protected_file_url
 from .models import (
     AWARD_DOCUMENT_FIELDS,
     BID_DOCUMENT_FIELDS,
@@ -262,8 +262,13 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
         show/download what the Admin uploaded and to flag individual documents."""
         request = self.context.get("request")
         reviews = obj.document_reviews or {}
+        # Suppliers only get the documents they need to bid (files.py has the
+        # same rule; listing the others would just show links that 404).
+        is_supplier = getattr(getattr(request, "user", None), "role", None) == "supplier"
         out = []
         for key, label, required in PROCUREMENT_DOCUMENT_FIELDS:
+            if is_supplier and key not in SUPPLIER_VISIBLE_PROJECT_FIELDS:
+                continue
             url = protected_file_url(request, "project", obj, key)
             review = reviews.get(key) or {}
             out.append({

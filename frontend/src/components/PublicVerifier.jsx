@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  AlertCircle, CheckCircle2, ExternalLink, FileSearch, Loader2, Search,
+  AlertCircle, CheckCircle2, Download, ExternalLink, FileSearch, Loader2, Search,
   ShieldCheck, ShieldX, Upload, XCircle,
 } from 'lucide-react'
 
@@ -131,7 +131,8 @@ export default function PublicVerifier({ initialCode = '' }) {
       let chainError = ''
       if (isLedgerConfigured()) {
         try {
-          chain = await readChainTrail(ref)
+          // The server's spelling of the code is the on-chain index.
+          chain = await readChainTrail(data.code || ref)
         } catch (err) {
           chainError = err?.shortMessage || err?.message || 'Could not reach the Sepolia network.'
         }
@@ -265,6 +266,14 @@ export default function PublicVerifier({ initialCode = '' }) {
                   <><FileSearch size={12} /> Re-check documents</>
                 )}
               </button>
+              {/* The Notice of Award is public once a procurement is awarded,
+                  so anyone can download it and hash it with the checker below. */}
+              {result.project.notice_of_award_url && (
+                <a className="pv-deep-btn" href={result.project.notice_of_award_url}
+                  title="Download the Notice of Award to check it against its recorded hash">
+                  <Download size={12} /> Notice of Award
+                </a>
+              )}
             </div>
           </div>
 

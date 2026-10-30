@@ -313,10 +313,25 @@ class ProtectedFileAccessTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(b"".join(res.streaming_content), b"%PDF-1.4 fake")
 
-    def test_signed_link_works_without_an_auth_header(self):
-        # This is the case a plain <a href target="_blank"> hits: a browser
-        # navigation carries no Authorization header.
+    def _one_time_link_for_owner(self):
+        """What a click does: ask for a one-time link with the JWT."""
+        self.client.force_authenticate(user=self.owner.user)
+        res = self.client.post(f"/api/files/supplier/{self.owner.pk}/valid_id/link/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return res.data["url"]
+
+    def test_serialized_url_is_not_a_credential(self):
+        # The address in API responses carries no token, so it can be logged or
+        # leaked without granting anything.
         url = self._url_for_owner()
+        self.assertNotIn("t=", url)
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_one_time_link_works_without_an_auth_header(self):
+        # This is the case a browser download hits: a navigation carries no
+        # Authorization header.
+        url = self._one_time_link_for_owner()
         self.client.force_authenticate(user=None)
         res = self.client.get(url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
@@ -338,7 +353,7 @@ class ProtectedFileAccessTests(APITestCase):
         self.rival.valid_id = dummy_pdf("rival-id.pdf")
         self.rival.save()
 
-        url = self._url_for_owner()
+        url = self._one_time_link_for_owner()
         token = url.split("t=")[1]
         self.client.force_authenticate(user=None)
         # Same signature, different supplier in the path — the token is bound to
@@ -347,7 +362,7 @@ class ProtectedFileAccessTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_a_tampered_token_is_rejected(self):
-        url = self._url_for_owner()
+        url = self._one_time_link_for_owner()
         base, token = url.split("?t=")
         self.client.force_authenticate(user=None)
         # Flip the last character of the signature.
@@ -627,12 +642,15 @@ class AwardDocumentAccessTests(APITestCase):
         self.assertEqual(self.client.get(doc["url"]).status_code, status.HTTP_200_OK)
 
     def test_a_losing_bidder_cannot_read_the_award_document(self):
-        self.client.post(
-            f"/api/awards/{self.award.pk}/documents/generate/",
-            {"key": "notice_of_award"}, format="json")
-        self.client.force_authenticate(user=self.loser.user)
-        res = self.client.get(f"/api/files/award/{self.award.pk}/notice_of_award/")
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        # The NOA of an awarded procurement is public by design; the BAC
+        # Resolution and the NTP are not.
+        for key in ("award_resolution", "notice_to_proceed"):
+            self.client.force_authenticate(user=self.admin)
+            self.client.post(
+                f"/api/awards/{self.award.pk}/documents/generate/", {"key": key}, format="json")
+            self.client.force_authenticate(user=self.loser.user)
+            res = self.client.get(f"/api/files/award/{self.award.pk}/{key}/")
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, key)
 
 
 class SeedCommandSafetyTests(TestCase):
@@ -1172,7 +1190,7 @@ class CategoryChangeWorkflowTests(APITestCase):
         self.head = make_head()
         self.supplier = make_supplier(verified=True, categories=["IT Equipment"])
         self.furniture = make_project(status=Project.Status.PUBLISHED, category="Furniture")
-        self.furniture.purchase_request = dummy_pdf()
+        self.furniture.terms_of_reference = dummy_pdf()
         self.furniture.save()
 
     def _request(self, categories, user=None):
@@ -1186,7 +1204,7 @@ class CategoryChangeWorkflowTests(APITestCase):
     def _can_see_furniture(self):
         self.client.force_authenticate(user=self.supplier.user)
         visible = [p["id"] for p in self.client.get("/api/projects/").json()]
-        doc = self.client.get(f"/api/files/project/{self.furniture.pk}/purchase_request/")
+        doc = self.client.get(f"/api/files/project/{self.furniture.pk}/terms_of_reference/")
         return self.furniture.pk in visible, doc.status_code
 
     def test_request_is_pending_logged_and_announced(self):
@@ -1523,13 +1541,14 @@ class SupplierCategoryDocumentAccessTests(APITestCase):
             supplier=self.owner, key="fda_lto", file=dummy_pdf("lto.pdf"), expiry_date=IN_A_YEAR)
         self.path = f"/api/files/supplierdoc/{self.row.pk}/file/"
 
-    def test_serializer_emits_a_signed_supplierdoc_url(self):
+    def test_serializer_emits_a_protected_supplierdoc_url(self):
         self.client.force_authenticate(user=self.owner.user)
         res = self.client.get("/api/suppliers/me/")
         doc = next(d for d in res.data["documents"] if d["key"] == "fda_lto")
         self.assertIn("/api/files/supplierdoc/", doc["url"])
-        self.client.force_authenticate(user=None)
         self.assertEqual(self.client.get(doc["url"]).status_code, status.HTTP_200_OK)
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get(doc["url"]).status_code, status.HTTP_404_NOT_FOUND)
 
     def test_owner_can_read(self):
         self.client.force_authenticate(user=self.owner.user)
@@ -1539,11 +1558,12 @@ class SupplierCategoryDocumentAccessTests(APITestCase):
         self.client.force_authenticate(user=self.rival.user)
         self.assertEqual(self.client.get(self.path).status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_admin_and_head_can_read(self):
-        for user in (make_admin(), make_head()):
-            with self.subTest(role=user.role):
-                self.client.force_authenticate(user=user)
-                self.assertEqual(self.client.get(self.path).status_code, status.HTTP_200_OK)
+    def test_admin_can_read_but_head_cannot(self):
+        # The Head never reviews supplier registrations.
+        self.client.force_authenticate(user=make_admin())
+        self.assertEqual(self.client.get(self.path).status_code, status.HTTP_200_OK)
+        self.client.force_authenticate(user=make_head())
+        self.assertEqual(self.client.get(self.path).status_code, status.HTTP_404_NOT_FOUND)
 
     def test_an_unlisted_field_cannot_be_addressed(self):
         self.client.force_authenticate(user=make_admin())

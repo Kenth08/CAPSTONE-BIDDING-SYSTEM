@@ -34,6 +34,7 @@ import Toaster from '../components/ui/Toaster'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
 import { runAnchor } from '../blockchain/anchorStore'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
+import SecureImg from '../components/ui/SecureImg'
 import '../style/SupplierDashboard.css'
 
 // API → UI mapping (backend uses code/decimal/ISO; the UI shows ₱ + dates).
@@ -232,7 +233,7 @@ function LocalThumb({ file, alt }) {
     setUrl(u)
     return () => URL.revokeObjectURL(u)
   }, [file])
-  return url ? <img src={url} alt={alt} /> : null
+  return url ? <SecureImg src={url} alt={alt} /> : null
 }
 
 let pickSeq = 0
@@ -457,7 +458,7 @@ function BidModal({ project, profile, onClose, onSubmit }) {
           {hasRef && step < 2 && (
             <div className="sd-refimg-section">
               <div className="sd-refimg-label"><Camera size={14} /> Required Product Reference</div>
-              <img src={project.referenceImage} alt="Required product reference" className="sd-refimg-cover" />
+              <SecureImg src={project.referenceImage} alt="Required product reference" className="sd-refimg-cover" />
               <p className="sd-refimg-note">
                 This image shows the exact product specification required by the procuring entity.
                 Your bid must match this specification.
@@ -813,7 +814,7 @@ function BidProductImages({ bid, onChanged, setToast }) {
           {images.map((img, idx) => (
             <div className="sd-pimg-card" key={img.id}>
               <a className="sd-pimg-thumb" href={img.url} target="_blank" rel="noreferrer" title="Open full size">
-                <img src={img.url} alt={img.caption || `Product image ${idx + 1}`} loading="lazy" />
+                <SecureImg src={img.url} alt={img.caption || `Product image ${idx + 1}`} loading="lazy" />
               </a>
               {img.caption && <span className="sd-pimg-cap" title={img.caption}>{img.caption}</span>}
               {editable && !lastRequired && (
