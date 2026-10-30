@@ -83,16 +83,22 @@ def _read(file):
 
 class SecureUploadsMixin(models.Model):
     """For models with FileFields: on save, every NEW upload has its image
-    metadata stripped and, when the model has an `original_filenames` field,
-    its original name recorded there.
+    metadata stripped, its original name recorded (when the model has an
+    `original_filenames` field) and — for the fields a model lists in
+    ENCRYPTED_FILE_FIELDS — its content encrypted (see storage_crypto.py).
 
     Done in save() so it covers every way a file reaches a model (serializer
     save, setattr + save, admin) without each view having to remember."""
+
+    # FileFields whose content is encrypted at rest. Empty by default.
+    ENCRYPTED_FILE_FIELDS = frozenset()
 
     class Meta:
         abstract = True
 
     def _prepare_new_uploads(self):
+        from .storage_crypto import encrypt_upload
+
         names_changed = False
         has_names = any(f.name == "original_filenames" for f in self._meta.fields)
         for field in self._meta.fields:
@@ -111,6 +117,8 @@ class SecureUploadsMixin(models.Model):
                     names[field.name] = original
                     self.original_filenames = names
                     names_changed = True
+            if field.name in self.ENCRYPTED_FILE_FIELDS:
+                encrypt_upload(ff)             # last: after metadata stripping
         return names_changed
 
     def save(self, *args, **kwargs):

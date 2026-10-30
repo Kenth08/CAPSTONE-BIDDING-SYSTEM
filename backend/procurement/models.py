@@ -120,6 +120,10 @@ def supplier_doc_path(instance, filename):
 class Supplier(SecureUploadsMixin, models.Model):
     """A supplier company profile, linked to a user account."""
 
+    # Registration documents (IDs, tax and financial records) are encrypted at
+    # rest with FILE_ENCRYPTION_KEY — see procurement/storage_crypto.py.
+    ENCRYPTED_FILE_FIELDS = frozenset(SUPPLIER_DOCUMENT_KEYS)
+
     # The uploader's original file names, {field: name}. Stored names are
     # random (procurement/uploads.py), so this is what downloads are named.
     # db_default lets the previous release keep inserting rows mid-deploy.
@@ -259,6 +263,9 @@ class SupplierCategoryDocument(SecureUploadsMixin, models.Model):
     A separate table rather than new Supplier columns: on deploy, migrate runs
     while the previous release is still serving, and a new table is invisible
     to it — nothing it inserts can fail."""
+
+    # Category licenses are encrypted at rest — see procurement/storage_crypto.py.
+    ENCRYPTED_FILE_FIELDS = frozenset({"file"})
 
     # The uploader's original file names, {field: name}. Stored names are
     # random (procurement/uploads.py), so this is what downloads are named.

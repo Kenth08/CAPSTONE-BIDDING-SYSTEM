@@ -20,6 +20,10 @@ fpdf2==2.9.0
 # Already installed as an fpdf2 dependency; pinned here because we now use it directly.
 Pillow==13.0.0
 
+# Fernet encryption at rest for supplier registration documents and backups
+# (procurement/storage_crypto.py).
+cryptography==50.0.2
+
 # Server-side blockchain signing (BLOCKCHAIN_SERVER_SIGNING=True): the backend
 # submits anchor transactions itself, so no MetaMask prompt ever appears — for
 # admins, the Head, or suppliers. procurement/blockchain.py imports web3 lazily,

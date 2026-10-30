@@ -5,6 +5,7 @@ public bidding IDs, the public blockchain trail, file access, uploads, storage,
 authentication and audit logging. Shared fixtures come from tests.py.
 """
 import io
+import os
 import re
 import shutil
 import tempfile
@@ -12,9 +13,14 @@ import zipfile
 from datetime import timedelta
 from unittest import mock
 
+from cryptography.fernet import Fernet, InvalidToken
+from django.core import checks
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.core.files.base import ContentFile
+from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -25,6 +31,7 @@ from PIL import Image
 from accounts.models import AuditLog
 
 from .blockchain import anchor_project, verify_anchor
+from .checks import check_storage_safety, encryption_problems, storage_problems
 from .models import (
     Award,
     Bid,
@@ -35,6 +42,7 @@ from .models import (
     Project,
     Supplier,
 )
+from .storage_crypto import MAGIC, decrypt_bytes
 from .tests import dummy_pdf, make_admin, make_head, make_project, make_supplier
 from .validators import validate_bid_upload, validate_upload
 from .views import (
@@ -530,3 +538,200 @@ class ImageMetadataTests(_MediaTestCase):
         project.save()
         anchor = anchor_project(project, BlockchainAnchor.Stage.HEAD_APPROVED)
         self.assertEqual(verify_anchor(anchor, deep=True)["status"], "match")
+
+
+# ── Encryption at rest ───────────────────────────────────────────────────────
+KEY_A = Fernet.generate_key().decode()
+KEY_B = Fernet.generate_key().decode()
+SECRET = b"%PDF-1.4 TIN 123-456-789 Juan Dela Cruz"
+
+
+def _stored_bytes(field_file):
+    with open(field_file.path, "rb") as f:
+        return f.read()
+
+
+@override_settings(FILE_ENCRYPTION_KEY=KEY_A, FILE_ENCRYPTION_OLD_KEYS="")
+class SupplierDocumentEncryptionTests(_MediaTestCase):
+    def setUp(self):
+        super().setUp()
+        self.supplier = make_supplier()
+
+    def _upload(self, key="valid_id"):
+        setattr(self.supplier, key, SimpleUploadedFile("id.pdf", SECRET))
+        self.supplier.save()
+
+    def test_registration_documents_are_ciphertext_at_rest(self):
+        self._upload()
+        stored = _stored_bytes(self.supplier.valid_id)
+        self.assertTrue(stored.startswith(MAGIC))
+        self.assertNotIn(b"Juan", stored)
+        self.assertNotIn(b"123-456-789", stored)
+
+    def test_authorised_download_is_decrypted(self):
+        self._upload()
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.get(f"/api/files/supplier/{self.supplier.pk}/valid_id/")
+        self.assertEqual(b"".join(res.streaming_content), SECRET)
+
+    def test_category_licenses_are_encrypted_too(self):
+        from .models import SupplierCategoryDocument
+        row = SupplierCategoryDocument.objects.create(
+            supplier=self.supplier, key="fda_lto", file=SimpleUploadedFile("lto.pdf", SECRET))
+        self.assertTrue(_stored_bytes(row.file).startswith(MAGIC))
+
+    def test_legacy_unencrypted_files_still_open(self):
+        with override_settings(FILE_ENCRYPTION_KEY=""):
+            self._upload()
+        self.assertEqual(_stored_bytes(self.supplier.valid_id), SECRET)
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.get(f"/api/files/supplier/{self.supplier.pk}/valid_id/")
+        self.assertEqual(b"".join(res.streaming_content), SECRET)
+
+    def test_files_under_a_retired_key_still_open_after_rotation(self):
+        self._upload()
+        with override_settings(FILE_ENCRYPTION_KEY=KEY_B, FILE_ENCRYPTION_OLD_KEYS=KEY_A):
+            self.client.force_authenticate(user=self.supplier.user)
+            res = self.client.get(f"/api/files/supplier/{self.supplier.pk}/valid_id/")
+            self.assertEqual(b"".join(res.streaming_content), SECRET)
+
+    def test_anchored_document_types_are_never_encrypted(self):
+        project = make_project()
+        bid = Bid.objects.create(project=project, supplier=self.supplier, amount=1,
+                                 quotation_document=SimpleUploadedFile("q.pdf", SECRET))
+        project.terms_of_reference = SimpleUploadedFile("tor.pdf", SECRET)
+        project.save()
+        self.assertEqual(_stored_bytes(bid.quotation_document), SECRET)
+        self.assertEqual(_stored_bytes(project.terms_of_reference), SECRET)
+
+    def test_command_dry_run_changes_nothing_and_apply_encrypts_legacy_files(self):
+        with override_settings(FILE_ENCRYPTION_KEY=""):
+            self._upload()
+        call_command("encrypt_supplier_documents", stdout=io.StringIO())
+        self.assertEqual(_stored_bytes(self.supplier.valid_id), SECRET)
+        call_command("encrypt_supplier_documents", "--apply", stdout=io.StringIO())
+        self.supplier.refresh_from_db()
+        stored = _stored_bytes(self.supplier.valid_id)
+        self.assertTrue(stored.startswith(MAGIC))
+        self.assertEqual(decrypt_bytes(stored), SECRET)
+
+    def test_command_rotates_to_the_new_key(self):
+        self._upload()
+        with override_settings(FILE_ENCRYPTION_KEY=KEY_B, FILE_ENCRYPTION_OLD_KEYS=KEY_A):
+            call_command("encrypt_supplier_documents", "--apply", stdout=io.StringIO())
+        token = _stored_bytes(self.supplier.valid_id)[len(MAGIC):]
+        self.assertEqual(Fernet(KEY_B.encode()).decrypt(token), SECRET)
+        with self.assertRaises(InvalidToken):
+            Fernet(KEY_A.encode()).decrypt(token)
+
+
+class StorageSafetyCheckTests(TestCase):
+    S3 = {"default": {"BACKEND": "storages.backends.s3.S3Storage"},
+          "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+
+    def _ids(self):
+        return {cid for cid, _, _ in storage_problems()}
+
+    def test_safe_s3_settings_pass(self):
+        with override_settings(STORAGES=self.S3, AWS_DEFAULT_ACL=None, AWS_QUERYSTRING_AUTH=True,
+                               AWS_QUERYSTRING_EXPIRE=60, AWS_S3_CUSTOM_DOMAIN=None):
+            self.assertEqual(self._ids(), set())
+
+    def test_public_acl_unsigned_urls_and_custom_domain_are_errors(self):
+        with override_settings(STORAGES=self.S3, AWS_DEFAULT_ACL="public-read",
+                               AWS_QUERYSTRING_AUTH=False, AWS_QUERYSTRING_EXPIRE=86400,
+                               AWS_S3_CUSTOM_DOMAIN="cdn.example.com"):
+            self.assertEqual(self._ids(), {"procurement.E001", "procurement.E002",
+                                           "procurement.E003", "procurement.E004"})
+
+    def test_errors_are_reported_as_system_check_errors(self):
+        with override_settings(STORAGES=self.S3, AWS_DEFAULT_ACL="public-read",
+                               AWS_QUERYSTRING_AUTH=True, AWS_QUERYSTRING_EXPIRE=60,
+                               AWS_S3_CUSTOM_DOMAIN=None):
+            errors = check_storage_safety(None)
+        self.assertTrue(any(e.id == "procurement.E001" and e.level >= checks.ERROR for e in errors))
+
+    def test_missing_encryption_key_is_flagged_in_production(self):
+        with override_settings(DEBUG=False, RUNNING_TESTS=False, FILE_ENCRYPTION_KEY=""):
+            self.assertEqual([p[0] for p in encryption_problems()], ["procurement.W001"])
+
+
+class MigrateMediaToBucketTests(TestCase):
+    def setUp(self):
+        self.source = tempfile.mkdtemp()
+        self.bucket = tempfile.mkdtemp()
+        self.target = FileSystemStorage(location=self.bucket)
+        self.supplier = make_supplier()
+        # A row pointing at a file that only exists on the old local disk, one
+        # already in the bucket, and one that is lost everywhere.
+        self.data = b"%PDF-1.4 anchored quotation"
+        os.makedirs(os.path.join(self.source, "bid_documents", "quotations"))
+        with open(os.path.join(self.source, "bid_documents", "quotations", "q.pdf"), "wb") as f:
+            f.write(self.data)
+        self.target.save("supplier_docs/already.pdf", ContentFile(b"x"))
+        project = make_project()
+        Bid.objects.create(project=project, supplier=self.supplier, amount=1)
+        Bid.objects.filter(supplier=self.supplier).update(
+            quotation_document="bid_documents/quotations/q.pdf",
+            technical_document="bid_documents/technical/lost.pdf")
+        Supplier.objects.filter(pk=self.supplier.pk).update(valid_id="supplier_docs/already.pdf")
+
+    def tearDown(self):
+        shutil.rmtree(self.source, ignore_errors=True)
+        shutil.rmtree(self.bucket, ignore_errors=True)
+
+    def _run(self, *args):
+        out = io.StringIO()
+        with mock.patch(
+                "procurement.management.commands.migrate_media_to_bucket.Command.target_storage",
+                return_value=self.target):
+            call_command("migrate_media_to_bucket", "--source", self.source, *args, stdout=out)
+        return out.getvalue()
+
+    def test_dry_run_reports_and_copies_nothing(self):
+        out = self._run()
+        self.assertIn("WOULD COPY", out)
+        self.assertIn("MISSING EVERYWHERE", out)
+        self.assertFalse(self.target.exists("bid_documents/quotations/q.pdf"))
+
+    def test_apply_copies_byte_for_byte_under_the_same_name(self):
+        out = self._run("--apply")
+        self.assertIn("Copied: 1", out)
+        with self.target.open("bid_documents/quotations/q.pdf", "rb") as f:
+            self.assertEqual(f.read(), self.data)
+        bid = Bid.objects.get(supplier=self.supplier)
+        self.assertEqual(bid.quotation_document.name, "bid_documents/quotations/q.pdf")
+
+    def test_files_already_in_the_bucket_are_left_alone(self):
+        out = self._run("--apply")
+        self.assertIn("Already in bucket: 1", out)
+        with self.target.open("supplier_docs/already.pdf", "rb") as f:
+            self.assertEqual(f.read(), b"x")
+
+
+class EncryptedBackupTests(TestCase):
+    def setUp(self):
+        self.out = tempfile.mkdtemp()
+        make_supplier()
+
+    def tearDown(self):
+        shutil.rmtree(self.out, ignore_errors=True)
+
+    @override_settings(FILE_ENCRYPTION_KEY=KEY_A)
+    def test_backup_is_encrypted_and_decrypts_for_restore(self):
+        call_command("backup_db", "-o", self.out, stdout=io.StringIO())
+        [name] = os.listdir(self.out)
+        self.assertTrue(name.endswith(".json.enc"))
+        path = os.path.join(self.out, name)
+        with open(path, "rb") as f:
+            raw = f.read()
+        self.assertNotIn(b"supplier0@example.com", raw)
+        call_command("backup_db", "--decrypt", path, stdout=io.StringIO(), stderr=io.StringIO())
+        with open(path[:-4], "rb") as f:
+            self.assertIn(b"supplier0@example.com", f.read())
+
+    @override_settings(FILE_ENCRYPTION_KEY="")
+    def test_unencrypted_backup_warns(self):
+        err = io.StringIO()
+        call_command("backup_db", "-o", self.out, stdout=io.StringIO(), stderr=err)
+        self.assertIn("NOT encrypted", err.getvalue())
