@@ -13,7 +13,7 @@ from rest_framework.test import APITestCase
 
 from .audit import get_client_ip
 from .lockout import LOCKED_MESSAGE, LOCKOUT_THRESHOLD
-from .models import AuditLog
+from .models import AuditLog, AuditLogImmutable
 
 User = get_user_model()
 LOGIN = "/api/auth/login/"
@@ -215,3 +215,52 @@ class DjangoAdminLoginTests(TestCase):
         self.assertTrue(AuditLog.objects.filter(action="auth.account_locked", user=self.staff).exists())
         self.assertTrue(AuditLog.objects.filter(action="auth.login_failed",
                                                 description__contains="admin").exists())
+
+
+class AuditLogAppendOnlyTests(TestCase):
+    def setUp(self):
+        self.user = make_user("logged")
+        self.entry = AuditLog.objects.create(user=self.user, action="test.action", description="x")
+
+    def test_entries_cannot_be_edited_or_deleted_through_the_orm(self):
+        self.entry.description = "rewritten"
+        with self.assertRaises(AuditLogImmutable):
+            self.entry.save()
+        with self.assertRaises(AuditLogImmutable):
+            self.entry.delete()
+        with self.assertRaises(AuditLogImmutable):
+            AuditLog.objects.filter(pk=self.entry.pk).update(description="rewritten")
+        with self.assertRaises(AuditLogImmutable):
+            AuditLog.objects.all().delete()
+        self.assertEqual(AuditLog.objects.get(pk=self.entry.pk).description, "x")
+
+    def test_deleting_a_user_keeps_their_entries(self):
+        self.user.delete()
+        self.entry = AuditLog.objects.get(pk=self.entry.pk)
+        self.assertIsNone(self.entry.user)
+        self.assertEqual(self.entry.action, "test.action")
+
+    def test_database_trigger_blocks_raw_sql_on_postgresql(self):
+        from django.db import DatabaseError, connection, transaction
+        if connection.vendor != "postgresql":
+            self.skipTest("The append-only trigger exists only on PostgreSQL.")
+        for sql in ("UPDATE accounts_auditlog SET description = 'x2' WHERE id = %s",
+                    "DELETE FROM accounts_auditlog WHERE id = %s"):
+            with self.assertRaises(DatabaseError), transaction.atomic():
+                with connection.cursor() as cur:
+                    cur.execute(sql, [self.entry.pk])
+
+
+class PermissionDeniedLoggingTests(APITestCase):
+    def test_a_403_for_a_signed_in_user_is_audit_logged(self):
+        supplier = make_user("sneaky", role="supplier")
+        self.client.force_authenticate(user=supplier)
+        res = self.client.get("/api/suppliers/")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        log = AuditLog.objects.get(action="auth.permission_denied")
+        self.assertEqual(log.user, supplier)
+        self.assertIn("GET /api/suppliers/", log.description)
+
+    def test_anonymous_401s_are_not_logged(self):
+        self.assertEqual(self.client.get("/api/suppliers/").status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertFalse(AuditLog.objects.filter(action="auth.permission_denied").exists())

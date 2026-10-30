@@ -49,6 +49,24 @@ class MFABackupCode(models.Model):
         return f"{self.user} backup code ({'used' if self.used_at else 'unused'})"
 
 
+class AuditLogImmutable(Exception):
+    """Raised on any attempt to edit or delete an audit entry through the ORM."""
+
+
+class AuditLogQuerySet(models.QuerySet):
+    """Bulk edits and deletes are refused: the log is append-only.
+
+    (Deleting a user still works: Django's on_delete=SET_NULL clears the user
+    column with a low-level update that does not go through this queryset, and
+    the database trigger in migration 0008 allows exactly that one change.)"""
+
+    def update(self, **kwargs):
+        raise AuditLogImmutable("Audit log entries cannot be edited.")
+
+    def delete(self):
+        raise AuditLogImmutable("Audit log entries cannot be deleted.")
+
+
 class AuditLog(models.Model):
     """An immutable record of a significant action taken in the system — login,
     project approval/publish, supplier verification, bid submission, award, etc.
@@ -77,12 +95,24 @@ class AuditLog(models.Model):
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    objects = AuditLogQuerySet.as_manager()
+
     class Meta:
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["-created_at"]),
             models.Index(fields=["entity_type", "entity_id"]),
         ]
+
+    def save(self, *args, **kwargs):
+        # Append-only: an existing entry can never be rewritten. Enforced again
+        # in PostgreSQL by a trigger (migration 0008) for anything below the ORM.
+        if self.pk is not None and not self._state.adding:
+            raise AuditLogImmutable("Audit log entries cannot be edited.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise AuditLogImmutable("Audit log entries cannot be deleted.")
 
     def __str__(self):
         who = self.user.username if self.user else "system"

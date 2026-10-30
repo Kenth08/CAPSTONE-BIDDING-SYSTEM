@@ -295,6 +295,8 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    # Audit-logs every 403 a signed-in user receives (accounts/exceptions.py).
+    'EXCEPTION_HANDLER': 'accounts.exceptions.audit_exception_handler',
     # Rate limiting (throttling) applied to EVERY endpoint:
     #  - anonymous callers are limited by IP, authenticated users by account.
     # The login route additionally enforces a much stricter 5-per-15-minutes

@@ -62,7 +62,7 @@ def send_verification_email(user):
             fail_silently=False,
         )
     except Exception:
-        logger.exception("Failed to send verification email to %s", user.email)
+        logger.exception("Failed to send verification email to user %s", user.pk)
         return False
     # True = the mail backend accepted it, so the resend button can report
     # a failure instead of always claiming success.
