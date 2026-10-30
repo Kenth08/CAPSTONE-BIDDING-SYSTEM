@@ -10,3 +10,8 @@ backend/venv/
 backend/db.sqlite3
 __pycache__/
 *.pyc
+
+# Database dumps from `manage.py backup_db`. They contain password hashes,
+# supplier TINs, addresses and phone numbers — never commit them.
+backups/
+*.json.enc
