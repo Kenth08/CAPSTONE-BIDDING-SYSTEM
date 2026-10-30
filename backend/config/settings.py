@@ -82,6 +82,9 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Security headers — see the "Security headers" block below.
+    'django.middleware.csp.ContentSecurityPolicyMiddleware',
+    'config.middleware.PermissionsPolicyMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -418,3 +421,30 @@ ADMIN_URL = f'{ADMIN_URL}/' if ADMIN_URL else ''
 # tests unless MFA_REQUIRED=True is set explicitly.
 MFA_REQUIRED = os.environ.get(
     'MFA_REQUIRED', 'False' if (DEBUG or RUNNING_TESTS) else 'True').lower() == 'true'
+
+# ── Security headers ─────────────────────────────────────────────────────────
+# This backend serves JSON, file downloads and the Django admin; the SPA's own
+# headers are set by Vercel (frontend/vercel.json). Django's defaults already
+# send X-Content-Type-Options: nosniff and Cross-Origin-Opener-Policy.
+X_FRAME_OPTIONS = 'DENY'
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+
+from django.utils.csp import CSP  # noqa: E402
+
+# Strict policy for everything Django renders. No inline scripts are allowed;
+# inline styles are, because the Django admin templates use style attributes.
+# File downloads set their own, stricter "default-src 'none'; sandbox" policy
+# (procurement/files.py), which this middleware leaves alone.
+SECURE_CSP = {
+    'default-src': [CSP.SELF],
+    'script-src': [CSP.SELF],
+    'style-src': [CSP.SELF, CSP.UNSAFE_INLINE],
+    'img-src': [CSP.SELF, 'data:'],
+    'font-src': [CSP.SELF],
+    'connect-src': [CSP.SELF],
+    'object-src': [CSP.NONE],
+    'base-uri': [CSP.NONE],
+    'form-action': [CSP.SELF],
+    'frame-ancestors': [CSP.NONE],
+}

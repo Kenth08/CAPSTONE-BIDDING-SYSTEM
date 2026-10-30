@@ -735,3 +735,31 @@ class EncryptedBackupTests(TestCase):
         err = io.StringIO()
         call_command("backup_db", "-o", self.out, stdout=io.StringIO(), stderr=err)
         self.assertIn("NOT encrypted", err.getvalue())
+
+
+# ── Security headers ─────────────────────────────────────────────────────────
+class SecurityHeaderTests(_MediaTestCase):
+    def test_api_responses_carry_the_security_headers(self):
+        res = self.client.get("/api/public/procurement/")
+        csp = res["Content-Security-Policy"]
+        for directive in ("default-src 'self'", "script-src 'self'", "object-src 'none'",
+                          "frame-ancestors 'none'", "base-uri 'none'"):
+            self.assertIn(directive, csp)
+        self.assertNotIn("unsafe-eval", csp)
+        self.assertEqual(res["X-Frame-Options"], "DENY")
+        self.assertEqual(res["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(res["Referrer-Policy"], "strict-origin-when-cross-origin")
+        self.assertIn("camera=()", res["Permissions-Policy"])
+
+    def test_file_downloads_keep_their_sandbox_policy(self):
+        supplier = make_supplier()
+        supplier.valid_id = dummy_pdf("id.pdf")
+        supplier.save()
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.get(f"/api/files/supplier/{supplier.pk}/valid_id/")
+        self.assertEqual(res["Content-Security-Policy"], "default-src 'none'; sandbox")
+
+    @override_settings(SECURE_HSTS_SECONDS=31536000, SECURE_HSTS_INCLUDE_SUBDOMAINS=True)
+    def test_hsts_is_one_year_with_subdomains_over_https(self):
+        res = self.client.get("/api/public/procurement/", secure=True)
+        self.assertEqual(res["Strict-Transport-Security"], "max-age=31536000; includeSubDomains")
