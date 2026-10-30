@@ -2311,13 +2311,15 @@ const BID_DECLARATIONS = [
 
 // Flatten every uploaded file on a bid into { label, name, url } rows.
 function collectBidFiles(b) {
-  const base = (url) => (url ? decodeURIComponent(url.split('/').pop()) : '')
+  // Stored names are random; the original upload name comes from the API.
+  const names = b.file_names || {}
+  const base = (_url, key) => names[key] || ''
   const out = []
-  if (b.quotation_document_url) out.push({ label: 'Quotation', name: base(b.quotation_document_url), url: b.quotation_document_url })
-  if (b.technical_document_url) out.push({ label: 'Technical Proposal', name: base(b.technical_document_url), url: b.technical_document_url })
-  if (b.supplier_product_image_url) out.push({ label: 'Product Image', name: base(b.supplier_product_image_url), url: b.supplier_product_image_url })
-  if (b.supplier_datasheet_url) out.push({ label: 'Datasheet', name: base(b.supplier_datasheet_url), url: b.supplier_datasheet_url })
-  if (b.supplier_compliance_doc_url) out.push({ label: 'Compliance', name: base(b.supplier_compliance_doc_url), url: b.supplier_compliance_doc_url })
+  if (b.quotation_document_url) out.push({ label: 'Quotation', name: base(b.quotation_document_url, 'quotation_document'), url: b.quotation_document_url })
+  if (b.technical_document_url) out.push({ label: 'Technical Proposal', name: base(b.technical_document_url, 'technical_document'), url: b.technical_document_url })
+  if (b.supplier_product_image_url) out.push({ label: 'Product Image', name: base(b.supplier_product_image_url, 'supplier_product_image'), url: b.supplier_product_image_url })
+  if (b.supplier_datasheet_url) out.push({ label: 'Datasheet', name: base(b.supplier_datasheet_url, 'supplier_datasheet'), url: b.supplier_datasheet_url })
+  if (b.supplier_compliance_doc_url) out.push({ label: 'Compliance', name: base(b.supplier_compliance_doc_url, 'supplier_compliance_doc'), url: b.supplier_compliance_doc_url })
   ;(b.attachments || []).forEach(a => out.push({ label: 'Other', name: a.file_name, url: a.url }))
   return out
 }

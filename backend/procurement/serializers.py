@@ -422,6 +422,8 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
     # can flag a single document on a bid without disqualifying the whole bid.
     documents = serializers.SerializerMethodField()
     anchors = serializers.SerializerMethodField()
+    # Stored names are random (uploads.py); this is what the UI shows.
+    file_names = serializers.JSONField(source="original_filenames", read_only=True)
 
     class Meta:
         model = Bid
@@ -442,6 +444,8 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             "document_reviews", "documents",
             # blockchain anchor trail for this bid
             "anchors",
+            # the uploader's original file names, {field: name}
+            "file_names",
             # declarations
             "terms_accepted", "interest_declared", "scm_declared",
             "accuracy_confirmed", "specification_confirmed",

@@ -4,18 +4,23 @@ Grouped by protection so a failure points straight at the guarantee that broke:
 public bidding IDs, the public blockchain trail, file access, uploads, storage,
 authentication and audit logging. Shared fixtures come from tests.py.
 """
+import io
 import re
 import shutil
 import tempfile
+import zipfile
 from datetime import timedelta
 from unittest import mock
 
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
+from PIL import Image
 
 from accounts.models import AuditLog
 
@@ -28,8 +33,10 @@ from .models import (
     BlockchainAnchor,
     FileDownloadToken,
     Project,
+    Supplier,
 )
 from .tests import dummy_pdf, make_admin, make_head, make_project, make_supplier
+from .validators import validate_bid_upload, validate_upload
 from .views import (
     PROJECT_CODE_ALPHABET,
     PROJECT_CODE_MAX_ATTEMPTS,
@@ -387,3 +394,139 @@ class PublicNoticeOfAwardTests(_MediaTestCase):
         for key in ("award_resolution", "notice_of_award", "notice_to_proceed"):
             res = self.client.get(f"/api/files/award/{self.award.pk}/{key}/")
             self.assertEqual(res.status_code, 200, key)
+
+
+# ── Uploads ──────────────────────────────────────────────────────────────────
+def _jpeg_with_gps():
+    """A real JPEG carrying a GPS block and a camera-owner tag."""
+    buf = io.BytesIO()
+    exif = Image.Exif()
+    exif[0x013B] = "Juan Dela Cruz"                       # Artist
+    exif[0x8825] = {1: "N", 2: (14.0, 35.0, 0.0)}        # GPS IFD
+    Image.new("RGB", (8, 8), "red").save(buf, "JPEG", exif=exif)
+    return buf.getvalue()
+
+
+def _docx(extra=None):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/document.xml", "<w:document/>")
+        for name in extra or ():
+            z.writestr(name, "x")
+    return buf.getvalue()
+
+
+class UploadValidationTests(TestCase):
+    def _check(self, validator, name, data):
+        try:
+            validator(SimpleUploadedFile(name, data))
+            return "accepted"
+        except ValidationError:
+            return "rejected"
+
+    def test_dangerous_types_and_double_extensions_are_rejected(self):
+        for validator, name, data in [
+            (validate_upload, "x.pdf.exe", b"MZ"),
+            (validate_upload, "x.svg", b"<svg onload=alert(1)>"),
+            (validate_upload, "x.html", b"<script>"),
+            (validate_upload, "invoice.exe.pdf", b"%PDF-1.4"),
+            (validate_upload, "photo.html.png", b"\x89PNG\r\n\x1a\n"),
+            (validate_bid_upload, "quote.js.docx", _docx()),
+        ]:
+            self.assertEqual(self._check(validator, name, data), "rejected", name)
+
+    def test_ordinary_dotted_names_are_fine(self):
+        self.assertEqual(self._check(validate_upload, "Q3.2026.report.pdf", b"%PDF-1.4"), "accepted")
+
+    def test_fake_office_files_are_rejected(self):
+        self.assertEqual(self._check(validate_bid_upload, "x.docx", b"MZ renamed exe"), "rejected")
+        self.assertEqual(self._check(validate_bid_upload, "x.xlsx", b"<html><script>"), "rejected")
+        self.assertEqual(self._check(validate_bid_upload, "x.doc", b"<html>"), "rejected")
+        self.assertEqual(self._check(validate_bid_upload, "x.xlsx", _docx()), "rejected")   # word/, not xl/
+
+    def test_macro_documents_are_rejected(self):
+        self.assertEqual(self._check(validate_bid_upload, "m.docx", _docx(["word/vbaProject.bin"])), "rejected")
+
+    def test_genuine_office_file_is_accepted(self):
+        self.assertEqual(self._check(validate_bid_upload, "quotation.docx", _docx()), "accepted")
+
+    def test_image_with_a_valid_header_but_garbage_body_is_rejected(self):
+        self.assertEqual(self._check(validate_upload, "x.png", b"\x89PNG\r\n\x1a\n<script>"), "rejected")
+
+    def test_oversized_files_are_rejected(self):
+        big = b"%PDF-1.4" + b"0" * (5 * 1024 * 1024)
+        self.assertEqual(self._check(validate_upload, "big.pdf", big), "rejected")
+
+
+class StoredFileNameTests(_MediaTestCase):
+    def test_new_uploads_get_random_names_and_keep_the_original_in_the_db(self):
+        supplier = make_supplier()
+        supplier.valid_id = dummy_pdf("Juan_Dela_Cruz_Passport.pdf")
+        supplier.save()
+        self.assertRegex(supplier.valid_id.name, r"^supplier_docs/[0-9a-f]{32}\.pdf$")
+        self.assertNotIn("Juan", supplier.valid_id.name)
+        self.assertNotIn(str(supplier.pk) + "/", supplier.valid_id.name)
+        supplier.refresh_from_db()
+        self.assertEqual(supplier.original_filenames["valid_id"], "Juan_Dela_Cruz_Passport.pdf")
+
+    def test_bid_documents_no_longer_use_guessable_folders(self):
+        bid = Bid.objects.create(project=make_project(), supplier=make_supplier(), amount=1,
+                                 quotation_document=dummy_pdf("My Quotation.pdf"))
+        self.assertRegex(bid.quotation_document.name, r"^bid_documents/[0-9a-f]{32}\.pdf$")
+        self.assertEqual(bid.original_filenames["quotation_document"], "My_Quotation.pdf")
+
+    def test_download_is_offered_under_the_original_name(self):
+        supplier = make_supplier()
+        supplier.valid_id = dummy_pdf("Passport.pdf")
+        supplier.save()
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.get(f"/api/files/supplier/{supplier.pk}/valid_id/")
+        self.assertIn('filename="Passport.pdf"', res["Content-Disposition"])
+
+    def test_update_fields_saves_still_record_the_name(self):
+        supplier = make_supplier()
+        supplier.mayors_permit = dummy_pdf("permit.pdf")
+        supplier.save(update_fields=["mayors_permit"])
+        supplier.refresh_from_db()
+        self.assertEqual(supplier.original_filenames.get("mayors_permit"), "permit.pdf")
+
+    def test_existing_files_keep_their_stored_name(self):
+        supplier = make_supplier()
+        Supplier.objects.filter(pk=supplier.pk).update(valid_id="supplier_docs/7/legacy_ab12cd34.pdf")
+        supplier.refresh_from_db()
+        supplier.company = "Renamed Co."
+        supplier.save()
+        supplier.refresh_from_db()
+        self.assertEqual(supplier.valid_id.name, "supplier_docs/7/legacy_ab12cd34.pdf")
+
+
+class ImageMetadataTests(_MediaTestCase):
+    def test_gps_and_owner_tags_are_removed_from_uploaded_images(self):
+        supplier = make_supplier()
+        supplier.valid_id = SimpleUploadedFile("id.jpg", _jpeg_with_gps(), content_type="image/jpeg")
+        supplier.save()
+        with Image.open(supplier.valid_id.path) as img:
+            exif = img.getexif()
+            self.assertNotIn(0x8825, exif)
+            self.assertNotIn(0x013B, exif)
+            self.assertEqual(img.size, (8, 8))
+
+    def test_product_images_are_stripped_too(self):
+        project = make_project()
+        supplier = make_supplier()
+        bid = Bid.objects.create(project=project, supplier=supplier, amount=1)
+        from .views import save_product_images
+        upload = SimpleUploadedFile("p.jpg", _jpeg_with_gps(), content_type="image/jpeg")
+        save_product_images(bid, [(upload, ".jpg", "")])
+        with Image.open(bid.product_images.get().image.path) as img:
+            self.assertNotIn(0x8825, img.getexif())
+
+    def test_anchored_hash_is_of_the_cleaned_file_and_still_verifies(self):
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        project.purchase_request = dummy_pdf("pr.pdf")
+        project.approved_budget_document = SimpleUploadedFile(
+            "abc.jpg", _jpeg_with_gps(), content_type="image/jpeg")
+        project.save()
+        anchor = anchor_project(project, BlockchainAnchor.Stage.HEAD_APPROVED)
+        self.assertEqual(verify_anchor(anchor, deep=True)["status"], "match")

@@ -1432,8 +1432,9 @@ class BidProductImageTests(APITestCase):
 
         image = BidProductImage.objects.get(bid=self.bid)
         self.assertEqual(image.caption, "Brand X Model Y, front view")
-        # Stored under a random name — nothing of the uploaded filename survives.
-        self.assertRegex(image.image.name, r"^bid_documents/product_images/\d+/[0-9a-f]{32}\.png$")
+        # Stored under a random name — nothing of the uploaded filename, and no
+        # bid id, survives in the path.
+        self.assertRegex(image.image.name, r"^bid_documents/product_images/[0-9a-f]{32}\.png$")
         self.assertEqual(len(res.data["product_images"]), 1)
         self.assertIn("/api/files/bidimage/", res.data["product_images"][0]["url"])
         self.assertTrue(AuditLog.objects.filter(action="bid.image_uploaded", entity_id=str(self.bid.id)).exists())

@@ -1,10 +1,8 @@
-import os
-import uuid
 
 from django.conf import settings
 from django.db import models
-from django.utils.text import get_valid_filename
 
+from .uploads import SecureUploadsMixin, random_storage_name
 from .validators import validate_bid_upload, validate_image_upload, validate_upload
 
 
@@ -89,59 +87,43 @@ PROCUREMENT_DOCUMENT_KEYS = [key for key, _, _ in PROCUREMENT_DOCUMENT_FIELDS]
 
 
 def procurement_doc_path(instance, filename):
-    """Store each procurement document under a per-project folder with a short,
-    sanitized, unique name."""
-    base, ext = os.path.splitext(filename)
-    base = get_valid_filename(base)[:40] or "doc"
-    ext = ext.lower()[:10]
-    unique = uuid.uuid4().hex[:8]
-    return f"procurement_docs/{instance.pk or 'new'}/{base}_{unique}{ext}"
+    """Procurement documents (PR, ToR, specs, ABC, criteria). Random name only; see procurement/uploads.py."""
+    return random_storage_name("procurement_docs", filename)
 
 
 def procurement_image_path(instance, filename):
-    """Store an optional procurement reference image under procurement_images/
-    with a short, sanitized, unique name."""
-    base, ext = os.path.splitext(filename)
-    base = get_valid_filename(base)[:40] or "image"
-    ext = ext.lower()[:10]
-    unique = uuid.uuid4().hex[:8]
-    return f"procurement_images/{base}_{unique}{ext}"
+    """Optional procurement reference image. Random name only; see procurement/uploads.py."""
+    return random_storage_name("procurement_images", filename)
 
 
 def award_doc_path(instance, filename):
-    """Store each post-award document under a per-award folder with a short,
-    sanitized, unique name (same convention as procurement_doc_path)."""
-    base, ext = os.path.splitext(filename)
-    base = get_valid_filename(base)[:40] or "doc"
-    ext = ext.lower()[:10]
-    unique = uuid.uuid4().hex[:8]
-    return f"award_docs/{instance.pk or 'new'}/{base}_{unique}{ext}"
+    """Post-award documents (BAC Resolution, NOA, NTP). Random name only; see procurement/uploads.py."""
+    return random_storage_name("award_docs", filename)
 
 
 def bid_product_image_path(instance, filename):
-    """Store a bid product image under a per-bid folder with a random name.
+    """Bid product photos. Random name only; see procurement/uploads.py."""
+    return random_storage_name("bid_documents/product_images", filename)
 
-    The uploaded filename is ignored entirely — only the extension survives, and
-    the view sets that from the format Pillow actually detected (see
-    validate_product_image), so a stored name never carries anything the
-    supplier typed."""
-    ext = os.path.splitext(filename)[1].lower()[:10]
-    return f"bid_documents/product_images/{instance.bid_id or 'new'}/{uuid.uuid4().hex}{ext}"
+
+def bid_document_path(instance, filename):
+    """Bid documents and attachments (quotation, technical proposal, datasheet,
+    compliance document, other attachments). Random name only."""
+    return random_storage_name("bid_documents", filename)
 
 
 def supplier_doc_path(instance, filename):
-    """Store each supplier's document under a per-supplier folder with a short,
-    sanitized, unique name (long original filenames would overflow the column
-    and unsafe characters are stripped)."""
-    base, ext = os.path.splitext(filename)
-    base = get_valid_filename(base)[:40] or "doc"
-    ext = ext.lower()[:10]
-    unique = uuid.uuid4().hex[:8]
-    return f"supplier_docs/{instance.pk or 'new'}/{base}_{unique}{ext}"
+    """Supplier registration documents. Random name only; see procurement/uploads.py."""
+    return random_storage_name("supplier_docs", filename)
 
 
-class Supplier(models.Model):
+class Supplier(SecureUploadsMixin, models.Model):
     """A supplier company profile, linked to a user account."""
+
+    # The uploader's original file names, {field: name}. Stored names are
+    # random (procurement/uploads.py), so this is what downloads are named.
+    # db_default lets the previous release keep inserting rows mid-deploy.
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
@@ -259,15 +241,11 @@ class Supplier(models.Model):
 
 
 def supplier_category_doc_path(instance, filename):
-    """Same folder and naming as the base supplier documents."""
-    base, ext = os.path.splitext(filename)
-    base = get_valid_filename(base)[:40] or "doc"
-    ext = ext.lower()[:10]
-    unique = uuid.uuid4().hex[:8]
-    return f"supplier_docs/{instance.supplier_id or 'new'}/{base}_{unique}{ext}"
+    """Supplier category licenses. Random name only; see procurement/uploads.py."""
+    return random_storage_name("supplier_docs", filename)
 
 
-class SupplierCategoryDocument(models.Model):
+class SupplierCategoryDocument(SecureUploadsMixin, models.Model):
     """An extra license a business category requires (e.g. an FDA License to
     Operate for Medical Supplies), on top of the 10 base documents that stay as
     FileFields on Supplier.
@@ -281,6 +259,11 @@ class SupplierCategoryDocument(models.Model):
     A separate table rather than new Supplier columns: on deploy, migrate runs
     while the previous release is still serving, and a new table is invisible
     to it — nothing it inserts can fail."""
+
+    # The uploader's original file names, {field: name}. Stored names are
+    # random (procurement/uploads.py), so this is what downloads are named.
+    # db_default lets the previous release keep inserting rows mid-deploy.
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
 
     supplier = models.ForeignKey(
         Supplier, on_delete=models.CASCADE, related_name="category_documents")
@@ -301,11 +284,16 @@ class SupplierCategoryDocument(models.Model):
         return f"{self.supplier_id} · {self.key}"
 
 
-class Project(models.Model):
+class Project(SecureUploadsMixin, models.Model):
     """A procurement project. Flows: draft -> pending_head -> approved ->
     published -> awarded / closed; or pending_head -> rejected (by the Head);
     or pending_head -> needs_revision -> pending_head (Head flags a specific
     document, Admin fixes it, it returns to the Head's queue)."""
+
+    # The uploader's original file names, {field: name}. Stored names are
+    # random (procurement/uploads.py), so this is what downloads are named.
+    # db_default lets the previous release keep inserting rows mid-deploy.
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
@@ -407,8 +395,13 @@ class Project(models.Model):
         return f"{self.code} - {self.name}"
 
 
-class Bid(models.Model):
+class Bid(SecureUploadsMixin, models.Model):
     """A supplier's bid on a project."""
+
+    # The uploader's original file names, {field: name}. Stored names are
+    # random (procurement/uploads.py), so this is what downloads are named.
+    # db_default lets the previous release keep inserting rows mid-deploy.
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Status(models.TextChoices):
         UNDER_REVIEW = "under_review", "Under Review"
@@ -442,23 +435,23 @@ class Bid(models.Model):
     model_number = models.CharField(max_length=255, blank=True, null=True)
     warranty_period = models.CharField(max_length=100, blank=True, null=True)
     supplier_product_image = models.FileField(
-        upload_to="bid_documents/product_images/", validators=[validate_bid_upload],
+        upload_to=bid_document_path, validators=[validate_bid_upload],
         max_length=255, blank=True, null=True)
     supplier_datasheet = models.FileField(
-        upload_to="bid_documents/supplier_datasheets/", validators=[validate_bid_upload],
+        upload_to=bid_document_path, validators=[validate_bid_upload],
         max_length=255, blank=True, null=True)
     supplier_compliance_doc = models.FileField(
-        upload_to="bid_documents/compliance_docs/", validators=[validate_bid_upload],
+        upload_to=bid_document_path, validators=[validate_bid_upload],
         max_length=255, blank=True, null=True)
 
     # ── Supporting documents ──────────────────────────────────────────────────
     # Quotation is required (enforced in the view); kept nullable at the model
     # level so the migration doesn't fail on existing rows.
     quotation_document = models.FileField(
-        upload_to="bid_documents/quotations/", validators=[validate_bid_upload],
+        upload_to=bid_document_path, validators=[validate_bid_upload],
         max_length=255, blank=True, null=True)
     technical_document = models.FileField(
-        upload_to="bid_documents/technical/", validators=[validate_bid_upload],
+        upload_to=bid_document_path, validators=[validate_bid_upload],
         max_length=255, blank=True, null=True)
 
     # ── Declarations & compliance (RA 9184). Enforced True in the view ────────
@@ -480,13 +473,13 @@ class Bid(models.Model):
         return f"{self.supplier.company} -> {self.project.name} ({self.amount})"
 
 
-class BidAttachment(models.Model):
+class BidAttachment(SecureUploadsMixin, models.Model):
     """An extra "Other Attachment" file on a bid — a supplier may upload several,
     each stored as its own row so the count is unbounded."""
 
     bid = models.ForeignKey(Bid, on_delete=models.CASCADE, related_name="attachments")
     file = models.FileField(
-        upload_to="bid_documents/attachments/", validators=[validate_bid_upload], max_length=255)
+        upload_to=bid_document_path, validators=[validate_bid_upload], max_length=255)
     file_name = models.CharField(max_length=255)
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
@@ -497,7 +490,7 @@ class BidAttachment(models.Model):
         return self.file_name
 
 
-class BidProductImage(models.Model):
+class BidProductImage(SecureUploadsMixin, models.Model):
     """A photo of the product a supplier is offering, attached to their bid.
 
     Up to MAX_BID_PRODUCT_IMAGES per bid, each with an optional caption. Kept in
@@ -521,8 +514,13 @@ class BidProductImage(models.Model):
 MAX_BID_PRODUCT_IMAGES = 5
 
 
-class Award(models.Model):
+class Award(SecureUploadsMixin, models.Model):
     """A finalized award of a project to a supplier."""
+
+    # The uploader's original file names, {field: name}. Stored names are
+    # random (procurement/uploads.py), so this is what downloads are named.
+    # db_default lets the previous release keep inserting rows mid-deploy.
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Status(models.TextChoices):
         WON = "won", "Won"

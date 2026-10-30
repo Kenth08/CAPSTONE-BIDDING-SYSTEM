@@ -87,6 +87,7 @@ from .serializers import (
     SupplierMeUpdateSerializer,
     clean_business_types,
 )
+from .uploads import strip_image_metadata
 from .validators import validate_bid_upload, validate_product_image, validate_upload
 
 # Bid amount is a DecimalField(max_digits=14, decimal_places=2) — keep the
@@ -150,7 +151,11 @@ def save_product_images(bid, parsed):
     bid_product_image_path); only the Pillow-detected extension is kept."""
     for uploaded, ext, caption in parsed:
         image = BidProductImage(bid=bid, caption=caption)
-        image.image.save(f"image{ext}", uploaded, save=True)
+        # Re-encoded without EXIF/GPS before storage (see uploads.py). Saved
+        # through FieldFile.save, which the model-level cleaning doesn't see.
+        uploaded.seek(0)
+        cleaned = strip_image_metadata(uploaded.read(), ext)
+        image.image.save(f"image{ext}", ContentFile(cleaned), save=True)
 
 
 def delete_files_after_commit(images):

@@ -74,6 +74,7 @@ from .models import (
     Supplier,
     SupplierCategoryDocument,
 )
+from .uploads import display_filename
 
 logger = logging.getLogger(__name__)
 
@@ -233,10 +234,14 @@ def redeem_download_token(token, kind, pk, field):
     return grant.user
 
 
-def display_name(field_file):
-    """The file name offered to the person downloading it: the original upload
-    name when one was recorded, otherwise the stored name's basename."""
-    return os.path.basename(getattr(field_file, "name", "") or "") or "document"
+def display_name(record, field, field_file):
+    """The file name offered to the person downloading it: the uploader's
+    original name when one was recorded (stored names are random UUIDs, see
+    uploads.py), otherwise the stored name's basename for older files."""
+    recorded = (getattr(record, "original_filenames", None) or {}).get(field)
+    if not recorded and isinstance(record, BidAttachment):
+        recorded = record.file_name
+    return display_filename(recorded or os.path.basename(getattr(field_file, "name", "") or ""))
 
 
 def _deny(request, kind, pk, field, user=None, reason="not permitted"):
@@ -266,7 +271,7 @@ def serve_file(request, kind, record, field, *, user=None):
                        kind, record.pk, field)
         raise NotFound(MISSING_FILE_DETAIL)
 
-    filename = display_name(file_field)
+    filename = display_name(record, field, file_field)
     log_action(
         request, "file.downloaded", user=user,
         entity_type=kind, entity_id=record.pk,
