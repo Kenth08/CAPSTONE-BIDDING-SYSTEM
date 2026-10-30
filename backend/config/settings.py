@@ -181,6 +181,12 @@ else:
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
+# Tests create and log in hundreds of users; PBKDF2's deliberate slowness made
+# the suite take over ten minutes. A fast hasher is used ONLY under
+# `manage.py test` — real accounts are always hashed with Django's default.
+if RUNNING_TESTS:
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',

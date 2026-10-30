@@ -1,24 +1,24 @@
 asgiref==3.11.1
-Django==6.0.6
+Django==6.0.9
 django-cors-headers==4.9.0
-djangorestframework==3.17.1
+djangorestframework==3.18.3
 djangorestframework_simplejwt==5.5.1
-PyJWT==2.13.0
-sqlparse==0.5.5
+PyJWT==2.15.1
+sqlparse==0.6.0
 tzdata==2026.2
 psycopg2-binary==2.9.10
-python-dotenv==1.0.1
+python-dotenv==1.2.4
 gunicorn==23.0.0
 whitenoise==6.8.2
 django-storages==1.14.6
 boto3==1.43.36
 # Generates the official post-award documents (BAC Resolution, NOA, NTP) from
 # the award record — see procurement/documents.py.
-fpdf2==2.8.7
+fpdf2==2.9.0
 
 # Decodes bid product images to verify their real format (validators.py).
 # Already installed as an fpdf2 dependency; pinned here because we now use it directly.
-Pillow==12.3.0
+Pillow==13.0.0
 
 # Server-side blockchain signing (BLOCKCHAIN_SERVER_SIGNING=True): the backend
 # submits anchor transactions itself, so no MetaMask prompt ever appears — for
@@ -26,3 +26,9 @@ Pillow==12.3.0
 # so the app still runs normally if this is ever removed; anchoring just falls
 # back to the browser/MetaMask path.
 web3==7.6.0
+
+# Security floors for packages web3 pulls in transitively (pip-audit findings,
+# 2026-10). Not used directly; pinned only so an install can't resolve a
+# known-vulnerable version.
+aiohttp>=3.14.4
+multidict>=6.9.1
