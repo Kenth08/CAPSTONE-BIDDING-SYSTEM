@@ -81,3 +81,21 @@ class Command(BaseCommand):
             f"{verb} {counts['encrypt']}, already current {counts['skip']}, "
             f"missing from storage {counts['missing']}."
             + ("" if apply else " Dry run — re-run with --apply to write.")))
+        self._rotate_mfa_secrets(apply)
+
+    def _rotate_mfa_secrets(self, apply):
+        """TOTP secrets (accounts/mfa.py) use the same key. Re-encrypt them too,
+        or removing the old key after a rotation would break every Admin/Head
+        sign-in."""
+        from django.contrib.auth import get_user_model
+
+        changed = 0
+        for user in get_user_model().objects.exclude(mfa_secret="").iterator():
+            new = reencrypt_bytes(user.mfa_secret.encode("ascii"))
+            if new is None:
+                continue
+            changed += 1
+            if apply:
+                user.mfa_secret = new.decode("ascii")
+                user.save(update_fields=["mfa_secret"])
+        self.stdout.write(f"{'Re-encrypted' if apply else 'Would re-encrypt'} {changed} two-factor secret(s).")

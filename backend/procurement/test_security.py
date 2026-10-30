@@ -625,6 +625,19 @@ class SupplierDocumentEncryptionTests(_MediaTestCase):
             Fernet(KEY_A.encode()).decrypt(token)
 
 
+@override_settings(FILE_ENCRYPTION_KEY=KEY_A, FILE_ENCRYPTION_OLD_KEYS="")
+class MfaSecretRotationTests(TestCase):
+    def test_rotation_reencrypts_totp_secrets_so_the_old_key_can_be_dropped(self):
+        from accounts import mfa
+        user = make_head()
+        secret, _, _ = mfa.start_enrollment(user)
+        with override_settings(FILE_ENCRYPTION_KEY=KEY_B, FILE_ENCRYPTION_OLD_KEYS=KEY_A):
+            call_command("encrypt_supplier_documents", "--apply", stdout=io.StringIO())
+        with override_settings(FILE_ENCRYPTION_KEY=KEY_B, FILE_ENCRYPTION_OLD_KEYS=""):
+            user.refresh_from_db()
+            self.assertEqual(mfa._read_secret(user), secret)
+
+
 class StorageSafetyCheckTests(TestCase):
     S3 = {"default": {"BACKEND": "storages.backends.s3.S3Storage"},
           "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}

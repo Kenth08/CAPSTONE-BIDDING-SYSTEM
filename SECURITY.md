@@ -134,7 +134,7 @@ only in Render's environment and never in git or `VITE_*` variables.
 |---|---|
 | Unlock an account | `python manage.py unlock_account <username-or-email>` |
 | Reset a lost authenticator | `python manage.py reset_mfa <username-or-email>`, after checking the person's identity |
-| Encrypt old supplier documents / finish a key rotation | `python manage.py encrypt_supplier_documents` (dry run), then add `--apply` |
+| Encrypt old supplier documents / finish a key rotation (also re-encrypts two-factor secrets) | `python manage.py encrypt_supplier_documents` (dry run), then add `--apply` |
 | Rotate the encryption key | Move the current key to `FILE_ENCRYPTION_OLD_KEYS`, set a new `FILE_ENCRYPTION_KEY`, deploy, run the command above with `--apply`, then remove the old key |
 | Copy files left on a local disk into the bucket | `python manage.py migrate_media_to_bucket --source <dir>` (dry run), then add `--apply`. Byte-for-byte and SHA-256-checked. |
 | Back up the database | `python manage.py backup_db` writes an encrypted `.json.enc`. Restore with `backup_db --decrypt <file>`, then `loaddata`. `backups/` is gitignored. |
