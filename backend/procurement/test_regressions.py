@@ -1398,7 +1398,7 @@ class SupplierCategoryMigrationTests(TransactionTestCase):
                 "representative_name, business_types, mayors_permit_expiry, tax_clearance_expiry, "
                 "financial_statement_year, track_record_description, declaration_accepted, admin_notes, "
                 "document_reviews, reviewed_at) VALUES ('Old Release Co', 'c', '', 'draft', "
-                "'waiting_admin_approval', 0, '2026-10-20', '', '', '', '', '[]', NULL, NULL, NULL, '', 0, "
+                "'waiting_admin_approval', FALSE, '2026-10-20', '', '', '', '', '[]', NULL, NULL, NULL, '', FALSE, "
                 "'', '{}', NULL)")
         self.assertEqual(NewSupplier.objects.get(company="Old Release Co").category_request_status, "")
 

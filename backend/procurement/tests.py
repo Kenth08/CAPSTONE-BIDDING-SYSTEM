@@ -9,9 +9,11 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.core import mail
 from django.core.cache import cache
+from django.core.signals import request_finished
 from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.files.storage import FileSystemStorage, default_storage
+from django.db import close_old_connections
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
@@ -1531,7 +1533,16 @@ class BidProductImageTests(APITestCase):
             if expected == 200:
                 self.assertEqual(res["Content-Type"], "image/png")
                 b"".join(res.streaming_content)
-                res.close()
+                # Release the file handle so tearDown can delete it on Windows.
+                # res.close() fires request_finished, whose close_old_connections
+                # handler would close the test's DB connection — harmless on
+                # SQLite, fatal for every later test on PostgreSQL — so it is
+                # detached for the close, exactly as Django's test client does.
+                request_finished.disconnect(close_old_connections)
+                try:
+                    res.close()
+                finally:
+                    request_finished.connect(close_old_connections)
         self.client.force_authenticate(user=None)
         self.assertEqual(self.client.get(path).status_code, 404)
 

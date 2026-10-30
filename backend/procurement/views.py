@@ -1298,7 +1298,9 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             serializer.is_valid(raise_exception=True)
 
             with transaction.atomic():
-                supplier = Supplier.objects.select_for_update().select_related("user").get(pk=supplier.pk)
+                # of=("self",): lock only the supplier row. Supplier.user is nullable, so
+                # the join is an OUTER join, and PostgreSQL refuses FOR UPDATE on that.
+                supplier = Supplier.objects.select_for_update(of=("self",)).select_related("user").get(pk=supplier.pk)
                 full_name = request.data.get("full_name")
                 if full_name is not None and supplier.user_id:
                     supplier.user.full_name = str(full_name)[:150]
@@ -1459,7 +1461,9 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     def _pending_category_request(self, pk):
         """Lock the supplier and return (supplier, None), or (None, 400 Response)
         when there is no pending request to decide on."""
-        supplier = Supplier.objects.select_for_update().select_related("user").get(pk=pk)
+        # of=("self",): Supplier.user is nullable (outer join), and PostgreSQL
+        # refuses FOR UPDATE on the nullable side of an outer join.
+        supplier = Supplier.objects.select_for_update(of=("self",)).select_related("user").get(pk=pk)
         if supplier.category_request_status != Supplier.CategoryRequest.PENDING:
             return None, Response(
                 {"detail": f"{supplier.company} has no pending category change request."},
