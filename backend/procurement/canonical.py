@@ -10,6 +10,7 @@ the backend and the browser verifier.
 """
 import hashlib
 import json
+import re
 
 
 def hash_payload(payload):
@@ -32,22 +33,26 @@ def hash_payload(payload):
 # refuses to hash (receipt.js canonicalJson).
 MAX_SAFE_INTEGER = 2 ** 53 - 1
 
+_KEY = re.compile(r"[a-z0-9_]+")
+
 
 class NonCanonicalPayload(ValueError):
     """A payload holds a value the canonical encoding does not allow."""
 
 
 def validate_canonical(value, path="payload"):
-    """Raise NonCanonicalPayload unless `value` is only objects with ASCII string
-    keys, strings and exact integers. No null (absent is ""), no booleans, no
-    floats, no arrays: a shape that needs one must be named by its own version."""
+    """Raise NonCanonicalPayload unless `value` is only objects with [a-z0-9_]
+    keys, strings and whole numbers from 0 to 2^53 - 1. No null (absent is ""),
+    no booleans, no floats, no arrays: a shape that needs one must be named by
+    its own version. Errors name the path, never a value: this also checks
+    objects that hold salts."""
     if isinstance(value, dict):
         for key, item in value.items():
-            if not isinstance(key, str) or not key.isascii():
-                raise NonCanonicalPayload(f"{path}: key {key!r} is not an ASCII string")
+            if not isinstance(key, str) or not _KEY.fullmatch(key):
+                raise NonCanonicalPayload(f"{path}: a key is not [a-z0-9_]")
             validate_canonical(item, f"{path}.{key}")
     elif type(value) is int:  # noqa: E721 — bool must not pass
-        if abs(value) > MAX_SAFE_INTEGER:
-            raise NonCanonicalPayload(f"{path}: integer too large to reproduce in a browser")
+        if not 0 <= value <= MAX_SAFE_INTEGER:
+            raise NonCanonicalPayload(f"{path}: integer outside 0 to 2^53 - 1")
     elif not isinstance(value, str):
         raise NonCanonicalPayload(f"{path}: {type(value).__name__} values are not allowed")

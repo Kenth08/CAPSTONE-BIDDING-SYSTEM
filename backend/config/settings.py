@@ -277,6 +277,12 @@ if AWS_STORAGE_BUCKET_NAME:
 FILE_ENCRYPTION_KEY = os.environ.get('FILE_ENCRYPTION_KEY', '')
 FILE_ENCRYPTION_OLD_KEYS = os.environ.get('FILE_ENCRYPTION_OLD_KEYS', '')
 
+# Encrypts commitment openings (procurement/openings.py). Deliberately separate
+# from FILE_ENCRYPTION_KEY: a leak of one must not expose the other. Old keys are
+# comma-separated and decrypt only. Never commit these values.
+COMMITMENT_KEY = os.environ.get('COMMITMENT_KEY', '')
+COMMITMENT_OLD_KEYS = os.environ.get('COMMITMENT_OLD_KEYS', '')
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Custom user model

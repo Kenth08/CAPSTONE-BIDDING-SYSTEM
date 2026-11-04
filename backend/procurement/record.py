@@ -308,8 +308,16 @@ def build_record(project, role, supplier, request, *, deep=False):
 PUBLIC_STATUSES = (Project.Status.PUBLISHED, Project.Status.CLOSED, Project.Status.AWARDED)
 
 
+def public_award_date(project, award):
+    """The award date the public sees: a date, never the exact time. Taken as a
+    Philippine date, like every other date in the system, so an award at 01:30 in
+    Manila isn't shown as the day before. The exact time stays in
+    Project.awarded_at for the private commitment and for signed-in viewers."""
+    return timezone.localdate(project.awarded_at) if project.awarded_at else award.awarded_at
+
+
 def public_record(project):
-    """Decision D2: the public sees WHO won and WHEN — no contract amount, no
+    """Decision D2: the public sees WHO won and on what DATE — no contract amount, no
     bid count after award, no bids, no payloads. The ABC and the deadline are
     already public on the results page. The hash-only trail (with its
     verification) is served by PublicAnchorTrailView alongside this."""
@@ -317,7 +325,7 @@ def public_record(project):
              .filter(project=project, status=Award.Status.WON).first())
     if project.status == Project.Status.AWARDED and award:
         result = {"state": "awarded", "winner": award.supplier.company,
-                  "awarded_at": project.awarded_at or award.awarded_at}
+                  "awarded_at": public_award_date(project, award)}
     elif project.status == Project.Status.CLOSED:
         result = {"state": "closed", "detail": "Bidding closed — no award has been made yet."}
     else:

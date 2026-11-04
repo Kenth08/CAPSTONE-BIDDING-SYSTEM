@@ -31,6 +31,7 @@ from django.utils import timezone
 from . import payload_v2, payload_v3
 from .canonical import hash_payload  # noqa: F401 — re-exported: `from .blockchain import hash_payload`
 from .models import AWARD_DOCUMENT_ISSUED_FIELDS, BlockchainAnchor
+from .openings import commitment_key_problems
 from .project_documents import document_manifest
 
 logger = logging.getLogger(__name__)
@@ -205,12 +206,14 @@ PAYLOAD_V3_ENABLED = _env_flag("PAYLOAD_V3_ENABLED", "False")
 
 def check_v3_gate(enabled):
     """Refuse to start with v3 writing on. Run from ProcurementConfig.ready(), so
-    it fires at process start and on `migrate`, not at the first request."""
+    it fires at process start and on `migrate`, not at the first request. A valid
+    COMMITMENT_KEY does not lift the refusal; its absence is reported as well."""
     if enabled:
-        raise ImproperlyConfigured(
+        raise ImproperlyConfigured(" ".join([
             "PAYLOAD_V3_ENABLED is on, but v3 writing is not available yet: anchors "
-            "written now could not be verified or corrected. Unset it."
-        )
+            "written now could not be verified or corrected. Unset it.",
+            *commitment_key_problems(),
+        ]))
 
 
 class UnsupportedPayload(Exception):

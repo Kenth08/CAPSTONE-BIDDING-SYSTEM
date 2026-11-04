@@ -16,6 +16,15 @@ class ProcurementConfig(AppConfig):
 
         blockchain.check_v3_gate(blockchain.PAYLOAD_V3_ENABLED)
 
+        from .openings import commitment_key_fingerprints, commitment_key_problems
+
+        # Fingerprints only. With v3 off nothing uses these keys, so a bad value
+        # is reported rather than stopping the release.
+        for message in commitment_key_problems(required=False):
+            logger.error("COMMITMENT KEY: %s", message)
+        for name, fingerprint in commitment_key_fingerprints():
+            logger.warning("%s fingerprint: %s", name, fingerprint)
+
         for cid, message, hint in storage_problems():
             logger.error("UNSAFE FILE STORAGE (%s): %s %s", cid, message, hint)
         for cid, message, hint in encryption_problems():

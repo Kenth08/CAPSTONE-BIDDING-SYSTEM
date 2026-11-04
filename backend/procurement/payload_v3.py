@@ -17,13 +17,15 @@ Every payload is validated before it is returned: a value outside this exact
 schema must never reach the hash, because the chain can't be corrected later.
 """
 import re
+from datetime import datetime
 from datetime import timezone as dt_timezone
 
 from .canonical import NonCanonicalPayload, validate_canonical
 
 VERSION = 3
 
-# Domain tags, one per payload type. Only project-stage/3 is built so far.
+# Domain tags, one per payload type. award-document/3 is not built yet: which of
+# its fields are public depends on Decision A.
 KIND_PROJECT_STAGE = "project-stage/3"
 KIND_EVALUATION = "evaluation/3"
 KIND_AWARD_DOCUMENT = "award-document/3"
@@ -61,12 +63,34 @@ _PROJECT_STAGE_KEYS = frozenset({
 })
 _ENTRY_KEYS = frozenset({"state", "sha256", "version"})
 
+# ── DECISION A ── the award fields hidden inside `private_commitment`.
+# PROVISIONAL, a WORKING ASSUMPTION: the contract amount is public under the working
+# policy (SECURITY.md, "Award disclosure policy"), so it is not here. This stays
+# provisional until that policy is reflected in this builder, the public API and the
+# verifier. If the amount becomes private, "amount" joins this list. Nothing may be
+# anchored with it until that is settled.
+AWARD_PRIVATE_FIELDS = ("award_id", "bid_id", "supplier_id", "status", "awarded_at")
+
+_SALT = re.compile(r"[0-9a-f]{64}")
+_BID_LEAF_KEYS = frozenset({
+    "kind", "bid_id", "supplier_id", "amount", "submitted_at", "document_hash", "status", "salt",
+})
+_AWARD_PRIVATE_KEYS = frozenset({"kind", "salt", *AWARD_PRIVATE_FIELDS})
+_EVALUATION_KEYS = frozenset({"v", "kind", "entity", "stage", "code", "bid_count", "leaves"})
+
 
 def iso_utc(value):
     """A datetime as ISO-8601 in UTC, or "" for None. Converted explicitly, so
-    the text can't depend on the server's time zone (TIME_ZONE is Asia/Manila)."""
+    the text can't depend on the server's time zone (TIME_ZONE is Asia/Manila).
+    A naive datetime or a bare date is refused: astimezone() would quietly read
+    the first as server-local time, and the second has no time at all.
+
+    The date in this text is the UTC date. From 16:00 to 23:59 UTC it is the day
+    BEFORE the Manila date the rest of the system shows for the same instant."""
     if value is None:
         return ""
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise NonCanonicalPayload("a datetime with a time zone is required")
     return value.astimezone(dt_timezone.utc).isoformat()
 
 
@@ -123,6 +147,101 @@ def validate_project_stage(payload):
              "document_key must be this stage's evidence document")
     _require(payload["document_hash"] == documents[payload["document_key"]]["sha256"],
              "document_hash must repeat the evidence document's manifest hash")
+
+
+# ── Commitments ──────────────────────────────────────────────────────────────
+# C = SHA-256(canonical({kind, private fields, salt})). An "opening" is that exact
+# object. Validation messages never include a value: these objects hold salts.
+
+def bid_leaf_opening(bid, document_hash, salt):
+    """One bid's leaf in an evaluation commitment."""
+    opening = {
+        "kind": KIND_BID_LEAF,
+        "bid_id": bid.id,
+        "supplier_id": bid.supplier_id,
+        "amount": f"{bid.amount:.2f}",
+        "submitted_at": iso_utc(bid.submitted_at),
+        "document_hash": document_hash,
+        "status": bid.status,
+        "salt": salt,
+    }
+    validate_opening(opening)
+    return opening
+
+
+def award_private_opening(award, salt):
+    """The private half of one award-document issue. Its shape follows
+    AWARD_PRIVATE_FIELDS (Decision A).
+
+    The exact time is the project's: Award.awarded_at is only a date, which is
+    public anyway. A project with no award time is refused, not filled in."""
+    values = {
+        "award_id": award.id,
+        "bid_id": award.bid_id or 0,
+        "supplier_id": award.supplier_id,
+        "status": award.status,
+        "awarded_at": iso_utc(award.project.awarded_at),
+    }
+    opening = {"kind": KIND_AWARD_PRIVATE, "salt": salt, **{f: values[f] for f in AWARD_PRIVATE_FIELDS}}
+    validate_opening(opening)
+    return opening
+
+
+def validate_opening(opening):
+    """Raise NonCanonicalPayload unless `opening` is exactly a bid-leaf/3 or an
+    award-private/3. Its kind decides which: an unknown kind is refused."""
+    validate_canonical(opening)
+    kind = opening.get("kind")
+    if kind == KIND_BID_LEAF:
+        _require_keys(opening, _BID_LEAF_KEYS, "opening")
+        _require(_matches(_MONEY, opening["amount"]), "amount must be a string with two decimals")
+        _require(_matches(_UTC_DATETIME, opening["submitted_at"]), "submitted_at must be ISO-8601 in UTC")
+        _require(opening["document_hash"] == "" or _matches(_HASH, opening["document_hash"]),
+                 "document_hash must be empty or 0x + 64 lowercase hex")
+    elif kind == KIND_AWARD_PRIVATE:
+        _require_keys(opening, _AWARD_PRIVATE_KEYS, "opening")
+        _require(_matches(_UTC_DATETIME, opening["awarded_at"]), "awarded_at must be ISO-8601 in UTC")
+    else:
+        raise NonCanonicalPayload("opening: unknown kind")
+    for field in ("bid_id", "supplier_id", "award_id"):
+        if field in opening:
+            _require(type(opening[field]) is int, f"{field} must be a count")  # noqa: E721
+    _require(isinstance(opening["status"], str) and bool(opening["status"]), "status must be a string")
+    _require(_matches(_SALT, opening["salt"]), "salt must be 64 lowercase hex characters")
+
+
+def evaluation_payload(project, leaves, stage="EVALUATION_COMPLETED"):
+    """The evaluation commitment. Leaves are sorted by their own value (Decision
+    F): v2's bid-id order showed a losing bidder how many bids came before theirs."""
+    payload = {
+        "v": VERSION,
+        "kind": KIND_EVALUATION,
+        "entity": "PROJECT",
+        "stage": str(stage),
+        "code": project.code,
+        "bid_count": len(leaves),
+        "leaves": sorted(leaves),
+    }
+    validate_evaluation(payload)
+    return payload
+
+
+def validate_evaluation(payload):
+    """Raise NonCanonicalPayload unless `payload` is exactly an evaluation/3.
+    `leaves` is the one array v3 allows, because its order is specified."""
+    _require(isinstance(payload, dict), "payload must be an object")
+    _require_keys(payload, _EVALUATION_KEYS, "payload")
+    leaves = payload["leaves"]
+    _require(isinstance(leaves, list), "leaves must be an array")
+    validate_canonical({key: value for key, value in payload.items() if key != "leaves"})
+    _require(payload["v"] == VERSION, "v must be 3")
+    _require(payload["kind"] == KIND_EVALUATION, "kind must be evaluation/3")
+    _require(payload["entity"] == "PROJECT", "entity must be PROJECT")
+    _require(payload["stage"] == "EVALUATION_COMPLETED", "stage must be EVALUATION_COMPLETED")
+    _require(bool(payload["code"]) and isinstance(payload["code"], str), "code must not be empty")
+    _require(payload["bid_count"] == len(leaves), "bid_count must equal the number of leaves")
+    _require(all(_matches(_HASH, leaf) for leaf in leaves), "each leaf must be 0x + 64 lowercase hex")
+    _require(leaves == sorted(set(leaves)), "leaves must be unique and sorted by value")
 
 
 def _validate_entry(key, entry):

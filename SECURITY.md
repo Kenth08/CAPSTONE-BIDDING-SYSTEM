@@ -61,6 +61,13 @@ IP). Responses carry these headers:
 - Bid, project and award documents are not encrypted by the app. Their SHA-256 is anchored on-chain and re-checked by the verifier, so they must stay byte-identical. They rely on the private bucket plus Supabase Storage's AES-256 encryption at rest.
 - Files stored before encryption was switched on still open.
 
+**Commitment openings** (`procurement/openings.py`; built, but not active while `PAYLOAD_V3_ENABLED` is off):
+- Each salted commitment's exact object is stored encrypted and write-once, with its own key (`COMMITMENT_KEY`), so a leak of one key does not expose what the other protects.
+- There is no plaintext fallback: with no valid key, an opening is refused. A failed encryption must never produce a made-up opening.
+- A row is checked against its anchor, kind and commitment when decrypted, so a swapped or forged ciphertext is refused.
+- Admin and Head can read every opening; a supplier only their own; the public none. Each read is audited as `commitment.opened`. Salts never appear in logs, audit text or errors.
+- No URL serves openings yet.
+
 **Storage safety checks** (`procurement/checks.py`):
 - `migrate` (and so the Render build) **fails** if the S3 settings would expose files: public ACL, unsigned URLs, custom domain, or long URL expiry.
 - The same problems are logged at startup.
@@ -116,17 +123,82 @@ ledger. Reads always stay public.
 `BLOCKCHAIN_PRIVATE_KEY` must belong to a dedicated test wallet. It is stored
 only in Render's environment and never in git or `VITE_*` variables.
 
+### Award disclosure policy
+
+**Working policy, and provisional.** It must be finalized before any v3 anchor is written. The contract amount is public subject to applicable procurement disclosure requirements, which have not been confirmed. `AWARD_PRIVATE_FIELDS` in `procurement/payload_v3.py` stays provisional until this table is consistently reflected in the payload builder, the public API and the verifier.
+
+| Field | Policy | Public API today | v3 payload |
+|---|---|---|---|
+| Procurement code, name, category, ABC | Public | Yes | In clear (project stages) |
+| Winner's registered company name | Public | Yes | Not built |
+| Contract amount | Public (working policy) | **Not in the API**; printed on the public Notice of Award file | Not built; outside `AWARD_PRIVATE_FIELDS` |
+| Award date (Philippine date, no time) | Public | Yes | Not built |
+| Exact award time (`Project.awarded_at`) | Private; committed | **Not fully private yet**, see below | In `award-private/3` |
+| Award document key, version, issue date, hash | Public | Only the hash is in the public trail | Not built |
+| `award_id`, `bid_id`, `supplier_id`, award status | Private; committed | No | In `award-private/3` |
+| Losing bids, their amounts and outcomes; bid count after award | Never public | No | Only inside salted leaves |
+| Salts, openings, internal amendment reasons | Never public | No | Never in clear |
+
+**Open gaps.** No v3 anchor may be written until these are closed:
+
+- **Phase 6:** the contract amount is public by policy but absent from the public API. Its authoritative source, field name and response contract are resolved there; it is deliberately not added before then.
+- **Phase 4:** the public procurement detail no longer shows the exact award time, but three public fields still show a time at or moments after it: `recorded_at` in the anchor trail, and `record.created_at` and `issued_at` in the record details page. They are corrected there with the verification UI, with endpoint and browser tests. v3 can't be enabled until this is closed.
+- `award-document/3` is not built, so the policy's payload side is unproven.
+
+**Blockchain timing can't be hidden.** Every anchor's block timestamp is public on Sepolia and can't be removed. Anyone can read approximately when a step was recorded, including the award, whatever the API shows. Showing only a date limits what this system publishes; it does not make the timing secret.
+
 ## 6. Environment variables (names only)
 
 | Variable | Where | Purpose |
 |---|---|---|
 | `FILE_ENCRYPTION_KEY` | Render | Fernet key for supplier documents, TOTP secrets and backups. **Back it up.** |
 | `FILE_ENCRYPTION_OLD_KEYS` | Render | Retired keys during a rotation (comma-separated) |
+| `COMMITMENT_KEY` | Render, only when v3 is approved | Fernet key for commitment openings. Separate from `FILE_ENCRYPTION_KEY`. See custody below. |
+| `COMMITMENT_OLD_KEYS` | Render | Retired commitment keys (comma-separated, decrypt only) |
+| `PAYLOAD_V3_ENABLED` | Nowhere yet | Must stay unset or `False`. The app refuses to start with it on. |
 | `ADMIN_URL` | Render | Secret Django admin path, e.g. `staff-<random>/`. Unset in production means no admin site. |
 | `MFA_REQUIRED` | Render | `True` in production (the default when `DEBUG=False`) |
 | `TRUSTED_PROXY_COUNT` | Render | Proxies that append to `X-Forwarded-For`. `1` on Render. |
 | `SECRET_KEY`, `DB_*`, `AWS_*`, `BREVO_API_KEY`, `BLOCKCHAIN_PRIVATE_KEY` | Render | Existing secrets, unchanged |
 | `VITE_API_URL`, `VITE_LEDGER_ADDRESS`, `VITE_SEPOLIA_RPC_URL` | Vercel | Public build-time values. Never put secrets in `VITE_*`. |
+
+### Commitment key custody
+
+Roles, not names; the people are recorded in the custody log, which is kept outside this repository.
+
+| Role | Holds | May not |
+|---|---|---|
+| Custodian 1 | One full copy of each current and retired key, in their own password-manager vault with MFA | Recover or rotate alone |
+| Custodian 2 | A second full copy, in a separate vault with MFA | Recover or rotate alone |
+| Deployer | Access to the hosting dashboard where the key is set | Be the only custodian, or keep a copy outside the vaults |
+
+A key is identified only by its fingerprint: the first 8 hex characters of its SHA-256. The app logs fingerprints and counts, never a key.
+
+- **Generate:** Custodian 1 generates a Fernet key in a session that writes nothing to disk or shell history, with Custodian 2 present. Each stores a copy, the Deployer sets it, and both custodians confirm the fingerprint the app logs.
+- **Recover:** Custodian 1 retrieves the key, Custodian 2 confirms its fingerprint against the custody log, the Deployer sets it, then runs `check_commitment_openings`.
+- **Rotate:** yearly, whenever a custodian changes, and immediately on suspected exposure. Keep a retired key until every backup made before the rotation has expired; only then do both custodians delete it and log the deletion.
+- **Backups:** keys are never stored with a database backup, in build logs or in git. The vaults are the only key backup.
+- **Lost key:** its openings can never be opened again. Public integrity is unaffected; opening checks report "unavailable", never a mismatch.
+- **Leaked key:** with a database copy it opens every commitment under it. Rotate and record the incident. Salts can't be rotated, so exposed openings stay exposed.
+
+### Planned for Phase 6: the `evaluation/3` and `award-document/3` writers
+
+**Not implemented.** The building blocks exist, but nothing writes these anchors or openings in the live system yet. Phase 6 must meet all of this:
+
+| State of an expected anchor | Meaning | How it is identified |
+|---|---|---|
+| Failed | Nothing was recorded | A failure row, and no anchor |
+| Prepared | Anchor and all its openings saved locally; nothing is on-chain | `tx_hash` blank |
+| Reported | A transaction was reported, but not confirmed | `tx_hash` set, `verified_on_chain` false |
+| Published | Confirmed on-chain by the server | `verified_on_chain` true |
+
+Only Published means the record is on the blockchain. A prepared anchor must never be shown as published.
+
+1. **Persist before signing.** The anchor and all its openings are written in one transaction. Signing or submitting may only start after that transaction commits (`transaction.on_commit`). If it fails, signing does not continue. `record_anchor` can sign immediately today, so the writers can't use it unchanged.
+2. **Failure indicator.** If encryption or persistence fails, the transaction rolls back: no anchor, no opening, no placeholder. The business action still succeeds, because anchoring never blocks the business flow. Since no anchor row survives, the indicator is a separate failure row saved outside that transaction: entity, stage, source version, reason code, time, and when it was resolved. It holds no salt, private value or key material, and it is counted on the Admin dashboard. An opening is never invented.
+3. **Recovery.** A management command, dry run by default, rebuilds a failed anchor from its stored source (for example an `AwardDocumentVersion`) once the cause is fixed. Fresh salts are safe only here, because nothing was published. If the source no longer matches the failure, it reports that and does not guess.
+4. **Duplicate prevention.** Each expected anchor has one database-enforced identity (entity, stage, source version). A signing retry reuses the same anchor, salts and `data_hash`; it never creates new ones.
+5. **Tests.** Failure at each step leaves no partial state and sends nothing. Signing never runs before commit, or after a failed commit. Recovery restores the opening and resolves the failure row, and running it twice changes nothing. Concurrent writers produce one anchor. Each state above is reported correctly.
 
 ## 7. Operations
 
@@ -136,6 +208,8 @@ only in Render's environment and never in git or `VITE_*` variables.
 | Reset a lost authenticator | `python manage.py reset_mfa <username-or-email>`, after checking the person's identity |
 | Encrypt old supplier documents / finish a key rotation (also re-encrypts two-factor secrets) | `python manage.py encrypt_supplier_documents` (dry run), then add `--apply` |
 | Rotate the encryption key | Move the current key to `FILE_ENCRYPTION_OLD_KEYS`, set a new `FILE_ENCRYPTION_KEY`, deploy, run the command above with `--apply`, then remove the old key |
+| Rotate the commitment key | Move the current key to `COMMITMENT_OLD_KEYS`, set a new `COMMITMENT_KEY`, deploy, run `python manage.py rotate_commitment_openings` (dry run), then add `--apply`. Keep the old key as described under custody. |
+| Check commitment openings (after a restore or recovery) | `python manage.py check_commitment_openings`. Read-only; exits with an error unless every opening matches. |
 | Copy files left on a local disk into the bucket | `python manage.py migrate_media_to_bucket --source <dir>` (dry run), then add `--apply`. Byte-for-byte and SHA-256-checked. |
 | Back up the database | `python manage.py backup_db` writes an encrypted `.json.enc`. Restore with `backup_db --decrypt <file>`, then `loaddata`. `backups/` is gitignored. |
 

@@ -1272,3 +1272,62 @@ class SupersededProjectDocumentPrivacyTests(APITestCase):
     def test_the_django_admin_does_not_expose_them(self):
         from django.contrib import admin
         self.assertFalse(admin.site.is_registered(ProjectDocumentVersion))
+
+
+class CommitmentOpeningPrivacyTests(APITestCase):
+    """Openings have no route or serializer in this phase. Nothing an API serves
+    may carry a salt, a ciphertext or a salt fingerprint, whoever asks."""
+
+    def test_no_response_reveals_an_opening(self):
+        from cryptography.fernet import Fernet
+
+        from . import openings, payload_v3
+        from .canonical import hash_payload
+
+        cache.clear()
+        admin, head = make_admin(), make_head()
+        bidder, rival = make_supplier(), make_supplier()
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        self.client.force_authenticate(user=head)
+        self.client.post(f"/api/projects/{project.pk}/approve/")
+        self.client.force_authenticate(user=admin)
+        self.client.post(f"/api/projects/{project.pk}/publish/")
+        bid = Bid.objects.create(project=project, supplier=bidder, amount=900, status=Bid.Status.QUALIFIED)
+        Bid.objects.create(project=project, supplier=rival, amount=950, status=Bid.Status.QUALIFIED)
+        self.assertEqual(self.client.post(f"/api/bids/{bid.pk}/select-winner/").status_code, 200)
+        anchor = BlockchainAnchor.objects.get(entity_ref=project.code, stage="EVALUATION_COMPLETED")
+
+        with override_settings(COMMITMENT_KEY=Fernet.generate_key().decode()):
+            opening = payload_v3.bid_leaf_opening(bid, "", openings.new_salt())
+            row = openings.store_opening(anchor, bid.id, opening, bidder)
+
+        code = project.code
+        paths = [
+            "/api/projects/", f"/api/projects/{project.pk}/", f"/api/projects/{project.pk}/record/",
+            f"/api/projects/{project.pk}/anchors/{anchor.pk}/",
+            f"/api/projects/{project.pk}/anchors/{anchor.pk}/packet/",
+            "/api/public/procurement/", f"/api/public/procurement/{code}/",
+            f"/api/public/procurement/{code}/anchors/",
+            f"/api/public/procurement/{code}/anchors/{anchor.pk}/",
+            f"/api/public/procurement/{code}/anchors/{anchor.pk}/packet/",
+        ]
+        for user in (None, admin, head, bidder.user, rival.user):
+            self.client.force_authenticate(user=user)
+            for path in paths:
+                with self.subTest(user=getattr(user, "username", "anonymous"), path=path):
+                    body = self.client.get(path).content.decode("utf-8")
+                    for secret in (opening["salt"], row.ciphertext, row.salt_fingerprint, hash_payload(opening)):
+                        self.assertNotIn(secret, body)
+                    self.assertNotIn("commitmentopening", body.lower())
+
+    def test_the_django_admin_does_not_expose_them(self):
+        from django.contrib import admin
+
+        from .models import CommitmentOpening
+        self.assertFalse(admin.site.is_registered(CommitmentOpening))
+
+    def test_no_file_route_addresses_an_opening(self):
+        cache.clear()
+        self.client.force_authenticate(user=make_admin())
+        for kind in ("opening", "commitmentopening", "commitment"):
+            self.assertEqual(self.client.get(f"/api/files/{kind}/1/ciphertext/").status_code, status.HTTP_404_NOT_FOUND)

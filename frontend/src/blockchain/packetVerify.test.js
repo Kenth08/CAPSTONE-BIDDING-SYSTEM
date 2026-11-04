@@ -15,7 +15,7 @@ test('every backend hash vector is reproduced byte-for-byte in the browser', asy
 })
 
 // ── project-stage/3 (Stage 5 Phase 2): same hashes whatever the insertion order ─
-const V3_VECTORS = VECTORS.vectors.filter((v) => v.payload.v === 3)
+const V3_VECTORS = VECTORS.vectors.filter((v) => v.payload.kind === 'project-stage/3')
 
 function permutationsOf(items) {
   if (items.length < 2) return [items]
@@ -55,6 +55,31 @@ test('24 insertion orders of a project-stage/3 payload give one hash', async () 
 test('the kind tag is part of the hash', async () => {
   const [v] = V3_VECTORS
   assert.notEqual(await hashPayload({ ...v.payload, kind: 'award-private/3' }), v.data_hash)
+})
+
+// ── Commitments (Stage 5 Phase 3): same bytes as the backend, kinds kept apart ──
+const vectorNamed = (prefix) => VECTORS.vectors.find((v) => v.name.startsWith(prefix))
+
+test('bid-leaf/3, award-private/3 and evaluation/3 vectors are reproduced byte-for-byte', async () => {
+  for (const prefix of ['bid-leaf/3, winning', 'bid-leaf/3, losing', 'award-private/3', 'evaluation/3']) {
+    const v = vectorNamed(prefix)
+    assert.ok(v, prefix)
+    assert.equal(await hashPayload(v.payload), v.data_hash, v.name)
+  }
+})
+
+test('evaluation/3 holds both leaves, sorted by value, and order changes the hash', async () => {
+  const { payload, data_hash: dataHash } = vectorNamed('evaluation/3')
+  const leaves = [vectorNamed('bid-leaf/3, winning').data_hash, vectorNamed('bid-leaf/3, losing').data_hash]
+  assert.deepEqual(payload.leaves, [...leaves].sort())
+  assert.notEqual(await hashPayload({ ...payload, leaves: [...payload.leaves].reverse() }), dataHash)
+})
+
+test('a commitment does not survive a changed kind, field or salt', async () => {
+  const { payload, data_hash: dataHash } = vectorNamed('bid-leaf/3, winning')
+  for (const change of [{ kind: 'award-private/3' }, { amount: '229900.01' }, { salt: '22'.repeat(32) }, { salt: '' }]) {
+    assert.notEqual(await hashPayload({ ...payload, ...change }), dataHash, JSON.stringify(change))
+  }
 })
 
 test('numbers JavaScript cannot represent exactly are refused, not mis-hashed', async () => {

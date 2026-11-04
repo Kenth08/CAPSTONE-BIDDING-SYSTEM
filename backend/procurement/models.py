@@ -830,6 +830,71 @@ class ProjectDocumentVersion(models.Model):
         return f"{self.project_code} {self.key} v{self.version}"
 
 
+class CommitmentOpeningQuerySet(models.QuerySet):
+    """Bulk writes would skip the model's own guard, so they are refused too."""
+
+    def _refuse(self, *args, **kwargs):
+        raise TypeError("Commitment openings are write-once.")
+
+    update = delete = bulk_update = _refuse
+
+
+class CommitmentOpening(models.Model):
+    """The exact object behind one salted commitment, encrypted (procurement/openings.py).
+
+    Write-once, and kept as long as its anchor: an anchor with an opening can't
+    be deleted. The only later change is rotating the encryption key, which
+    replaces `ciphertext` and `key_fingerprint` (`rewrap`). The salt, the
+    commitment and the anchor never change.
+
+    The salt is only ever inside `ciphertext`. `salt_fingerprint`, a SHA-256 of
+    the salt, is what lets the database refuse a repeated salt; reversing it
+    would mean guessing a 256-bit random value."""
+
+    class Kind(models.TextChoices):
+        BID_LEAF = "bid-leaf/3", "Bid leaf"
+        AWARD_PRIVATE = "award-private/3", "Award private fields"
+
+    anchor = models.ForeignKey(BlockchainAnchor, on_delete=models.PROTECT, related_name="openings")
+    kind = models.CharField(max_length=24, choices=Kind.choices)
+    # The bid (bid-leaf/3) or award (award-private/3) this commits to. Several bid
+    # leaves share one evaluation anchor, so this is part of a row's identity.
+    subject_id = models.PositiveBigIntegerField()
+    # Who may read it besides Admin and Head: the bidder, or the awardee.
+    supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, related_name="+")
+    commitment = models.CharField(max_length=66)     # SHA-256 of the canonical opening
+    salt_fingerprint = models.CharField(max_length=64, unique=True)
+    ciphertext = models.TextField()
+    key_fingerprint = models.CharField(max_length=8)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = CommitmentOpeningQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["anchor_id", "kind", "subject_id"]
+        constraints = [
+            models.UniqueConstraint(fields=["anchor", "kind", "subject_id"], name="uniq_commitment_opening"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise TypeError("Commitment openings are write-once.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise TypeError("Commitment openings are write-once.")
+
+    @classmethod
+    def rewrap(cls, pk, old_ciphertext, new_ciphertext, key_fingerprint):
+        """Key rotation only. Conditional, so it can't overwrite a concurrent
+        change. Returns whether the row was updated."""
+        return models.QuerySet(model=cls).filter(pk=pk, ciphertext=old_ciphertext).update(
+            ciphertext=new_ciphertext, key_fingerprint=key_fingerprint) == 1
+
+    def __str__(self):
+        return f"anchor {self.anchor_id} {self.kind} {self.subject_id}"
+
+
 class Notification(models.Model):
     """A simple in-app notification (e.g. bid evaluation result / award)."""
 

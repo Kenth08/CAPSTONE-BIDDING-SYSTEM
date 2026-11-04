@@ -3,7 +3,8 @@ import io
 import json
 import shutil
 import tempfile
-from datetime import timedelta
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -12,10 +13,12 @@ from django.core import mail
 from django.core.cache import cache
 from django.core.signals import request_finished
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.files.storage import FileSystemStorage, default_storage
 from django.core.files.base import ContentFile
 from django.db import close_old_connections, transaction
+from django.db.models import QuerySet
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
@@ -33,11 +36,12 @@ from .blockchain import (
 )
 from accounts.tests import registration_payload
 
-from . import blockchain, payload_v3
+from . import blockchain, openings, payload_v3
 from .canonical import NonCanonicalPayload, validate_canonical
+from .serializers import ProjectSerializer
 from .document_requirements import CATEGORY_DOCUMENTS, requirements_for, validate_registry
 from .models import (
-    AwardDocumentVersion,
+    AwardDocumentVersion, CommitmentOpening,
     PROCUREMENT_DOCUMENT_KEYS, ProjectDocumentVersion,
     BID_DOCUMENT_KEYS, SUPPLIER_DOCUMENT_FIELDS, SUPPLIER_DOCUMENT_KEYS, Award, Bid, BidProductImage,
     BlockchainAnchor, Project, Supplier, SupplierCategoryDocument,
@@ -3284,7 +3288,11 @@ def shared_vectors():
 
 
 def v3_vectors():
-    return [v for v in shared_vectors() if v["payload"].get("v") == 3]
+    return [v for v in shared_vectors() if v["payload"].get("kind") == "project-stage/3"]
+
+
+def vector_named(prefix):
+    return next(v for v in shared_vectors() if v["name"].startswith(prefix))
 
 
 def document_pdf(body, name="doc.pdf"):
@@ -3293,16 +3301,16 @@ def document_pdf(body, name="doc.pdf"):
 
 class CanonicalValidatorTests(APITestCase):
     def test_objects_strings_and_integers_pass(self):
-        validate_canonical({"a": "Pañuelo 🚀", "n": 2 ** 53 - 1, "m": -1, "o": {"b": ""}})
+        validate_canonical({"a": "Pañuelo 🚀", "n": 2 ** 53 - 1, "z_1": 0, "o": {"b": ""}})
 
     def test_everything_else_is_refused(self):
-        for bad in (None, True, False, 1.5, [], [1], (1,), {1, 2}, 2 ** 53, -(2 ** 53), b"x", timezone.now()):
+        for bad in (None, True, False, 1.5, [], [1], (1,), {1, 2}, 2 ** 53, -1, b"x", timezone.now()):
             with self.subTest(repr(bad)):
                 with self.assertRaises(NonCanonicalPayload):
                     validate_canonical({"outer": {"inner": bad}})
 
-    def test_keys_must_be_ascii_strings(self):
-        for key in (1, None, "ñ"):
+    def test_keys_must_be_lowercase_ascii_names(self):
+        for key in (1, None, "ñ", "Upper", "with-dash", "with space", ""):
             with self.subTest(repr(key)):
                 with self.assertRaises(NonCanonicalPayload):
                     validate_canonical({key: "x"})
@@ -3780,3 +3788,857 @@ class PayloadV3GateTests(ProjectDocumentCase):
         result = verify_anchor(anchor, deep=True)
         self.assertEqual(result["status"], "unavailable")
         self.assertIn("payload version 3", result["detail"])
+
+
+# ── Stage 5 Phase 3: commitments and encrypted openings ──────────────────────
+
+def throwaway_key():
+    from cryptography.fernet import Fernet
+    return Fernet.generate_key().decode()
+
+
+class CommitmentPayloadTests(APITestCase):
+    def _leaf(self):
+        return json.loads(json.dumps(vector_named("bid-leaf/3, winning")["payload"]))
+
+    def _private(self):
+        return json.loads(json.dumps(vector_named("award-private/3")["payload"]))
+
+    def test_the_shared_vectors_pass_the_schema_and_fit_together(self):
+        win, lose = vector_named("bid-leaf/3, winning"), vector_named("bid-leaf/3, losing")
+        evaluation = vector_named("evaluation/3")
+        for vector in (win, lose):
+            payload_v3.validate_opening(vector["payload"])
+        payload_v3.validate_opening(self._private())
+        payload_v3.validate_evaluation(evaluation["payload"])
+        self.assertEqual(evaluation["payload"]["leaves"], sorted([win["data_hash"], lose["data_hash"]]))
+        self.assertEqual(hash_payload(evaluation["payload"]), evaluation["data_hash"])
+
+    def test_the_builders_produce_the_vectors_exactly(self):
+        from datetime import datetime
+        from decimal import Decimal
+        from types import SimpleNamespace
+        from zoneinfo import ZoneInfo
+        manila = ZoneInfo("Asia/Manila")
+        leaf = self._leaf()
+        bid = SimpleNamespace(id=leaf["bid_id"], supplier_id=leaf["supplier_id"], amount=Decimal(leaf["amount"]),
+                              submitted_at=datetime(2026, 11, 3, 16, 15, 0, 123456, tzinfo=manila), status=leaf["status"])
+        self.assertEqual(payload_v3.bid_leaf_opening(bid, leaf["document_hash"], leaf["salt"]), leaf)
+        private = self._private()
+        award = SimpleNamespace(
+            id=private["award_id"], bid_id=private["bid_id"], supplier_id=private["supplier_id"],
+            status=private["status"],
+            project=SimpleNamespace(awarded_at=datetime(2026, 11, 3, 17, 30, 0, 654321, tzinfo=manila)))
+        self.assertEqual(payload_v3.award_private_opening(award, private["salt"]), private)
+        evaluation = vector_named("evaluation/3")
+        project = SimpleNamespace(code=evaluation["payload"]["code"])
+        self.assertEqual(payload_v3.evaluation_payload(project, list(reversed(evaluation["payload"]["leaves"]))),
+                         evaluation["payload"])
+
+    def test_an_award_with_no_exact_time_is_refused_not_filled_in(self):
+        from types import SimpleNamespace
+        award = SimpleNamespace(id=4, bid_id=9, supplier_id=3, status="won",
+                                project=SimpleNamespace(awarded_at=None))
+        with self.assertRaises(NonCanonicalPayload):
+            payload_v3.award_private_opening(award, "33" * 32)
+
+    def test_leaves_in_bid_id_order_give_a_different_hash_and_are_refused(self):
+        payload = vector_named("evaluation/3")["payload"]
+        unsorted_payload = {**payload, "leaves": list(reversed(payload["leaves"]))}
+        self.assertNotEqual(hash_payload(unsorted_payload), hash_payload(payload))
+        with self.assertRaises(NonCanonicalPayload):
+            payload_v3.validate_evaluation(unsorted_payload)
+
+    def test_an_evaluation_outside_the_schema_is_refused(self):
+        payload = vector_named("evaluation/3")["payload"]
+        leaf = payload["leaves"][0]
+        cases = {
+            "repeated leaf": {"leaves": [leaf, leaf]},
+            "wrong count": {"bid_count": 3},
+            "not a hash": {"leaves": ["0xabc"], "bid_count": 1},
+            "uppercase hash": {"leaves": [leaf.upper().replace("0X", "0x")], "bid_count": 1},
+            "leaves not an array": {"leaves": leaf},
+            "wrong kind": {"kind": "project-stage/3"},
+            "wrong version": {"v": 2},
+            "wrong stage": {"stage": "AWARDED"},
+            "extra field": {"amount": "1.00"},
+        }
+        for name, change in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(NonCanonicalPayload):
+                    payload_v3.validate_evaluation({**payload, **change})
+
+    def test_an_opening_outside_the_schema_is_refused(self):
+        cases = {
+            "empty salt": {"salt": ""},
+            "short salt": {"salt": "ab" * 31},
+            "uppercase salt": {"salt": "AB" * 32},
+            "no kind": {"kind": ""},
+            "unknown kind": {"kind": "evaluation/3"},
+            "extra field": {"extra": "x"},
+            "amount as a number": {"amount": 229900},
+            "local time": {"submitted_at": "2026-11-03T16:15:00+08:00"},
+            "bad document hash": {"document_hash": "abc"},
+            "null status": {"status": None},
+            "boolean id": {"bid_id": True},
+            "negative id": {"bid_id": -1},
+        }
+        for name, change in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(NonCanonicalPayload):
+                    payload_v3.validate_opening({**self._leaf(), **change})
+
+    def test_validation_errors_never_contain_the_salt(self):
+        for bad in ({**self._leaf(), "salt": "AB" * 32}, {**self._private(), "salt": "CD" * 32, "extra": "x"}):
+            with self.assertRaises(NonCanonicalPayload) as caught:
+                payload_v3.validate_opening(bad)
+            self.assertNotIn(bad["salt"], str(caught.exception))
+
+    def test_decision_a_lives_in_one_list_and_the_amount_stays_out_for_now(self):
+        self.assertEqual(set(self._private()) - {"kind", "salt"}, set(payload_v3.AWARD_PRIVATE_FIELDS))
+        self.assertNotIn("amount", payload_v3.AWARD_PRIVATE_FIELDS)
+        with self.assertRaises(NonCanonicalPayload):
+            payload_v3.validate_opening({**self._private(), "amount": "229900.00"})
+
+    def test_ten_thousand_commitments_have_ten_thousand_distinct_salts(self):
+        salts, commitments = set(), set()
+        leaf = self._leaf()
+        for _ in range(10000):
+            salt = openings.new_salt()
+            self.assertRegex(salt, r"\A[0-9a-f]{64}\Z")
+            salts.add(salt)
+            commitments.add(hash_payload({**leaf, "salt": salt}))
+        self.assertEqual((len(salts), len(commitments)), (10000, 10000))
+
+    def test_salts_come_from_the_secure_generator(self):
+        with patch("procurement.openings.secrets.token_bytes", return_value=b"\x01" * 32) as source:
+            self.assertEqual(openings.new_salt(), "01" * 32)
+        source.assert_called_once_with(32)
+
+    def test_a_wrong_salt_never_opens_a_commitment(self):
+        leaf = self._leaf()
+        commitment = hash_payload(leaf)
+        self.assertTrue(openings.opening_matches(leaf, commitment))
+        flipped = format(int(leaf["salt"], 16) ^ 1, "064x")
+        for name, salt in {"one bit flipped": flipped, "another bidder's": "22" * 32, "empty": ""}.items():
+            with self.subTest(name):
+                self.assertFalse(openings.opening_matches({**leaf, "salt": salt}, commitment))
+
+    def test_a_changed_field_never_opens_a_commitment(self):
+        leaf = self._leaf()
+        commitment = hash_payload(leaf)
+        for change in ({"amount": "229900.01"}, {"status": "qualified"}, {"bid_id": 10}):
+            self.assertFalse(openings.opening_matches({**leaf, **change}, commitment))
+
+    def test_a_bid_leaf_can_not_be_presented_as_an_award_commitment_or_the_reverse(self):
+        leaf, private = self._leaf(), self._private()
+        self.assertFalse(openings.opening_matches({**leaf, "kind": "award-private/3"}, hash_payload(leaf)))
+        self.assertFalse(openings.opening_matches({**private, "kind": "bid-leaf/3"}, hash_payload(private)))
+
+    def test_the_salt_is_what_stops_a_brute_force_of_the_amount(self):
+        leaf = self._leaf()
+        secret_amount = "734.25"
+
+        def search(commitment, salt):
+            for centavos in range(0, 100000):
+                amount = f"{centavos // 100}.{centavos % 100:02d}"
+                if hash_payload({**leaf, "amount": amount, "salt": salt}) == commitment:
+                    return amount
+            return None
+
+        without_salt = hash_payload({**leaf, "amount": secret_amount, "salt": ""})
+        self.assertEqual(search(without_salt, ""), secret_amount)
+        salted = hash_payload({**leaf, "amount": secret_amount, "salt": openings.new_salt()})
+        self.assertIsNone(search(salted, ""))
+
+
+class CommitmentOpeningCase(APITestCase):
+    """Synthetic v3 anchors (nothing in the app writes them yet) and a throwaway key."""
+
+    def setUp(self):
+        cache.clear()
+        self.key = throwaway_key()
+        override = override_settings(COMMITMENT_KEY=self.key, COMMITMENT_OLD_KEYS="")
+        override.enable()
+        self.addCleanup(override.disable)
+        self.project = make_project()
+        self.supplier = make_supplier()
+        self.other = make_supplier()
+        self.bid = Bid.objects.create(project=self.project, supplier=self.supplier, amount=900)
+        self.other_bid = Bid.objects.create(project=self.project, supplier=self.other, amount=950)
+
+    def leaf(self, bid=None):
+        return payload_v3.bid_leaf_opening(bid or self.bid, "", openings.new_salt())
+
+    def anchor_for(self, payload, stage="EVALUATION_COMPLETED"):
+        return BlockchainAnchor.objects.create(
+            entity_type=BlockchainAnchor.EntityType.PROJECT, entity_ref=self.project.code,
+            entity_id=str(self.project.id), stage=stage, data_hash=hash_payload(payload), payload=payload)
+
+    def evaluation(self):
+        """An evaluation anchor with both bids' leaves stored."""
+        first, second = self.leaf(self.bid), self.leaf(self.other_bid)
+        anchor = self.anchor_for(payload_v3.evaluation_payload(
+            self.project, [hash_payload(first), hash_payload(second)]))
+        rows = (openings.store_opening(anchor, self.bid.id, first, self.supplier),
+                openings.store_opening(anchor, self.other_bid.id, second, self.other))
+        return anchor, rows, (first, second)
+
+    def award_issue(self, award):
+        """One award-document issue, with its own salt, commitment and anchor."""
+        opening = payload_v3.award_private_opening(award, openings.new_salt())
+        anchor = self.anchor_for({"v": 3, "kind": "award-document/3", "stage": "NOA_ISSUED",
+                                  "private_commitment": hash_payload(opening)}, stage="NOA_ISSUED")
+        return anchor, openings.store_opening(anchor, award.id, opening, award.supplier), opening
+
+    def make_award(self):
+        self.project.awarded_at = timezone.now()
+        self.project.save(update_fields=["awarded_at"])
+        return Award.objects.create(project=self.project, bid=self.bid, supplier=self.supplier, amount=900)
+
+    @staticmethod
+    def run_command(name, *args):
+        out = io.StringIO()
+        call_command(name, *args, stdout=out)
+        return out.getvalue()
+
+
+class CommitmentOpeningStoreTests(CommitmentOpeningCase):
+    def test_an_opening_is_stored_encrypted_and_reads_back_exactly(self):
+        anchor, (row, _), (opening, _) = self.evaluation()
+        row = CommitmentOpening.objects.get(pk=row.pk)
+        self.assertEqual(openings.decrypt_opening(row), opening)
+        self.assertEqual(row.commitment, hash_payload(opening))
+        self.assertEqual(row.key_fingerprint, openings.key_fingerprint(self.key))
+        self.assertRegex(row.key_fingerprint, r"\A[0-9a-f]{8}\Z")
+        stored = " ".join(str(getattr(row, f.attname)) for f in row._meta.fields)
+        for secret in (opening["salt"], opening["amount"], self.key):
+            self.assertNotIn(secret, stored)
+        self.assertNotEqual(row.salt_fingerprint, opening["salt"])
+        self.assertEqual(openings.check_opening(row), openings.MATCH)
+
+    def test_with_no_key_nothing_is_stored(self):
+        anchor = self.anchor_for({"v": 3, "kind": "evaluation/3"})
+        for key in ("", "not-a-fernet-key"):
+            with self.subTest(key), override_settings(COMMITMENT_KEY=key):
+                with self.assertRaises(openings.OpeningsNotConfigured):
+                    openings.store_opening(anchor, self.bid.id, self.leaf())
+        self.assertFalse(CommitmentOpening.objects.exists())
+
+    def test_the_file_encryption_key_is_never_a_fallback(self):
+        anchor = self.anchor_for({"v": 3, "kind": "evaluation/3"})
+        with override_settings(COMMITMENT_KEY="", FILE_ENCRYPTION_KEY=throwaway_key()):
+            with self.assertRaises(openings.OpeningsNotConfigured):
+                openings.store_opening(anchor, self.bid.id, self.leaf())
+
+    def test_an_opening_outside_the_schema_is_not_stored(self):
+        anchor = self.anchor_for({"v": 3, "kind": "evaluation/3"})
+        with self.assertRaises(NonCanonicalPayload):
+            openings.store_opening(anchor, self.bid.id, {**self.leaf(), "salt": ""})
+        self.assertFalse(CommitmentOpening.objects.exists())
+
+    def test_a_second_commit_on_the_same_anchor_changes_nothing(self):
+        anchor, (row, _), (opening, _) = self.evaluation()
+        before = CommitmentOpening.objects.filter(pk=row.pk).values().get()
+        with self.assertRaises(openings.OpeningAlreadyStored):
+            openings.store_opening(anchor, self.bid.id, self.leaf(), self.supplier)
+        self.assertEqual(CommitmentOpening.objects.filter(pk=row.pk).values().get(), before)
+        self.assertEqual(openings.decrypt_opening(row), opening)
+
+    def test_the_database_refuses_a_salt_used_on_another_anchor(self):
+        _, _, (opening, _) = self.evaluation()
+        another = self.anchor_for({"v": 3, "kind": "evaluation/3"})
+        with self.assertRaises(openings.OpeningAlreadyStored):
+            openings.store_opening(another, self.bid.id, opening)
+        self.assertEqual(another.openings.count(), 0)
+
+    def test_three_issues_keep_three_salts_commitments_and_openings(self):
+        award = self.make_award()
+        issues = [self.award_issue(award) for _ in range(3)]
+        self.assertEqual(len({opening["salt"] for _, _, opening in issues}), 3)
+        self.assertEqual(len({row.commitment for _, row, _ in issues}), 3)
+        self.assertEqual(len({anchor.pk for anchor, _, _ in issues}), 3)
+        for anchor, row, opening in issues:
+            self.assertEqual(openings.decrypt_opening(row), opening)
+            self.assertEqual(openings.check_opening(row), openings.MATCH)
+            self.assertEqual(anchor.payload["private_commitment"], hash_payload(opening))
+
+    def test_rows_are_write_once(self):
+        _, (row, _), _ = self.evaluation()
+        queryset = CommitmentOpening.objects.filter(pk=row.pk)
+        before = queryset.values().get()
+        row.commitment = "0x" + "0" * 64
+        for attempt in (row.save, row.delete, queryset.delete, lambda: queryset.update(commitment=""),
+                        lambda: CommitmentOpening.objects.bulk_update([row], ["commitment"])):
+            with self.assertRaises(TypeError):
+                attempt()
+        self.assertEqual(queryset.values().get(), before)
+
+    def test_an_anchor_with_an_opening_can_not_be_deleted(self):
+        from django.db.models import ProtectedError
+        anchor, _, _ = self.evaluation()
+        with self.assertRaises(ProtectedError):
+            anchor.delete()
+
+    def test_deleting_a_supplier_keeps_their_opening(self):
+        _, (row, _), (opening, _) = self.evaluation()
+        self.bid.delete()
+        Supplier.objects.filter(pk=self.supplier.pk).delete()
+        row = CommitmentOpening.objects.get(pk=row.pk)
+        self.assertIsNone(row.supplier)
+        self.assertEqual(openings.decrypt_opening(row), opening)
+
+    def test_a_stale_rewrap_changes_nothing(self):
+        _, (row, _), _ = self.evaluation()
+        self.assertFalse(CommitmentOpening.rewrap(row.pk, "stale", "new", "00000000"))
+        self.assertEqual(CommitmentOpening.objects.get(pk=row.pk).ciphertext, row.ciphertext)
+
+    def test_a_ciphertext_swapped_from_another_anchor_is_refused(self):
+        _, (row, _), _ = self.evaluation()
+        _, foreign, _ = self.award_issue(self.make_award())
+        CommitmentOpening.rewrap(row.pk, row.ciphertext, foreign.ciphertext, row.key_fingerprint)
+        row = CommitmentOpening.objects.get(pk=row.pk)
+        with self.assertRaises(openings.OpeningMismatch):
+            openings.decrypt_opening(row)
+        self.assertEqual(openings.check_opening(row), openings.MISMATCH)
+
+    def test_a_ciphertext_swapped_between_two_leaves_of_one_anchor_is_refused(self):
+        """Same anchor_id, same kind: only the commitment tells these two apart."""
+        _, (row, other_row), _ = self.evaluation()
+        CommitmentOpening.rewrap(row.pk, row.ciphertext, other_row.ciphertext, row.key_fingerprint)
+        row = CommitmentOpening.objects.get(pk=row.pk)
+        with self.assertRaises(openings.OpeningMismatch):
+            openings.decrypt_opening(row)
+
+    def _forge(self, row, anchor_id, kind, opening):
+        """A ciphertext made with the real key, as someone with database and key
+        access could: the row's own checks are all that stand in its way."""
+        token = openings._keyring().encrypt(openings._plaintext(anchor_id, kind, opening)).decode("ascii")
+        CommitmentOpening.rewrap(row.pk, row.ciphertext, token, row.key_fingerprint)
+        return CommitmentOpening.objects.get(pk=row.pk)
+
+    def test_a_forged_ciphertext_for_another_anchor_is_refused(self):
+        anchor, (row, _), (opening, _) = self.evaluation()
+        forged = self._forge(row, anchor.pk + 1000, row.kind, opening)
+        with self.assertRaises(openings.OpeningMismatch):
+            openings.decrypt_opening(forged)
+
+    def test_a_forged_ciphertext_of_another_kind_is_refused(self):
+        anchor, (row, _), (opening, _) = self.evaluation()
+        forged = self._forge(row, anchor.pk, "award-private/3", opening)
+        with self.assertRaises(openings.OpeningMismatch):
+            openings.decrypt_opening(forged)
+
+    def test_a_forged_opening_with_a_changed_amount_is_refused(self):
+        anchor, (row, _), (opening, _) = self.evaluation()
+        forged = self._forge(row, anchor.pk, row.kind, {**opening, "amount": "1.00"})
+        with self.assertRaises(openings.OpeningMismatch):
+            openings.decrypt_opening(forged)
+
+    def test_an_opening_whose_salt_fingerprint_was_changed_is_refused(self):
+        _, (row, _), _ = self.evaluation()
+        QuerySet(model=CommitmentOpening).filter(pk=row.pk).update(salt_fingerprint="0" * 64)
+        self.assertEqual(openings.check_opening(CommitmentOpening.objects.get(pk=row.pk)), openings.MISMATCH)
+
+    def test_a_commitment_the_anchor_never_recorded_is_a_mismatch(self):
+        opening = self.leaf()
+        anchor = self.anchor_for(payload_v3.evaluation_payload(self.project, ["0x" + "a" * 64]))
+        row = openings.store_opening(anchor, self.bid.id, opening, self.supplier)
+        self.assertEqual(openings.check_opening(row), openings.MISMATCH)
+
+    def test_a_leaf_filed_under_an_award_document_anchor_is_a_mismatch(self):
+        opening = self.leaf()
+        anchor = self.anchor_for({"v": 3, "kind": "award-document/3", "private_commitment": hash_payload(opening)})
+        row = openings.store_opening(anchor, self.bid.id, opening, self.supplier)
+        self.assertEqual(openings.check_opening(row), openings.MISMATCH)
+
+    def test_a_commitment_in_a_payload_of_the_wrong_kind_is_a_mismatch(self):
+        opening = self.leaf()
+        anchor = self.anchor_for({"v": 3, "kind": "project-stage/3", "leaves": [hash_payload(opening)]})
+        row = openings.store_opening(anchor, self.bid.id, opening, self.supplier)
+        self.assertEqual(openings.check_opening(row), openings.MISMATCH)
+
+    def test_an_edited_anchor_row_is_a_mismatch(self):
+        anchor, (row, _), _ = self.evaluation()
+        BlockchainAnchor.objects.filter(pk=anchor.pk).update(data_hash="0x" + "f" * 64)
+        self.assertEqual(openings.check_opening(CommitmentOpening.objects.get(pk=row.pk)), openings.MISMATCH)
+
+    def test_a_lost_key_is_unavailable_and_never_a_mismatch(self):
+        anchor, (row, _), _ = self.evaluation()
+        for current in (throwaway_key(), ""):
+            with self.subTest(has_key=bool(current)), override_settings(COMMITMENT_KEY=current):
+                fresh = CommitmentOpening.objects.get(pk=row.pk)
+                self.assertEqual(openings.check_opening(fresh), openings.UNAVAILABLE)
+                with self.assertRaises(openings.OpeningUnavailable):
+                    openings.read_opening(None, make_admin_once(), fresh)
+                with self.assertRaises(CommandError) as caught:
+                    self.run_command("check_commitment_openings")
+                self.assertIn("mismatch 0, unavailable 2", str(caught.exception))
+        # Public integrity doesn't need the key.
+        self.assertEqual(hash_payload(anchor.payload), anchor.data_hash)
+
+    def test_check_command_reports_success_and_writes_nothing(self):
+        self.evaluation()
+        before = list(CommitmentOpening.objects.values())
+        anchors_before = list(BlockchainAnchor.objects.values())
+        output = self.run_command("check_commitment_openings")
+        self.assertIn("Match 2, mismatch 0, unavailable 0.", output)
+        self.assertIn(openings.key_fingerprint(self.key), output)
+        self.assertEqual(list(CommitmentOpening.objects.values()), before)
+        self.assertEqual(list(BlockchainAnchor.objects.values()), anchors_before)
+
+    def test_check_command_fails_on_a_mismatch(self):
+        _, (row, other_row), _ = self.evaluation()
+        CommitmentOpening.rewrap(row.pk, row.ciphertext, other_row.ciphertext, row.key_fingerprint)
+        with self.assertRaises(CommandError) as caught:
+            self.run_command("check_commitment_openings")
+        self.assertIn("mismatch 1", str(caught.exception))
+
+
+def make_admin_once():
+    return User.objects.filter(username="admin").first() or make_admin()
+
+
+class CommitmentKeyRotationTests(CommitmentOpeningCase):
+    def _rotated_settings(self):
+        new_key = throwaway_key()
+        return new_key, override_settings(COMMITMENT_KEY=new_key, COMMITMENT_OLD_KEYS=self.key)
+
+    def test_rotation_moves_every_opening_to_the_new_key_and_nothing_else(self):
+        anchor, rows, plain = self.evaluation()
+        fixed = ("anchor_id", "kind", "subject_id", "commitment", "salt_fingerprint", "supplier_id", "created_at")
+        before = list(CommitmentOpening.objects.order_by("pk").values(*fixed))
+        anchor_before = BlockchainAnchor.objects.filter(pk=anchor.pk).values().get()
+        ciphertexts = list(CommitmentOpening.objects.order_by("pk").values_list("ciphertext", flat=True))
+        new_key, settings_override = self._rotated_settings()
+        with settings_override:
+            dry = self.run_command("rotate_commitment_openings")
+            self.assertIn("Would re-encrypt 2, already current 0, unavailable 0.", dry)
+            self.assertEqual(list(CommitmentOpening.objects.order_by("pk").values_list("ciphertext", flat=True)),
+                             ciphertexts)
+            applied = self.run_command("rotate_commitment_openings", "--apply")
+            self.assertIn("Re-encrypted 2, already current 0, unavailable 0.", applied)
+            self.assertIn("No openings are left under a retired key.", applied)
+            again = self.run_command("rotate_commitment_openings", "--apply")
+            self.assertIn("Re-encrypted 0, already current 2, unavailable 0.", again)
+        self.assertEqual(list(CommitmentOpening.objects.order_by("pk").values(*fixed)), before)
+        self.assertEqual(BlockchainAnchor.objects.filter(pk=anchor.pk).values().get(), anchor_before)
+        # Under the new key ALONE.
+        with override_settings(COMMITMENT_KEY=new_key, COMMITMENT_OLD_KEYS=""):
+            for row, opening in zip(CommitmentOpening.objects.order_by("pk"), plain):
+                self.assertEqual(row.key_fingerprint, openings.key_fingerprint(new_key))
+                self.assertEqual(openings.decrypt_opening(row), opening)
+                self.assertEqual(openings.check_opening(row), openings.MATCH)
+        # The retired key no longer opens them.
+        with override_settings(COMMITMENT_KEY=self.key, COMMITMENT_OLD_KEYS=""):
+            self.assertEqual(openings.check_opening(CommitmentOpening.objects.first()), openings.UNAVAILABLE)
+
+    def test_a_row_no_key_opens_is_left_alone_and_reported(self):
+        _, (row, _), _ = self.evaluation()
+        with override_settings(COMMITMENT_KEY=throwaway_key(), COMMITMENT_OLD_KEYS=""):
+            output = self.run_command("rotate_commitment_openings", "--apply")
+        self.assertIn("unavailable 2.", output)
+        self.assertIn("Do not remove a key", output)
+        self.assertNotIn("No openings are left", output)
+        self.assertEqual(CommitmentOpening.objects.get(pk=row.pk).ciphertext, row.ciphertext)
+
+    def test_rotation_needs_a_current_key(self):
+        with override_settings(COMMITMENT_KEY=""):
+            with self.assertRaisesMessage(CommandError, "COMMITMENT_KEY is not set"):
+                self.run_command("rotate_commitment_openings")
+
+    def test_a_dry_run_does_not_claim_a_retired_key_is_clear(self):
+        self.evaluation()
+        _, settings_override = self._rotated_settings()
+        with settings_override:
+            self.assertNotIn("No openings are left", self.run_command("rotate_commitment_openings"))
+
+
+class CommitmentOpeningAccessTests(CommitmentOpeningCase):
+    def setUp(self):
+        super().setUp()
+        self.anchor, (self.row, self.other_row), (self.opening, _) = self.evaluation()
+        self.admin, self.head = make_admin(), make_head()
+
+    def _audits(self, action):
+        return AuditLog.objects.filter(action=action, entity_id=str(self.anchor.pk))
+
+    def test_admin_and_head_read_every_opening_and_each_read_is_audited(self):
+        for user in (self.admin, self.head):
+            for row in (self.row, self.other_row):
+                self.assertTrue(openings.read_opening(None, user, row))
+            self.assertEqual(self._audits("commitment.opened").filter(user=user).count(), 2)
+
+    def test_a_supplier_reads_only_their_own(self):
+        self.assertEqual(openings.read_opening(None, self.supplier.user, self.row), self.opening)
+        self.assertEqual(self._audits("commitment.opened").filter(user=self.supplier.user).count(), 1)
+        with self.assertRaises(openings.OpeningAccessDenied):
+            openings.read_opening(None, self.supplier.user, self.other_row)
+        self.assertEqual(self._audits("commitment.open_denied").filter(user=self.supplier.user).count(), 1)
+
+    def test_an_awardee_reads_their_own_award_opening_only(self):
+        _, row, opening = self.award_issue(self.make_award())
+        self.assertEqual(openings.read_opening(None, self.supplier.user, row), opening)
+        with self.assertRaises(openings.OpeningAccessDenied):
+            openings.read_opening(None, self.other.user, row)
+
+    def test_the_public_and_inactive_accounts_read_none(self):
+        from django.contrib.auth.models import AnonymousUser
+        self.admin.is_active = False
+        self.admin.save(update_fields=["is_active"])
+        for user in (AnonymousUser(), None, self.admin):
+            with self.subTest(str(user)):
+                self.assertFalse(openings.may_read_opening(user, self.row))
+                with self.assertRaises(openings.OpeningAccessDenied):
+                    openings.read_opening(None, user, self.row)
+        self.assertFalse(self._audits("commitment.opened").exists())
+
+    def test_a_row_whose_supplier_is_gone_is_for_admin_and_head_only(self):
+        self.bid.delete()
+        Supplier.objects.filter(pk=self.supplier.pk).delete()
+        row = CommitmentOpening.objects.get(pk=self.row.pk)
+        self.assertFalse(openings.may_read_opening(self.other.user, row))
+        self.assertTrue(openings.may_read_opening(self.head, row))
+
+    def test_no_salt_or_key_reaches_logs_audit_text_output_or_errors(self):
+        import logging
+
+        class Capture(logging.Handler):
+            def __init__(self):
+                super().__init__(level=logging.DEBUG)
+                self.lines = []
+
+            def emit(self, record):
+                self.lines.append(self.format(record))
+
+        capture = Capture()
+        capture.setFormatter(logging.Formatter("%(name)s %(message)s %(exc_text)s"))
+        root = logging.getLogger()
+        previous = root.level
+        root.addHandler(capture)
+        root.setLevel(logging.DEBUG)
+        self.addCleanup(root.removeHandler, capture)
+        self.addCleanup(root.setLevel, previous)
+
+        texts = []
+        openings.read_opening(None, self.admin, self.row)
+        with self.assertRaises(openings.OpeningAccessDenied) as denied:
+            openings.read_opening(None, self.other.user, self.row)
+        texts.append(str(denied.exception))
+        with self.assertRaises(openings.OpeningAlreadyStored) as repeated:
+            openings.store_opening(self.anchor, self.bid.id, self.opening)
+        texts.append(str(repeated.exception))
+        with self.assertRaises(NonCanonicalPayload) as invalid:
+            openings.store_opening(self.anchor, self.bid.id, {**self.opening, "extra": "x"})
+        texts.append(str(invalid.exception))
+        texts.append(self.run_command("check_commitment_openings"))
+        new_key = throwaway_key()
+        with override_settings(COMMITMENT_KEY=new_key, COMMITMENT_OLD_KEYS=self.key):
+            texts.append(self.run_command("rotate_commitment_openings", "--apply"))
+        with override_settings(COMMITMENT_KEY=throwaway_key(), COMMITMENT_OLD_KEYS=""):
+            with self.assertRaises(openings.OpeningUnavailable) as lost:
+                openings.decrypt_opening(CommitmentOpening.objects.get(pk=self.row.pk))
+            texts.append(str(lost.exception))
+        CommitmentOpening.rewrap(self.row.pk, CommitmentOpening.objects.get(pk=self.row.pk).ciphertext,
+                                 self.other_row.ciphertext, "00000000")
+        texts += [str(self.row), repr(self.row)]
+        texts += list(AuditLog.objects.values_list("description", flat=True))
+        texts += capture.lines
+        self.assertTrue(AuditLog.objects.filter(action="commitment.opened").exists())
+        everything = "\n".join(texts)
+        for secret in (self.opening["salt"], self.key, new_key, self.row.ciphertext):
+            self.assertNotIn(secret, everything)
+
+
+class CommitmentGateTests(CommitmentOpeningCase):
+    def test_a_valid_key_does_not_lift_the_refusal(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "PAYLOAD_V3_ENABLED is on"):
+            blockchain.check_v3_gate(True)
+
+    def test_the_refusal_also_reports_a_missing_or_invalid_key(self):
+        for key, message in (("", "COMMITMENT_KEY is not set"), ("bad", "COMMITMENT_KEY is not a valid Fernet key")):
+            with self.subTest(key), override_settings(COMMITMENT_KEY=key):
+                with self.assertRaisesMessage(ImproperlyConfigured, message) as caught:
+                    blockchain.check_v3_gate(True)
+                self.assertIn("PAYLOAD_V3_ENABLED is on", str(caught.exception))
+        with override_settings(COMMITMENT_OLD_KEYS="bad"):
+            with self.assertRaisesMessage(ImproperlyConfigured, "COMMITMENT_OLD_KEYS entry 1"):
+                blockchain.check_v3_gate(True)
+
+    def test_flag_off_needs_no_key(self):
+        with override_settings(COMMITMENT_KEY=""):
+            blockchain.check_v3_gate(False)
+
+    def test_problem_messages_never_contain_a_key(self):
+        with override_settings(COMMITMENT_KEY="bad-key-value", COMMITMENT_OLD_KEYS="old-bad-value"):
+            text = " ".join(openings.commitment_key_problems())
+        self.assertNotIn("bad-key-value", text)
+        self.assertNotIn("old-bad-value", text)
+
+    def test_start_up_logs_only_fingerprints(self):
+        from django.apps import apps
+        old = throwaway_key()
+        with override_settings(COMMITMENT_OLD_KEYS=old), self.assertLogs("procurement.security", "WARNING") as logs:
+            apps.get_app_config("procurement").ready()
+        output = "\n".join(logs.output)
+        self.assertIn(f"COMMITMENT_KEY fingerprint: {openings.key_fingerprint(self.key)}", output)
+        self.assertIn(f"COMMITMENT_OLD_KEYS fingerprint: {openings.key_fingerprint(old)}", output)
+        self.assertNotIn(self.key, output)
+        self.assertNotIn(old, output)
+
+    def test_a_bad_key_with_the_flag_off_is_reported_without_stopping_the_app(self):
+        from django.apps import apps
+        with override_settings(COMMITMENT_KEY="bad-key-value"), \
+                self.assertLogs("procurement.security", "ERROR") as logs:
+            apps.get_app_config("procurement").ready()
+        self.assertIn("COMMITMENT_KEY is not a valid Fernet key", "\n".join(logs.output))
+        self.assertNotIn("bad-key-value", "\n".join(logs.output))
+
+    def test_a_real_process_with_the_flag_on_and_a_key_still_refuses_without_printing_it(self):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+        from django.conf import settings
+        backend = Path(settings.BASE_DIR)
+        key = throwaway_key()
+        env = {**os.environ, "DB_HOST": "", "DJANGO_SETTINGS_MODULE": "config.settings", "PYTHONPATH": str(backend),
+               "PYTHONIOENCODING": "utf-8", "PAYLOAD_V3_ENABLED": "true", "COMMITMENT_KEY": key}
+        out = subprocess.run([sys.executable, "-c", "import django; django.setup(); print('STARTED')"],
+                             cwd=backend, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("ImproperlyConfigured", out.stderr)
+        self.assertNotIn("STARTED", out.stdout)
+        self.assertNotIn(key, out.stdout + out.stderr)
+
+    def test_the_settings_ship_no_default_key(self):
+        from pathlib import Path
+        from django.conf import settings
+        source = (Path(settings.BASE_DIR) / "config" / "settings.py").read_text(encoding="utf-8")
+        self.assertIn("os.environ.get('COMMITMENT_KEY', '')", source)
+        self.assertIn("os.environ.get('COMMITMENT_OLD_KEYS', '')", source)
+
+    def test_a_full_lifecycle_submits_no_transaction_and_opens_no_connection(self):
+        admin, head = make_admin(), make_head()
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        with patch.object(blockchain, "submit_anchor_server_side") as submit, \
+                patch("socket.socket.connect", side_effect=AssertionError("network used")) as connect:
+            self.client.force_authenticate(user=head)
+            self.assertEqual(self.client.post(f"/api/projects/{project.pk}/approve/").status_code, 200)
+            self.client.force_authenticate(user=admin)
+            self.assertEqual(self.client.post(f"/api/projects/{project.pk}/publish/").status_code, 200)
+            win = Bid.objects.create(project=project, supplier=self.supplier, amount=900, status=Bid.Status.QUALIFIED)
+            self.assertEqual(self.client.post(f"/api/bids/{win.pk}/select-winner/").status_code, 200)
+        submit.assert_not_called()
+        connect.assert_not_called()
+        self.assertFalse(BlockchainAnchor.objects.filter(entity_ref=project.code).exclude(tx_hash="").exists())
+
+    def test_with_the_flag_off_a_full_lifecycle_writes_no_opening_and_only_v2(self):
+        admin, head = make_admin(), make_head()
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        with patch.object(openings, "store_opening", side_effect=AssertionError("opening stored")), \
+                patch.object(payload_v3, "evaluation_payload", side_effect=AssertionError("v3 evaluation")), \
+                patch.object(payload_v3, "bid_leaf_opening", side_effect=AssertionError("v3 leaf")), \
+                patch.object(payload_v3, "award_private_opening", side_effect=AssertionError("v3 award")):
+            self.client.force_authenticate(user=head)
+            self.assertEqual(self.client.post(f"/api/projects/{project.pk}/approve/").status_code, 200)
+            self.client.force_authenticate(user=admin)
+            self.assertEqual(self.client.post(f"/api/projects/{project.pk}/publish/").status_code, 200)
+            win = Bid.objects.create(project=project, supplier=self.supplier, amount=900, status=Bid.Status.QUALIFIED)
+            Bid.objects.create(project=project, supplier=self.other, amount=950, status=Bid.Status.QUALIFIED)
+            self.assertEqual(self.client.post(f"/api/bids/{win.pk}/select-winner/").status_code, 200)
+        self.assertFalse(CommitmentOpening.objects.exists())
+        anchors = BlockchainAnchor.objects.filter(entity_ref=project.code)
+        self.assertIn("EVALUATION_COMPLETED", set(anchors.values_list("stage", flat=True)))
+        for anchor in anchors:
+            self.assertEqual(anchor.payload["v"], 2)
+            self.assertNotIn("kind", anchor.payload)
+        self.assertEqual(blockchain.PAYLOAD_VERSION, 2)
+        self.assertIs(blockchain.PAYLOAD_V3_ENABLED, False)
+        self.assertEqual(self.bid.commitment_salt, "")   # v2 salts untouched (Decision C)
+
+
+class CommitmentStartupMatrixTests(APITestCase):
+    """Phase 3 review: a real process through the gunicorn entry point, for each
+    combination of the flag and the keys. Setup never connects to a database."""
+
+    def _start(self, **settings_env):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+        from django.conf import settings
+        backend = Path(settings.BASE_DIR)
+        env = {**os.environ, "DB_HOST": "", "DJANGO_SETTINGS_MODULE": "config.settings", "PYTHONPATH": str(backend),
+               "PYTHONIOENCODING": "utf-8", "PAYLOAD_V3_ENABLED": "", "COMMITMENT_KEY": "", "COMMITMENT_OLD_KEYS": "",
+               **settings_env}
+        return subprocess.run([sys.executable, "-c", "import config.wsgi; print('STARTED')"],
+                              cwd=backend, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120)
+
+    def test_v3_on_is_refused_with_every_key_state(self):
+        good = throwaway_key()
+        cases = {
+            "no key": ({}, "COMMITMENT_KEY is not set"),
+            "blank key": ({"COMMITMENT_KEY": "   "}, "COMMITMENT_KEY is not set"),
+            "invalid key": ({"COMMITMENT_KEY": "invalid-key-value"}, "COMMITMENT_KEY is not a valid Fernet key"),
+            "invalid old key": ({"COMMITMENT_KEY": good, "COMMITMENT_OLD_KEYS": "invalid-key-value"},
+                                "COMMITMENT_OLD_KEYS entry 1 is not a valid Fernet key"),
+            "valid key": ({"COMMITMENT_KEY": good}, "PAYLOAD_V3_ENABLED is on"),
+        }
+        for name, (env, message) in cases.items():
+            with self.subTest(name):
+                out = self._start(PAYLOAD_V3_ENABLED="true", **env)
+                text = out.stdout + out.stderr
+                self.assertNotEqual(out.returncode, 0)
+                self.assertNotIn("STARTED", out.stdout)
+                self.assertIn("ImproperlyConfigured", out.stderr)
+                self.assertIn(message, out.stderr)
+                self.assertNotIn("invalid-key-value", text)
+                self.assertNotIn(good, text)
+
+    def test_any_spelling_of_true_is_refused(self):
+        self.assertNotEqual(self._start(PAYLOAD_V3_ENABLED=" TRUE ").returncode, 0)
+
+    def test_v3_off_starts_with_every_key_state_and_reports_a_bad_key(self):
+        good = throwaway_key()
+        self.assertIn("STARTED", self._start().stdout)
+        for value in ("false", "1", "yes"):
+            with self.subTest(flag=value):
+                self.assertIn("STARTED", self._start(PAYLOAD_V3_ENABLED=value).stdout)
+        valid = self._start(COMMITMENT_KEY=good)
+        self.assertIn("STARTED", valid.stdout)
+        self.assertNotIn(good, valid.stdout + valid.stderr)
+        invalid = self._start(COMMITMENT_KEY="invalid-key-value")
+        self.assertEqual(invalid.returncode, 0, invalid.stderr)
+        self.assertIn("STARTED", invalid.stdout)
+        self.assertIn("COMMITMENT_KEY is not a valid Fernet key", invalid.stderr)
+        self.assertNotIn("invalid-key-value", invalid.stdout + invalid.stderr)
+
+    def test_a_flag_spelled_any_other_way_writes_v2(self):
+        with patch.dict("os.environ", {"PAYLOAD_V3_ENABLED": "1"}):
+            self.assertFalse(blockchain._env_flag("PAYLOAD_V3_ENABLED", "False"))
+
+    def test_a_valid_current_key_with_an_invalid_old_key_stores_nothing(self):
+        with override_settings(COMMITMENT_KEY=throwaway_key(), COMMITMENT_OLD_KEYS="invalid-key-value"):
+            with self.assertRaises(openings.OpeningsNotConfigured) as caught:
+                openings._keyring()
+        self.assertNotIn("invalid-key-value", str(caught.exception))
+
+
+class AwardTimeSemanticsTests(APITestCase):
+    """Phase 3 review: what the committed `awarded_at` means. 17:30 UTC on 3 Nov
+    is 01:30 on 4 Nov in Manila, so this time is the one where the two dates differ."""
+
+    AT = datetime(2026, 11, 3, 17, 30, 0, 654321, tzinfo=dt_timezone.utc)
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.win = Bid.objects.create(project=self.project, supplier=make_supplier(), amount=900,
+                                      status=Bid.Status.QUALIFIED)
+        self.client.force_authenticate(user=self.admin)
+        with patch("django.utils.timezone.now", return_value=self.AT):
+            self.assertEqual(self.client.post(f"/api/bids/{self.win.pk}/select-winner/").status_code, 200)
+        self.project.refresh_from_db()
+
+    def _opening(self):
+        award = Award.objects.select_related("project").get(project=self.project)
+        return payload_v3.award_private_opening(award, "ab" * 32)
+
+    def test_the_commitment_holds_the_exact_instant_in_utc_after_a_database_round_trip(self):
+        self.assertEqual(self.project.awarded_at, self.AT)
+        self.assertEqual(self._opening()["awarded_at"], "2026-11-03T17:30:00.654321+00:00")
+
+    def test_the_text_is_the_same_whatever_zone_the_server_renders_in(self):
+        from django.utils.timezone import override as tz_override
+        with tz_override("America/New_York"):
+            self.assertEqual(self._opening()["awarded_at"], "2026-11-03T17:30:00.654321+00:00")
+
+    def test_a_time_held_in_another_zone_is_converted_to_utc(self):
+        from zoneinfo import ZoneInfo
+        manila = self.AT.astimezone(ZoneInfo("Asia/Manila"))
+        self.assertEqual(payload_v3.iso_utc(manila), "2026-11-03T17:30:00.654321+00:00")
+
+    def test_late_utc_awards_fall_on_the_next_manila_date(self):
+        from datetime import date
+        self.assertEqual(self.project.awarded_at.date(), date(2026, 11, 3))
+        self.assertEqual(timezone.localdate(self.project.awarded_at), date(2026, 11, 4))
+
+    def test_a_re_award_is_refused_and_the_time_never_moves(self):
+        rival = Bid.objects.create(project=self.project, supplier=make_supplier(), amount=950,
+                                   status=Bid.Status.QUALIFIED)
+        later = self.AT + timedelta(days=2)
+        with patch("django.utils.timezone.now", return_value=later):
+            res = self.client.post(f"/api/bids/{rival.pk}/select-winner/")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.awarded_at, self.AT)
+
+    def test_it_cannot_be_written_through_the_api(self):
+        self.assertIn("awarded_at", ProjectSerializer.Meta.read_only_fields)
+
+    def test_a_naive_datetime_or_a_bare_date_is_refused_never_guessed(self):
+        from datetime import date
+        for value in (datetime(2026, 11, 3, 17, 30), date(2026, 11, 3), "2026-11-03"):
+            with self.subTest(repr(value)):
+                with self.assertRaises(NonCanonicalPayload):
+                    payload_v3.iso_utc(value)
+
+    def test_a_whole_second_still_matches_the_schema(self):
+        whole = datetime(2026, 11, 3, 17, 30, tzinfo=dt_timezone.utc)
+        self.assertEqual(payload_v3.iso_utc(whole), "2026-11-03T17:30:00+00:00")
+        self.project.awarded_at = whole
+        self.project.save(update_fields=["awarded_at"])
+        payload_v3.validate_opening(self._opening())
+
+
+class CommitmentDocumentationTests(APITestCase):
+    """The docs name the keys and hold no value, and v3 is not switched on anywhere."""
+
+    def _read(self, relative):
+        from pathlib import Path
+        from django.conf import settings
+        return (Path(settings.BASE_DIR).parent / relative).read_text(encoding="utf-8")
+
+    def test_every_required_document_names_the_key_and_none_holds_a_value(self):
+        import re
+        fernet_like = re.compile(r"[A-Za-z0-9_-]{43}=")
+        for relative in ("backend/.env.example", "render.yaml", "SECURITY.md"):
+            with self.subTest(relative):
+                text = self._read(relative)
+                self.assertIn("COMMITMENT_KEY", text)
+                self.assertIsNone(fernet_like.search(text))
+        # Excluded from git on this machine, so absent from a clean checkout.
+        from pathlib import Path
+        from django.conf import settings
+        for relative in ("knowledge.md", "AGENTS.md"):
+            path = Path(settings.BASE_DIR).parent / relative
+            if path.exists():
+                self.assertIsNone(fernet_like.search(path.read_text(encoding="utf-8")), relative)
+        example = self._read("backend/.env.example")
+        self.assertRegex(example, r"(?m)^COMMITMENT_KEY=\r?$")
+        self.assertRegex(example, r"(?m)^COMMITMENT_OLD_KEYS=\r?$")
+
+    def test_no_deployment_file_turns_v3_on_or_sets_the_key(self):
+        import re
+        render = self._read("render.yaml")
+        self.assertIsNone(re.search(r"(?m)^\s*- key: (PAYLOAD_V3_ENABLED|COMMITMENT_KEY|COMMITMENT_OLD_KEYS)", render))
+        self.assertIsNone(re.search(r"(?m)^PAYLOAD_V3_ENABLED", self._read("backend/.env.example")))
+
+    def test_decision_a_is_described_as_provisional(self):
+        self.assertIn("WORKING ASSUMPTION", self._read("backend/procurement/payload_v3.py"))
+
+    def test_the_disclosure_policy_is_documented_with_its_open_gaps(self):
+        security = self._read("SECURITY.md")
+        self.assertIn("### Award disclosure policy", security)
+        self.assertIn("**Working policy, and provisional.**", security)
+        self.assertIn("**Blockchain timing can't be hidden.**", security)
+        self.assertIn("**Open gaps.**", security)
+
+    def test_the_phase_6_plan_is_in_a_tracked_document_and_marked_unbuilt(self):
+        security = self._read("SECURITY.md")
+        self.assertIn("**Not implemented.**", security)
+        for requirement in ("Persist before signing", "Failure indicator", "Recovery", "Duplicate prevention"):
+            self.assertIn(requirement, security)
+        self.assertNotIn("(knowledge.md)", security)

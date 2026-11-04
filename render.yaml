@@ -69,6 +69,14 @@ services:
         sync: false
       # - key: FILE_ENCRYPTION_OLD_KEYS
       #   sync: false
+      # Encrypts commitment openings (payload v3). Commented out on purpose:
+      # nothing uses it while PAYLOAD_V3_ENABLED is off. Set it in the dashboard
+      # only under the custody procedure in SECURITY.md section 6, never here.
+      # A separate key: do not reuse FILE_ENCRYPTION_KEY.
+      # - key: COMMITMENT_KEY
+      #   sync: false
+      # - key: COMMITMENT_OLD_KEYS
+      #   sync: false
       # Secret path of the Django admin, e.g. "staff-<random>/". With it unset
       # in production the admin site is not mounted at all.
       - key: ADMIN_URL

@@ -290,6 +290,63 @@
         "document_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
       },
       "data_hash": "0x863223e0e919ce0040c8439b042ad303c9af8b85e940bf209a65c8bae0c11108"
+    },
+    {
+      "name": "bid-leaf/3, winning bid",
+      "payload": {
+        "kind": "bid-leaf/3",
+        "bid_id": 9,
+        "supplier_id": 3,
+        "amount": "229900.00",
+        "submitted_at": "2026-11-03T08:15:00.123456+00:00",
+        "document_hash": "0xabababababababababababababababababababababababababababababababab",
+        "status": "winner",
+        "salt": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "data_hash": "0xecc4337b1d6e4afb0a182a2eb203e89c492f4d934fe981bf96b4e9eea236f863"
+    },
+    {
+      "name": "bid-leaf/3, losing bid with no document",
+      "payload": {
+        "kind": "bid-leaf/3",
+        "bid_id": 12,
+        "supplier_id": 5,
+        "amount": "241000.50",
+        "submitted_at": "2026-11-03T09:00:00+00:00",
+        "document_hash": "",
+        "status": "disqualified",
+        "salt": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "data_hash": "0x3a662336979433e1c1abafee7397a8d83c6c5edb4e3f7f61be473c70da61d063"
+    },
+    {
+      "name": "evaluation/3, leaves sorted by value",
+      "payload": {
+        "v": 3,
+        "kind": "evaluation/3",
+        "entity": "PROJECT",
+        "stage": "EVALUATION_COMPLETED",
+        "code": "PC-7K4M-Q9XT-3HWD",
+        "bid_count": 2,
+        "leaves": [
+          "0x3a662336979433e1c1abafee7397a8d83c6c5edb4e3f7f61be473c70da61d063",
+          "0xecc4337b1d6e4afb0a182a2eb203e89c492f4d934fe981bf96b4e9eea236f863"
+        ]
+      },
+      "data_hash": "0x834d19805677f1bf77b1b5845085207afd4cf1407137e6807bea9392c0c51eaf"
+    },
+    {
+      "name": "award-private/3 (Decision A Option 1, a working assumption)",
+      "payload": {
+        "kind": "award-private/3",
+        "award_id": 4,
+        "bid_id": 9,
+        "supplier_id": 3,
+        "status": "won",
+        "awarded_at": "2026-11-03T09:30:00.654321+00:00",
+        "salt": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "data_hash": "0x83a1662d514398fcb7f85e145e02740c49e25c93ccb18b2499646fa3c0c04c98"
     }
   ]
 }

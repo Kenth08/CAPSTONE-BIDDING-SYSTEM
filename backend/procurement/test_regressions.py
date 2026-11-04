@@ -8,6 +8,8 @@ assertion.
 import contextlib
 import io
 import re
+from datetime import datetime
+from datetime import timezone as dt_timezone
 from urllib.parse import parse_qs, urlparse
 from unittest import mock
 
@@ -1746,6 +1748,67 @@ class ConfirmationNeverErasesWhatItCannotSeeTests(APITestCase):
         self.assertEqual(anchor.chain_status, BlockchainAnchor.ChainStatus.CONFIRMED)
         self.assertEqual((anchor.tx_hash, anchor.block_number), (self.TX, 9_100_000))
         self.assertIsNone(anchor.chain_anchor_id)        # nothing invented
+
+
+class PublicAwardDateTests(APITestCase):
+    """The public procurement detail returned the exact Project.awarded_at, to the
+    microsecond. Only the date is public; the exact time stays internal, for the
+    private commitment and for signed-in viewers."""
+
+    def _award(self, at):
+        from unittest.mock import patch as _patch
+        cache.clear()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        bid = Bid.objects.create(project=self.project, supplier=make_supplier(), amount=900,
+                                 status=Bid.Status.QUALIFIED)
+        self.admin = User.objects.filter(username="admin").first() or make_admin()
+        self.client.force_authenticate(user=self.admin)
+        with _patch("django.utils.timezone.now", return_value=at):
+            self.assertEqual(self.client.post(f"/api/bids/{bid.pk}/select-winner/").status_code, 200)
+        self.project.refresh_from_db()
+        self.client.force_authenticate(user=None)
+
+    def _public(self):
+        res = self.client.get(f"/api/public/procurement/{self.project.code}/")
+        self.assertEqual(res.status_code, 200)
+        return res
+
+    def test_the_public_detail_shows_the_date_and_no_time(self):
+        self._award(datetime(2026, 11, 3, 9, 15, 42, 654321, tzinfo=dt_timezone.utc))
+        res = self._public()
+        self.assertEqual(res.json()["result"]["awarded_at"], "2026-11-03")
+        body = res.content.decode("utf-8")
+        for fragment in ("09:15", "17:15", "42.654321", "654321", "2026-11-03T"):
+            self.assertNotIn(fragment, body)
+
+    def test_the_date_is_the_philippine_date_late_in_the_utc_day(self):
+        self._award(datetime(2026, 11, 3, 17, 30, 0, 654321, tzinfo=dt_timezone.utc))
+        self.assertEqual(self._public().json()["result"]["awarded_at"], "2026-11-04")
+
+    def test_an_award_with_no_exact_time_falls_back_to_its_date(self):
+        self._award(datetime(2026, 11, 3, 9, 15, tzinfo=dt_timezone.utc))
+        Project.objects.filter(pk=self.project.pk).update(awarded_at=None)
+        Award.objects.filter(project=self.project).update(awarded_at="2026-01-15")
+        self.assertEqual(self._public().json()["result"]["awarded_at"], "2026-01-15")
+
+    def test_the_exact_time_stays_authoritative_internally(self):
+        at = datetime(2026, 11, 3, 17, 30, 0, 654321, tzinfo=dt_timezone.utc)
+        self._award(at)
+        self._public()
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.awarded_at, at)
+        self.client.force_authenticate(user=self.admin)
+        record = self.client.get(f"/api/projects/{self.project.pk}/record/").json()
+        self.assertEqual(record["result"]["awarded_at"], "2026-11-03T17:30:00.654321Z")
+
+    def test_the_v2_award_anchors_still_verify(self):
+        self._award(datetime(2026, 11, 3, 17, 30, tzinfo=dt_timezone.utc))
+        self._public()
+        anchors = BlockchainAnchor.objects.filter(entity_ref=self.project.code)
+        self.assertEqual(anchors.count(), 3)
+        for anchor in anchors:
+            self.assertEqual(anchor.payload["v"], 2)
+            self.assertEqual(verify_anchor(anchor, deep=True)["status"], "match")
 
 
 class PayloadVersionDispatchTests(APITestCase):
