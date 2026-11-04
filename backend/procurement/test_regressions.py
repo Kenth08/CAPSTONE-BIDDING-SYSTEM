@@ -32,6 +32,7 @@ from accounts.tests import registration_payload
 
 from .management.commands import seed as seed_cmd
 from .models import Award, Bid, BidAttachment, BlockchainAnchor, Project, Supplier, SupplierCategoryDocument
+from .blockchain import hash_payload, verify_anchor
 from .tests import IN_A_YEAR, IN_TWO_YEARS, attach_base_documents, dummy_pdf, make_admin, make_head, make_project, make_supplier
 
 User = get_user_model()
@@ -1745,3 +1746,262 @@ class ConfirmationNeverErasesWhatItCannotSeeTests(APITestCase):
         self.assertEqual(anchor.chain_status, BlockchainAnchor.ChainStatus.CONFIRMED)
         self.assertEqual((anchor.tx_hash, anchor.block_number), (self.TX, 9_100_000))
         self.assertIsNone(anchor.chain_anchor_id)        # nothing invented
+
+
+class PayloadVersionDispatchTests(APITestCase):
+    """Stage 5 Phase 1 (finding F4): every anchor is verified with the builders
+    of ITS OWN payload version.
+
+    Before PAYLOAD_RULES, verify_anchor rebuilt every anchor with the CURRENT
+    builders and chose the v1 compatibility path with `v < PAYLOAD_VERSION`.
+    The day a new payload shape was introduced, every existing v2 anchor would
+    have been rebuilt in the new shape and reported as altered — honest records
+    on Sepolia turning red, with nothing on-chain able to fix it. These tests
+    register a stand-in "v3" with a different shape, switch the writer to it,
+    and require every older anchor to verify exactly as before."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        cache.clear()
+        media = tempfile.mkdtemp()
+        override = override_settings(MEDIA_ROOT=media)
+        override.enable()
+        self.addCleanup(override.disable)
+        self.addCleanup(shutil.rmtree, media, ignore_errors=True)
+
+        self.admin, self.head = make_admin(), make_head()
+        self.project = make_project(status=Project.Status.PENDING_HEAD)
+        self.v1_anchor = self._write_v1_anchor()
+        # A whole lifecycle under today's writer (v2): Head approval and
+        # publication, then the award (evaluation commitment, winning bid,
+        # AWARDED), then a Notice of Award issued twice (one superseded).
+        self.client.force_authenticate(user=self.head)
+        self.assertEqual(self.client.post(f"/api/projects/{self.project.pk}/approve/").status_code, 200)
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/projects/{self.project.pk}/publish/").status_code, 200)
+        win = Bid.objects.create(project=self.project, supplier=make_supplier(), amount=50000,
+                                 status=Bid.Status.QUALIFIED)
+        Bid.objects.create(project=self.project, supplier=make_supplier(), amount=60000,
+                           status=Bid.Status.QUALIFIED)
+        self.assertEqual(self.client.post(f"/api/bids/{win.pk}/select-winner/").status_code, 200)
+        self.award = Award.objects.get(project=self.project)
+        self.assertEqual(self.client.post(f"/api/awards/{self.award.pk}/documents/generate/",
+                                          {"key": "notice_of_award"}, format="json").status_code, 200)
+        signed = SimpleUploadedFile("signed-noa.pdf", b"%PDF-1.4 signed notice", content_type="application/pdf")
+        self.assertEqual(self.client.post(f"/api/awards/{self.award.pk}/documents/",
+                                          {"key": "notice_of_award", "file": signed},
+                                          format="multipart").status_code, 200)
+        self.anchors = list(BlockchainAnchor.objects.filter(entity_ref=self.project.code).order_by("id"))
+
+    def _write_v1_anchor(self):
+        payload = {
+            "v": 1, "entity": "PROJECT", "stage": "SUBMITTED", "code": self.project.code,
+            "name": self.project.name, "category": self.project.category or "",
+            "type": self.project.type or "", "budget": f"{self.project.budget:.2f}",
+            "status": self.project.status,
+            "bidding_period_days": self.project.bidding_period_days or 0,
+            "delivery_period_days": self.project.delivery_period_days or 0,
+            "deadline": "", "created_at": self.project.created_at.isoformat(),
+            "reviewed_at": "", "published_at": "", "document_hash": "",
+        }
+        return BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+            stage="SUBMITTED", data_hash=hash_payload(payload), payload=payload)
+
+    @staticmethod
+    def _fake_v3():
+        """A stand-in for a future payload module: the v2 shape plus a field
+        v2 never had, under v3. Enough to make a rebuild in the wrong shape fail."""
+        from types import SimpleNamespace
+
+        from . import payload_v2
+
+        def tagged(builder):
+            return lambda *args, **kwargs: {**builder(*args, **kwargs), "v": 3, "kind": "stand-in/3"}
+
+        return SimpleNamespace(
+            project_payload=tagged(payload_v2.project_payload),
+            bid_payload=tagged(payload_v2.bid_payload),
+            award_payload=tagged(payload_v2.award_payload),
+            evaluation_payload=tagged(payload_v2.evaluation_payload),
+            bid_leaf_fields=payload_v2.bid_leaf_fields,
+            iso=payload_v2.iso,
+            REISSUE_KEYS=payload_v2.REISSUE_KEYS,
+        )
+
+    @contextlib.contextmanager
+    def _newer_version_written(self):
+        from . import blockchain
+        with mock.patch.dict(blockchain.PAYLOAD_RULES, {3: blockchain.PayloadRules(3, self._fake_v3())}), \
+                mock.patch.object(blockchain, "PAYLOAD_VERSION", 3):
+            yield
+
+    def _results(self):
+        return {a.id: (a.stage, verify_anchor(a, deep=True)["status"]) for a in self.anchors}
+
+    def test_the_lifecycle_covers_every_kind_of_anchor(self):
+        stages = [a.stage for a in self.anchors]
+        for stage in ("SUBMITTED", "HEAD_APPROVED", "BIDDING_OPEN", "EVALUATION_COMPLETED",
+                      "BID_SUBMITTED", "AWARDED", "NOA_ISSUED"):
+            self.assertIn(stage, stages)
+        self.assertEqual(stages.count("NOA_ISSUED"), 2)
+        self.assertEqual({(a.payload or {}).get("v") for a in self.anchors}, {1, 2})
+
+    def test_old_anchors_verify_the_same_after_a_newer_version_is_introduced(self):
+        before = self._results()
+        self.assertEqual(before[self.v1_anchor.id], ("SUBMITTED", "match"))
+        self.assertTrue(all(status_ in ("match", "superseded") for _, status_ in before.values()), before)
+        self.assertIn("superseded", [status_ for _, status_ in before.values()])
+        with self._newer_version_written():
+            self.assertEqual(self._results(), before)
+
+    def test_new_anchors_are_written_and_verified_in_the_newer_version(self):
+        # The registry works in both directions: today's writer can move on
+        # while yesterday's anchors keep their own rules.
+        fresh = make_project(status=Project.Status.PENDING_HEAD)
+        self.client.force_authenticate(user=self.head)
+        with self._newer_version_written():
+            res = self.client.post(f"/api/projects/{fresh.pk}/approve/")
+            anchor = BlockchainAnchor.objects.get(pk=res.data["anchor"]["id"])
+            self.assertEqual((anchor.payload["v"], anchor.payload["kind"]), (3, "stand-in/3"))
+            self.assertEqual(verify_anchor(anchor)["status"], "match")
+        # Without rules for v3, the same anchor is "can't check here", not "altered".
+        result = verify_anchor(anchor)
+        self.assertEqual((result["status"], result["record"]), ("unavailable", "unavailable"))
+        self.assertIn("payload version 3", result["detail"])
+
+    def test_tampering_is_still_caught_with_a_newer_version_registered(self):
+        with self._newer_version_written():
+            Project.objects.filter(pk=self.project.pk).update(budget=1)
+            Award.objects.filter(pk=self.award.pk).update(amount=1)
+            results = self._results()
+        by_stage = {}
+        for stage, status_ in results.values():
+            by_stage.setdefault(stage, set()).add(status_)
+        # v1 and v2, current and superseded issues alike.
+        for stage in ("SUBMITTED", "HEAD_APPROVED", "BIDDING_OPEN", "AWARDED", "NOA_ISSUED"):
+            self.assertEqual(by_stage[stage], {"mismatch"}, stage)
+
+    def test_unknown_or_malformed_versions_are_unavailable_never_altered(self):
+        template = next(a for a in self.anchors if a.stage == "HEAD_APPROVED").payload
+        for version in (4, 0, -1, "2", 2.0, True, None, [2]):
+            with self.subTest(version=version):
+                payload = {**template, "v": version}
+                anchor = BlockchainAnchor.objects.create(
+                    entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+                    stage="HEAD_APPROVED", data_hash=hash_payload(payload), payload=payload)
+                result = verify_anchor(anchor, deep=True)
+                self.assertEqual((result["status"], result["record"]), ("unavailable", "unavailable"))
+                self.assertIn("payload version", result["detail"])
+
+    def test_a_payload_without_a_version_is_still_version_1(self):
+        payload = {k: v for k, v in self.v1_anchor.payload.items() if k != "v"}
+        anchor = BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+            stage="SUBMITTED", data_hash=hash_payload(payload), payload=payload)
+        self.assertEqual(verify_anchor(anchor)["status"], "match")
+
+    def test_todays_writer_is_unchanged(self):
+        from . import blockchain, canonical
+        self.assertEqual(blockchain.PAYLOAD_VERSION, 2)
+        self.assertIs(blockchain.hash_payload, canonical.hash_payload)
+        self.assertEqual({a.payload["v"] for a in self.anchors if a.id != self.v1_anchor.id}, {2})
+        for anchor in self.anchors:   # every stored payload still reproduces its anchored hash
+            self.assertEqual(hash_payload(anchor.payload), anchor.data_hash, anchor.stage)
+
+    def test_an_inclusion_receipt_for_an_unsupported_version_is_withheld(self):
+        from .blockchain import inclusion_receipt
+        evaluation = next(a for a in self.anchors if a.stage == "EVALUATION_COMPLETED")
+        bid = Bid.objects.filter(project=self.project).first()
+        self.assertIsNotNone(inclusion_receipt(bid))
+        BlockchainAnchor.objects.filter(pk=evaluation.pk).update(payload={**evaluation.payload, "v": 9})
+        self.assertIsNone(inclusion_receipt(bid))
+
+    def _project_anchor(self, payload, data_hash=None, stage="HEAD_APPROVED"):
+        return BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+            stage=stage, payload=payload,
+            data_hash=data_hash or hash_payload(payload))
+
+    def test_a_non_object_payload_is_unavailable_never_altered(self):
+        # Whether or not it happens to reproduce the anchored hash, a stored
+        # payload that is not a JSON object can't be interpreted, so it is
+        # never reported as altered.
+        for payload in (["x"], [{"v": 2}], "a string", 5, 2.5, True):
+            for data_hash in (None, "0x" + "00" * 32):
+                with self.subTest(payload=payload, hash_consistent=data_hash is None):
+                    result = verify_anchor(self._project_anchor(payload, data_hash), deep=True)
+                    self.assertEqual((result["status"], result["record"]), ("unavailable", "unavailable"))
+                    self.assertIn("not a JSON object", result["detail"])
+
+    def test_a_genuinely_different_json_object_is_still_a_mismatch(self):
+        approved = next(a for a in self.anchors if a.stage == "HEAD_APPROVED")
+        # A v2 object whose anchored hash is not what the record hashes to.
+        self.assertEqual(verify_anchor(self._project_anchor(dict(approved.payload), "0x" + "00" * 32))["status"],
+                         "mismatch")
+        # A v1 snapshot edited after anchoring: it no longer reproduces data_hash.
+        edited = {**self.v1_anchor.payload, "budget": "1.00"}
+        self.assertEqual(verify_anchor(self._project_anchor(edited, self.v1_anchor.data_hash, "SUBMITTED"))["status"],
+                         "mismatch")
+        # A valid v2 object, but the live record was changed.
+        Project.objects.filter(pk=self.project.pk).update(name="Renamed after anchoring")
+        self.assertEqual(verify_anchor(approved)["status"], "mismatch")
+
+    def test_empty_payloads_keep_their_existing_result(self):
+        # Unchanged from before Phase 1: with no stored snapshot nothing can be
+        # proven, and these have always reported a mismatch. Unsaved anchors:
+        # the column is NOT NULL, but verification must not depend on that.
+        for payload in (None, {}, []):
+            with self.subTest(payload=payload):
+                anchor = BlockchainAnchor(
+                    entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+                    stage="HEAD_APPROVED", payload=payload, data_hash="0x" + "00" * 32)
+                self.assertEqual(verify_anchor(anchor)["status"], "mismatch")
+
+    def test_an_unsupported_writer_version_is_refused(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        from . import blockchain
+        blockchain.check_writer_version(2, blockchain.PAYLOAD_RULES)    # today's: accepted
+        with self.assertRaisesMessage(ImproperlyConfigured, "PAYLOAD_VERSION = 3 has no entry in PAYLOAD_RULES"):
+            blockchain.check_writer_version(3, blockchain.PAYLOAD_RULES)
+
+    def test_the_writer_version_check_runs_at_import_under_python_O(self):
+        # `python -O` strips asserts; the startup check must not be one. In a
+        # separate `-O` interpreter, import blockchain.py's own source with the
+        # writer version set to 3 (in memory only — no file is changed) and
+        # require the import itself to fail. Local SQLite only: DB_HOST is
+        # blanked and the child calls itself a test run.
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        from django.conf import settings
+        child = "\n".join([
+            "import sys, re, types",
+            "sys.argv = ['manage.py', 'test']",
+            "import django",
+            "django.setup()",
+            "from django.core.exceptions import ImproperlyConfigured",
+            "src = open('procurement/blockchain.py', encoding='utf-8').read()",
+            "src, n = re.subn(r'(?m)^PAYLOAD_VERSION = 2\\r?$', 'PAYLOAD_VERSION = 3', src)",
+            "print('optimize', sys.flags.optimize, 'replaced', n)",
+            "module = types.ModuleType('procurement._writer_version_probe')",
+            "module.__package__ = 'procurement'",
+            "try:",
+            "    exec(compile(src, 'blockchain.py', 'exec'), module.__dict__)",
+            "    print('IMPORTED')",
+            "except ImproperlyConfigured as exc:",
+            "    print('REFUSED', exc)",
+        ])
+        backend = Path(settings.BASE_DIR)
+        env = {**os.environ, "DB_HOST": "", "DJANGO_SETTINGS_MODULE": "config.settings",
+               "PYTHONPATH": str(backend), "PYTHONIOENCODING": "utf-8"}
+        out = subprocess.run([sys.executable, "-O", "-c", child], cwd=backend, env=env,
+                             capture_output=True, text=True, encoding="utf-8", timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("optimize 1 replaced 1", out.stdout)
+        self.assertIn("REFUSED PAYLOAD_VERSION = 3 has no entry in PAYLOAD_RULES", out.stdout)
+        self.assertNotIn("IMPORTED", out.stdout)

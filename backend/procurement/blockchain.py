@@ -25,8 +25,11 @@ import os
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
 
+from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 
+from . import payload_v2
+from .canonical import hash_payload  # noqa: F401 — re-exported: `from .blockchain import hash_payload`
 from .models import AWARD_DOCUMENT_ISSUED_FIELDS, BlockchainAnchor
 
 logger = logging.getLogger(__name__)
@@ -94,15 +97,9 @@ AWARD_OWN_DOCUMENT_STAGES = {
 
 
 # ── Hashing ──────────────────────────────────────────────────────────────────
-def hash_payload(payload):
-    """Deterministic SHA-256 of a dict, "0x"-prefixed.
-
-    sort_keys makes it independent of insertion order and the compact separators
-    remove any whitespace ambiguity, so the frontend / an external auditor can
-    reproduce this byte-for-byte from the same JSON."""
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return "0x" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
+# hash_payload (the canonical JSON encoding, identical for every payload
+# version) lives in canonical.py and is imported above, so the frozen
+# per-version builders can use it too.
 
 def hash_file(file_field):
     """SHA-256 of an uploaded file's contents, "0x"-prefixed, or "" when there is
@@ -136,92 +133,107 @@ def _iso(value):
         return str(value)
 
 
-# ── Canonical payloads (one per entity) ──────────────────────────────────────
-# Only stable, business-meaningful fields go in. Adding a field here changes
-# every future hash, so treat these as a versioned schema: `v` is bumped if the
-# shape ever has to change, and old anchors stay verifiable against their own
-# version (see _legacy_record_ok).
+# ── Payload versions ─────────────────────────────────────────────────────────
+# Only stable, business-meaningful fields go into a payload. Adding a field
+# changes every future hash, so payloads are a versioned schema: each version's
+# builders live in their own FROZEN module (payload_v2, …) and every anchor is
+# verified with the builders of ITS OWN version — the `v` stored in its payload —
+# never with whatever version is written today.
 #
-# v2 — removed the mutable lifecycle fields (project: status/deadline/
-#      reviewed_at/published_at, bid: status/reviewed_at). They changed as a
-#      procurement advanced, so re-hashing an earlier stage produced a different
-#      value and verify_anchor branded untouched records as altered. A verifier
-#      that cries tampering on every normal procurement is worse than no
-#      verifier, so only fields that are final at anchor time are hashed now.
-# v1 — original shape. Anchors written under it are still on-chain and are
-#      verified by the compatibility path below, never re-hashed under v2 rules.
+# That is the point of PAYLOAD_RULES. Before it, verification rebuilt every
+# anchor with the CURRENT builders and picked the legacy path with
+# `v < PAYLOAD_VERSION`. Introducing new builders would then have rebuilt every
+# existing v2 anchor in the new shape and reported honest records as altered.
+#
+#   v2 — current. Exact check: the rebuilt payload must hash to data_hash.
+#   v1 — original shape, still on Sepolia. Checked by _legacy_record_ok against
+#        the fields the v2 builders still produce (see payload_v2's history).
+#
+# A payload whose `v` is not an integer with rules here is never guessed at:
+# verify_anchor reports it as UNAVAILABLE ("unsupported payload version"),
+# not as altered.
+
+class PayloadRules:
+    """How anchors of one payload version are rebuilt and compared.
+
+    `builders` is the frozen module for the shape (project_payload, bid_payload,
+    award_payload, evaluation_payload, bid_leaf_fields, iso, REISSUE_KEYS).
+    `legacy` = the stored snapshot is checked field-by-field against what the
+    builders produce, because the builders no longer produce its exact shape."""
+
+    __slots__ = ("version", "builders", "legacy")
+
+    def __init__(self, version, builders, *, legacy=False):
+        self.version = version
+        self.builders = builders
+        self.legacy = legacy
+
+    def __repr__(self):
+        return f"PayloadRules(v{self.version}{', legacy' if self.legacy else ''})"
+
+
+PAYLOAD_RULES = {
+    1: PayloadRules(1, payload_v2, legacy=True),
+    2: PayloadRules(2, payload_v2),
+}
+
+# The version NEW anchors are written in. Changing it is a release decision of
+# its own (it must have rules above, and old versions keep theirs).
 PAYLOAD_VERSION = 2
 
 
-def project_payload(project, stage, document_hash=""):
-    """What a procurement WAS at `stage`, as a hashable snapshot.
-
-    Only fields that are already final when the anchor is taken belong here.
-    `status`, `deadline`, `reviewed_at` and `published_at` were in v1 and had to
-    come out: they keep changing as the procurement advances, so re-hashing an
-    early stage later produced a different value and the verifier reported
-    honest records as altered — every project that got past its first step lit
-    up red. (See PAYLOAD_VERSION.)
-
-    Nothing meaningful is lost. `stage` already says what the status was, the
-    ordering and timing of the steps are proven by the anchors' own on-chain
-    timestamps — which are far harder to forge than a database column — and the
-    deadline that matters is the one bound into the AWARD stages.
-    """
-    return {
-        "v": PAYLOAD_VERSION,
-        "entity": "PROJECT",
-        "stage": str(stage),
-        "code": project.code,
-        "name": project.name,
-        "category": project.category or "",
-        "type": project.type or "",
-        "budget": f"{project.budget:.2f}",
-        "bidding_period_days": project.bidding_period_days or 0,
-        "delivery_period_days": project.delivery_period_days or 0,
-        "created_at": _iso(project.created_at),
-        "document_hash": document_hash,
-    }
+def check_writer_version(version, rules):
+    """Refuse to run with a writer version that has no rules: every anchor it
+    wrote would be unverifiable. An explicit raise, not an `assert`, so it still
+    runs under `python -O` (which strips asserts)."""
+    if version not in rules:
+        raise ImproperlyConfigured(
+            f"PAYLOAD_VERSION = {version!r} has no entry in PAYLOAD_RULES "
+            f"(supported: {sorted(rules)}). Register its rules before writing anchors in it."
+        )
 
 
-def bid_payload(bid, stage, document_hash=""):
-    return {
-        "v": PAYLOAD_VERSION,
-        "entity": "BID",
-        "stage": str(stage),
-        "project_code": bid.project.code,
-        "bid_id": bid.id,
-        # The supplier is referenced by id only — the company name is personal /
-        # commercial data and is not needed to prove the record is unaltered.
-        "supplier_id": bid.supplier_id,
-        "amount": f"{bid.amount:.2f}",
-        "delivery_timeline": bid.delivery_timeline or "",
-        "submitted_at": _iso(bid.submitted_at),
-        # `status` and `reviewed_at` were dropped in v2 for the same reason as
-        # the project's: they change after the anchor is taken (under_review →
-        # qualified → winner), which made an honest bid verify as altered.
-        "document_hash": document_hash,
-    }
+check_writer_version(PAYLOAD_VERSION, PAYLOAD_RULES)
 
 
-def award_payload(award, stage, document_hash="", issued_at=""):
-    return {
-        "v": PAYLOAD_VERSION,
-        "entity": "AWARD",
-        "stage": str(stage),
-        "project_code": award.project.code,
-        "award_id": award.id,
-        "bid_id": award.bid_id or 0,
-        "supplier_id": award.supplier_id,
-        "amount": f"{award.amount:.2f}",
-        "status": award.status,
-        "awarded_at": _iso(award.awarded_at),
-        # When this document was issued. Inside the hash on purpose: it is the
-        # single field a backdated Notice to Proceed would have to change, and
-        # changing it breaks the anchor.
-        "issued_at": issued_at,
-        "document_hash": document_hash,
-    }
+class UnsupportedPayload(Exception):
+    """An anchor's payload version has no rules on this server."""
+
+
+def current_rules():
+    """Rules for anchors written now. Read at call time, so the version can be
+    switched in one place (and in tests)."""
+    return PAYLOAD_RULES[PAYLOAD_VERSION]
+
+
+def payload_rules(anchor):
+    """The rules for THIS anchor, chosen by the `v` in its own stored payload.
+
+    No payload, or a payload without `v`, is version 1 (as it always was). A
+    stored payload that is not a JSON object, a `v` that is not a plain integer,
+    or an integer without rules here, raises UnsupportedPayload — it is never
+    coerced, treated as another version, or reported as altered."""
+    stored = anchor.payload
+    if stored and not isinstance(stored, dict):
+        kind = {list: "an array", str: "a string", bool: "a boolean"}.get(type(stored), "a number")
+        raise UnsupportedPayload(f"a malformed payload ({kind}, not a JSON object)")
+    payload = stored if isinstance(stored, dict) else {}
+    if "v" not in payload:
+        return PAYLOAD_RULES[1]
+    version = payload["v"]
+    if type(version) is not int:  # noqa: E721 — bool and float must not pass
+        raise UnsupportedPayload(f"a malformed payload version ({version!r})")
+    rules = PAYLOAD_RULES.get(version)
+    if rules is None:
+        raise UnsupportedPayload(f"payload version {version}, which this server has no rules for")
+    return rules
+
+
+# The builders written today, under their historical names (callers and tests
+# import these from here). They are the v2 builders: see payload_v2.
+project_payload = payload_v2.project_payload
+bid_payload = payload_v2.bid_payload
+award_payload = payload_v2.award_payload
 
 
 # ── Recording ────────────────────────────────────────────────────────────────
@@ -262,40 +274,47 @@ def record_anchor(entity_type, entity_ref, stage, payload, *, entity_id="", docu
 # `document_hash=None` means "read the file and hash it"; passing a hash instead
 # reuses the one already recorded, which is how the cheap record-only check
 # avoids touching storage.
+#
+# `rules=None` means the version written today (anchoring); verification passes
+# the anchor's own rules (payload_rules), so an old anchor is rebuilt in the
+# shape it was hashed in.
 
-def project_parts(project, stage, document_hash=None, document_field=None):
+def project_parts(project, stage, document_hash=None, document_field=None, rules=None):
+    builders = (rules or current_rules()).builders
     field = document_field or STAGE_DOCUMENT_FIELD.get(stage, "")
     doc_hash = (
         document_hash if document_hash is not None
         else (hash_file(getattr(project, field, None)) if field else "")
     )
-    return project_payload(project, stage, doc_hash), doc_hash
+    return builders.project_payload(project, stage, doc_hash), doc_hash
 
 
-def bid_parts(bid, stage, document_hash=None, document_field=None):
+def bid_parts(bid, stage, document_hash=None, document_field=None, rules=None):
+    builders = (rules or current_rules()).builders
     field = document_field or STAGE_DOCUMENT_FIELD.get(stage, "")
     doc_hash = (
         document_hash if document_hash is not None
         else (hash_file(getattr(bid, field, None)) if field else "")
     )
-    return bid_payload(bid, stage, doc_hash), doc_hash
+    return builders.bid_payload(bid, stage, doc_hash), doc_hash
 
 
-def award_parts(award, stage, document_hash=None):
+def award_parts(award, stage, document_hash=None, rules=None):
     """AWARDED binds the winning bid's quotation (what was actually promised);
     the post-award stages each bind their own signed instrument on the Award,
     together with the date it was issued."""
+    builders = (rules or current_rules()).builders
     issued_at = ""
     if stage in AWARD_OWN_DOCUMENT_STAGES:
         field = STAGE_DOCUMENT_FIELD.get(stage, "")
         source = getattr(award, field, None) if field else None
         issued_field = AWARD_DOCUMENT_ISSUED_FIELDS.get(field)
-        issued_at = _iso(getattr(award, issued_field, None)) if issued_field else ""
+        issued_at = builders.iso(getattr(award, issued_field, None)) if issued_field else ""
     else:
         source = getattr(award.bid, "quotation_document", None) if award.bid else None
 
     doc_hash = document_hash if document_hash is not None else hash_file(source)
-    return award_payload(award, stage, doc_hash, issued_at), doc_hash
+    return builders.award_payload(award, stage, doc_hash, issued_at), doc_hash
 
 
 def anchor_project(project, stage, *, document_field=None):
@@ -352,33 +371,14 @@ def anchor_award(award, stage=BlockchainAnchor.Stage.AWARDED):
 EVALUATION_STAGE = BlockchainAnchor.Stage.EVALUATION_COMPLETED
 
 
-def bid_leaf_fields(bid):
-    """Exactly what goes into one bid's leaf, in the shape the receipt shows."""
-    return {
-        "bid_id": bid.id,
-        "supplier_id": bid.supplier_id,
-        "amount": f"{bid.amount:.2f}",
-        "submitted_at": _iso(bid.submitted_at),
-        "document_hash": bid.committed_document_hash or "",
-        "status": bid.status,
-        "salt": bid.commitment_salt or "",
-    }
+# The leaf and payload shapes are part of the payload version (payload_v2).
+# These names are the version written today, kept for callers and tests.
+bid_leaf_fields = payload_v2.bid_leaf_fields
+bid_leaf = payload_v2.bid_leaf
 
 
-def bid_leaf(bid):
-    return hash_payload(bid_leaf_fields(bid))
-
-
-def evaluation_payload(project, bids):
-    rows = sorted(bids, key=lambda b: b.id)
-    return {
-        "v": PAYLOAD_VERSION,
-        "entity": "PROJECT",
-        "stage": str(EVALUATION_STAGE),
-        "code": project.code,
-        "bid_count": len(rows),
-        "leaves": [bid_leaf(b) for b in rows],
-    }
+def evaluation_payload(project, bids, rules=None):
+    return (rules or current_rules()).builders.evaluation_payload(project, bids, EVALUATION_STAGE)
 
 
 def _commit_bids(bids):
@@ -443,7 +443,10 @@ def inclusion_receipt(bid):
               .order_by("-id").first())
     if anchor is None or not bid.commitment_salt:
         return None
-    fields = bid_leaf_fields(bid)
+    try:
+        fields = payload_rules(anchor).builders.bid_leaf_fields(bid)
+    except UnsupportedPayload:
+        return None   # no rules for that version here: no receipt rather than a wrong one
     return {
         "leaf_fields": fields,
         "leaf": hash_payload(fields),
@@ -481,9 +484,9 @@ SKIPPED = "skipped"
 # be rebuilt from the record because the file and its issue date moved on.
 SUPERSEDED = "superseded"
 
-# Payload keys that a re-issue is EXPECTED to change. Everything else in an
-# award payload (amount, winner, bid, award date…) must still be unchanged.
-_REISSUE_KEYS = {"v", "document_hash", "issued_at"}
+# Which payload keys a re-issue is EXPECTED to change is part of each payload
+# version (REISSUE_KEYS in payload_v2, …). Everything else in an award payload
+# (amount, winner, bid, award date…) must still be unchanged.
 
 
 def superseding_anchor(anchor):
@@ -500,7 +503,7 @@ def superseding_anchor(anchor):
             .order_by("id").first())
 
 
-def _superseded_record_ok(anchor, rebuilt):
+def _superseded_record_ok(anchor, rebuilt, rules):
     """Record check for a superseded award-document anchor.
 
     Same two steps as the legacy path: the stored snapshot must still hash to
@@ -510,7 +513,8 @@ def _superseded_record_ok(anchor, rebuilt):
     stored = anchor.payload or {}
     if not stored or hash_payload(stored) != anchor.data_hash:
         return False
-    return all(value == stored.get(key) for key, value in rebuilt.items() if key not in _REISSUE_KEYS)
+    reissue_keys = rules.builders.REISSUE_KEYS
+    return all(value == stored.get(key) for key, value in rebuilt.items() if key not in reissue_keys)
 
 
 def live_record(anchor):
@@ -529,22 +533,25 @@ def live_record(anchor):
     return model.objects.filter(pk=anchor.entity_id).first()
 
 
-def rebuild_payload(anchor, record, document_hash=None):
+def rebuild_payload(anchor, record, document_hash=None, rules=None):
     """Re-derive this anchor's payload from `record`, through the SAME builders
-    the anchoring path uses."""
+    the anchoring path used — those of the anchor's own payload version.
+
+    Raises UnsupportedPayload when that version has no rules here."""
+    rules = rules or payload_rules(anchor)
     if anchor.stage == EVALUATION_STAGE:
         # Rebuilt from the bids AS THEY ARE NOW, with their stored salts — an
         # added, deleted, re-priced or re-graded bid changes the hash.
-        return evaluation_payload(record, list(record.bids.all())), ""
+        return evaluation_payload(record, list(record.bids.all()), rules=rules), ""
     if anchor.entity_type == BlockchainAnchor.EntityType.PROJECT:
-        return project_parts(record, anchor.stage, document_hash)
+        return project_parts(record, anchor.stage, document_hash, rules=rules)
     if anchor.entity_type == BlockchainAnchor.EntityType.BID:
-        return bid_parts(record, anchor.stage, document_hash)
-    return award_parts(record, anchor.stage, document_hash)
+        return bid_parts(record, anchor.stage, document_hash, rules=rules)
+    return award_parts(record, anchor.stage, document_hash, rules=rules)
 
 
 def _legacy_record_ok(anchor, rebuilt):
-    """Record check for anchors written before PAYLOAD_VERSION 2.
+    """Record check for version-1 anchors (PAYLOAD_RULES[1], `legacy`).
 
     Their hash covered fields that have since legitimately changed, so it can
     never be reproduced from the live record — re-hashing under v2 rules would
@@ -578,8 +585,17 @@ def verify_anchor(anchor, deep=False):
             result["detail"] = "The record this anchor was taken from no longer exists."
             return result
 
+        # ── Which rules? The anchor's own payload version, never today's ──
+        try:
+            rules = payload_rules(anchor)
+        except UnsupportedPayload as exc:
+            # Not evidence of tampering — this server simply can't interpret
+            # it. Reported as unavailable, never as altered.
+            result["detail"] = f"This record uses {exc}, so it can't be checked here."
+            return result
+
         # ── Record check ──────────────────────────────────────────────────
-        payload, _ = rebuild_payload(anchor, record, document_hash=anchor.document_hash)
+        payload, _ = rebuild_payload(anchor, record, document_hash=anchor.document_hash, rules=rules)
 
         # A re-issued award document: check the old anchor against its own
         # snapshot instead of the live record, which has legitimately moved on.
@@ -587,7 +603,7 @@ def verify_anchor(anchor, deep=False):
         # apply either.
         newer = superseding_anchor(anchor)
         if newer is not None:
-            if _superseded_record_ok(anchor, payload):
+            if _superseded_record_ok(anchor, payload, rules):
                 result.update(
                     status=SUPERSEDED, record=SUPERSEDED, document=SKIPPED,
                     detail=f"Replaced by a later issue of this document on {_iso(newer.created_at)[:10]}.",
@@ -600,7 +616,7 @@ def verify_anchor(anchor, deep=False):
                 )
             return result
 
-        if (anchor.payload or {}).get("v", 1) < PAYLOAD_VERSION:
+        if rules.legacy:
             record_ok = _legacy_record_ok(anchor, payload)
         else:
             record_ok = hash_payload(payload) == anchor.data_hash
@@ -616,7 +632,7 @@ def verify_anchor(anchor, deep=False):
             elif result["document"] == UNAVAILABLE:
                 result["detail"] = result["detail"] or "A committed quotation document is missing from storage."
         elif deep and anchor.document_hash:
-            _, current_doc_hash = rebuild_payload(anchor, record, document_hash=None)
+            _, current_doc_hash = rebuild_payload(anchor, record, document_hash=None, rules=rules)
             if not current_doc_hash:
                 result["document"] = UNAVAILABLE
                 result["detail"] = result["detail"] or "The anchored document is missing from storage."
