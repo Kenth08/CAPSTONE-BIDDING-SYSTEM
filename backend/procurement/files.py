@@ -23,6 +23,9 @@ THE RULES, IN ONE PLACE  (see `_can_read`)
     award documents             → Admin, Head, or the winning supplier;
                                   the Notice of Award is also PUBLIC once the
                                   procurement is awarded (`_is_public`)
+    earlier award-document
+      versions (awardversion)   → exactly the rule of that award's documents;
+                                  never public (only the current NOA is)
 
 Everything else — including another supplier's anything — is a 404, never a
 403: whether a supplier uploaded a particular document is itself private.
@@ -66,6 +69,7 @@ from .models import (
     PROCUREMENT_DOCUMENT_KEYS,
     SUPPLIER_DOCUMENT_KEYS,
     Award,
+    AwardDocumentVersion,
     Bid,
     BidAttachment,
     BidProductImage,
@@ -103,6 +107,8 @@ ALLOWED_FIELDS = {
     "project": set(PROCUREMENT_DOCUMENT_KEYS) | {"reference_image"},
     "bid": set(BID_DOCUMENT_KEYS),
     "award": set(AWARD_DOCUMENT_KEYS),
+    # One issue of a post-award document (AwardDocumentVersion rows).
+    "awardversion": {"file"},
     "attachment": {"file"},
     "bidimage": {"image"},
 }
@@ -117,7 +123,7 @@ SUPPLIER_VISIBLE_PROJECT_FIELDS = {
 
 # Award documents the Head may read. The Head approves procurements and sees
 # their outcome, but never evaluates bids or reviews supplier registrations.
-HEAD_KINDS = {"project", "award"}
+HEAD_KINDS = {"project", "award", "awardversion"}
 
 
 def _supplier_of(user):
@@ -152,6 +158,8 @@ def _can_read(user, kind, record, field):
         return record.bid.supplier_id == supplier.pk
     if kind == "award":
         return record.supplier_id == supplier.pk and record.status == Award.Status.WON
+    if kind == "awardversion":
+        return _can_read(user, "award", record.award, record.key)
     if kind == "project":
         # Mirrors ProjectViewSet.get_queryset (published + category match) and
         # adds the verification requirement bidding itself has.
@@ -184,6 +192,7 @@ _LOOKUPS = {
     "project": lambda: Project.objects.all(),
     "bid": lambda: Bid.objects.select_related("supplier"),
     "award": lambda: Award.objects.select_related("supplier", "project"),
+    "awardversion": lambda: AwardDocumentVersion.objects.select_related("award__supplier", "award__project"),
     "attachment": lambda: BidAttachment.objects.select_related("bid"),
     "bidimage": lambda: BidProductImage.objects.select_related("bid"),
 }
@@ -239,6 +248,8 @@ def display_name(record, field, field_file):
     original name when one was recorded (stored names are random UUIDs, see
     uploads.py), otherwise the stored name's basename for older files."""
     recorded = (getattr(record, "original_filenames", None) or {}).get(field)
+    if not recorded and isinstance(record, AwardDocumentVersion):
+        recorded = record.original_filename
     if not recorded and isinstance(record, BidAttachment):
         recorded = record.file_name
     return display_filename(recorded or os.path.basename(getattr(field_file, "name", "") or ""))

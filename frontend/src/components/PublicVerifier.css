@@ -146,6 +146,8 @@
 .pv-chip.pv-pending { color: #fbbf24; background: rgba(251, 191, 36, 0.1);  border-color: rgba(251, 191, 36, 0.28); }
 .pv-chip.pv-bad     { color: #fca5a5; background: rgba(239, 68, 68, 0.1);   border-color: rgba(239, 68, 68, 0.28); }
 .pv-chip.pv-extra   { color: #93c5fd; background: rgba(59, 130, 246, 0.1);  border-color: rgba(59, 130, 246, 0.28); }
+.pv-chip.pv-superseded { color: #cbd5e1; background: rgba(148, 163, 184, 0.12); border-color: rgba(148, 163, 184, 0.3); }
+.pv-step-chips { display: inline-flex; flex-wrap: wrap; gap: 6px; }
 
 /* ── Trail ────────────────────────────────────────────────────────────────── */
 .pv-trail {
@@ -308,8 +310,10 @@
 .pv-verdict p { font-size: 12px; margin-top: 4px; }
 .pv-verdict.pv-ok  { color: #a7f3d0; background: rgba(16, 185, 129, 0.09); border: 1px solid rgba(16, 185, 129, 0.28); }
 .pv-verdict.pv-bad { color: #fecaca; background: rgba(239, 68, 68, 0.09);  border: 1px solid rgba(239, 68, 68, 0.28); }
+.pv-verdict.pv-pending { color: #fde68a; background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.28); }
 .pv-verdict.pv-ok svg  { color: var(--primary); flex-shrink: 0; }
 .pv-verdict.pv-bad svg { color: #ef4444; flex-shrink: 0; }
+.pv-verdict.pv-pending svg { color: #fbbf24; flex-shrink: 0; }
 
 @media (max-width: 640px) {
   .pv-btn { width: 100%; justify-content: center; }

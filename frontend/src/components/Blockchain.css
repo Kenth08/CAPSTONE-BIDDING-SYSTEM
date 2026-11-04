@@ -121,6 +121,20 @@
 .bc-badge-anchored { background: var(--tone-success-bg); color: var(--tone-success-fg); border-color: var(--tone-success-border); }
 .bc-badge-partial  { background: var(--tone-warning-bg); color: var(--tone-warning-fg); border-color: var(--tone-warning-border); }
 .bc-badge-pending  { background: var(--tone-neutral-bg); color: var(--tone-neutral-fg); border-color: var(--tone-neutral-border); }
+.bc-badge-reported { background: var(--tone-info-bg); color: var(--tone-info-fg); border-color: var(--tone-info-border); }
+.bc-badge-bad      { background: var(--tone-danger-bg); color: var(--tone-danger-fg); border-color: var(--tone-danger-border); }
+.bc-panel-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bc-check {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--fs-micro); font-weight: 600; padding: 4px 10px; border-radius: 999px;
+  background: var(--surface); color: var(--text-strong); border: 1px solid var(--border); cursor: pointer;
+}
+.bc-check:hover:not(:disabled) { border-color: var(--c-primary-500); color: var(--c-primary-700); }
+.bc-check:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.bc-check:disabled { opacity: 0.6; cursor: not-allowed; }
+.bc-check-note { padding: 8px 20px; font-size: var(--fs-micro); color: var(--text-muted); border-bottom: 1px solid var(--border); }
+/* Read-only deployment: why "Anchor now" is disabled. */
+.bc-signing-off { display: flex; align-items: center; gap: 6px; color: var(--tone-warning-fg); background: var(--tone-warning-bg); }
 
 /* ── Anchor trail panel (vertical timeline) ───────────────────────────────── */
 .bc-panel { border: 1px solid var(--border); border-radius: var(--r-card); overflow: hidden; background: var(--surface); }
@@ -204,6 +218,8 @@
   box-shadow: 0 0 0 1px var(--c-primary-500);
 }
 .bc-row.is-pending .bc-row-marker { background: var(--tone-warning-bg); color: var(--tone-warning-fg); box-shadow: 0 0 0 1px var(--tone-warning-border); }
+.bc-row.is-reported .bc-row-marker { background: var(--tone-info-bg); color: var(--tone-info-fg); box-shadow: 0 0 0 1px var(--tone-info-border); }
+.bc-row.is-bad .bc-row-marker { background: var(--tone-danger-bg); color: var(--tone-danger-fg); box-shadow: 0 0 0 1px var(--tone-danger-border); }
 .bc-row-main { flex: 1; min-width: 0; padding-top: 3px; }
 .bc-row-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .bc-row-stage { font-size: var(--fs-small); font-weight: 600; color: var(--text-strong); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

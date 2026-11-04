@@ -1611,3 +1611,137 @@ class SupplierCategoryDocumentMigrationTests(TransactionTestCase):
         BackSupplier = back.get_model("procurement", "Supplier")
         self.assertEqual(BackSupplier.objects.get(pk=verified.pk).qualification_status, "verified")
         self.assertNotIn("procurement_suppliercategorydocument", connection.introspection.table_names())
+
+
+class ReissuedAwardDocumentVerificationTests(APITestCase):
+    """Re-issuing an award document (generate the draft, then upload the signed
+    copy — the flow the Awards page encourages) overwrote the document and its
+    *_issued_at. verify_anchor rebuilt the OLDER anchor from that live record,
+    got the new issue date, and reported an honest procurement as "altered" on
+    the public verifier. The older anchor must read "superseded" instead, while
+    a real edit (the award amount) is still caught on every anchor."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.winner = make_supplier()
+        self.bid = qualified_bid(self.project, self.winner, 1000)
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/bids/{self.bid.pk}/select-winner/")
+        self.award = Award.objects.get(project=self.project)
+
+    def _reissue_noa(self):
+        res = self.client.post(f"/api/awards/{self.award.pk}/documents/generate/",
+                               {"key": "notice_of_award"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        res = self.client.post(f"/api/awards/{self.award.pk}/documents/",
+                               {"key": "notice_of_award", "file": dummy_pdf("signed-noa.pdf")},
+                               format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        return list(BlockchainAnchor.objects.filter(
+            stage=BlockchainAnchor.Stage.NOA_ISSUED).order_by("id"))
+
+    def _public_trail(self, deep=False):
+        url = f"/api/public/procurement/{self.project.code}/anchors/" + ("?deep=1" if deep else "")
+        self.client.force_authenticate(user=None)
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return res.data
+
+    def test_older_issue_is_superseded_and_latest_matches(self):
+        older, latest = self._reissue_noa()
+        data = self._public_trail(deep=True)
+        by_hash = {a["data_hash"]: a for a in data["anchors"]}
+        self.assertEqual(by_hash[older.data_hash]["integrity"]["status"], "superseded")
+        self.assertEqual(by_hash[latest.data_hash]["integrity"]["status"], "match")
+        self.assertEqual(data["altered_count"], 0)
+
+    def test_editing_the_award_amount_is_still_caught_on_both_issues(self):
+        older, latest = self._reissue_noa()
+        Award.objects.filter(pk=self.award.pk).update(amount=1)
+        by_hash = {a["data_hash"]: a for a in self._public_trail()["anchors"]}
+        self.assertEqual(by_hash[older.data_hash]["integrity"]["status"], "mismatch")
+        self.assertEqual(by_hash[latest.data_hash]["integrity"]["status"], "mismatch")
+
+    def test_editing_the_old_anchor_snapshot_is_caught(self):
+        older, _ = self._reissue_noa()
+        payload = dict(older.payload)
+        payload["issued_at"] = "2020-01-01T00:00:00+00:00"   # someone "backdates" the old notice
+        BlockchainAnchor.objects.filter(pk=older.pk).update(payload=payload)
+        by_hash = {a["data_hash"]: a for a in self._public_trail()["anchors"]}
+        self.assertEqual(by_hash[older.data_hash]["integrity"]["status"], "mismatch")
+
+
+class SelectWinnerAnchorSequenceTests(APITestCase):
+    """select_winner created the winning BID_SUBMITTED anchor and the AWARDED
+    anchor but returned only the latter, so in the MetaMask flow the bid's
+    anchor was never offered for signing."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.bid = qualified_bid(self.project, make_supplier(), 1000)
+        self.client.force_authenticate(user=self.admin)
+
+    def test_response_carries_every_anchor_in_signing_order(self):
+        res = self.client.post(f"/api/bids/{self.bid.pk}/select-winner/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        stages = [a["stage"] for a in res.data["anchor_sequence"]]
+        self.assertEqual(stages[-2:], ["BID_SUBMITTED", "AWARDED"])
+        # Older clients still read `anchor`.
+        self.assertEqual(res.data["anchor"]["stage"], "AWARDED")
+        for a in res.data["anchor_sequence"]:
+            self.assertTrue(a["attach_url"])
+            self.assertFalse(a["anchored"])
+
+
+class ConfirmationNeverErasesWhatItCannotSeeTests(APITestCase):
+    """Two ways a genuine anchor could lose its tx hash because of the NODE,
+    not the chain (found while adding on-chain identity, Stage 2)."""
+
+    LEDGER = "0x" + "12" * 20
+    TX = "0x" + "ab" * 32
+
+    def setUp(self):
+        patcher = mock.patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", self.LEDGER)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _anchor(self, **fields):
+        from datetime import timedelta
+        from django.utils import timezone
+        return BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref="PRC-2026-976X-TVMX", stage="SUBMITTED",
+            data_hash="0x" + "cd" * 32, tx_hash=self.TX,
+            anchored_at=timezone.now() - timedelta(days=90), **fields)
+
+    def test_an_unreadable_ledger_state_is_not_read_as_dropped(self):
+        # Old tx unknown to a pruned node, AND the getAnchorsByRef fallback
+        # errors: _ledger_holds used to return False ("not there") and the
+        # genuine tx hash was cleared as DROPPED.
+        from .blockchain import confirm_anchor
+        from .tests import sepolia_node
+        anchor = self._anchor()
+        w3 = sepolia_node(receipt_missing=True, tx_known=False)
+        w3.eth.contract.return_value.functions.getAnchorsByRef.side_effect = ConnectionError("rpc down")
+        self.assertEqual(confirm_anchor(anchor, w3=w3), "unknown")
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.tx_hash, self.TX)
+        self.assertFalse(AuditLog.objects.filter(action="blockchain.dropped").exists())
+
+    def test_a_confirmed_anchor_is_not_downgraded_when_its_receipt_is_pruned(self):
+        # Anchors confirmed before Stage 2 have no on-chain identity yet and
+        # are re-read to fill it in. On the default (pruning) RPC the receipt
+        # is gone: that must leave the earlier confirmation exactly as it was.
+        from .blockchain import confirm_anchor
+        from .tests import sepolia_node
+        anchor = self._anchor(chain_status=BlockchainAnchor.ChainStatus.CONFIRMED, block_number=9_100_000)
+        w3 = sepolia_node(receipt_missing=True, tx_known=False)
+        w3.eth.contract.return_value.functions.getAnchorsByRef.return_value.call.return_value = []
+        self.assertEqual(confirm_anchor(anchor, w3=w3), "unknown")
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.chain_status, BlockchainAnchor.ChainStatus.CONFIRMED)
+        self.assertEqual((anchor.tx_hash, anchor.block_number), (self.TX, 9_100_000))
+        self.assertIsNone(anchor.chain_anchor_id)        # nothing invented

@@ -776,3 +776,408 @@ class SecurityHeaderTests(_MediaTestCase):
     def test_hsts_is_one_year_with_subdomains_over_https(self):
         res = self.client.get("/api/public/procurement/", secure=True)
         self.assertEqual(res["Strict-Transport-Security"], "max-age=31536000; includeSubDomains")
+
+
+class ProcurementRecordVisibilityTests(APITestCase):
+    """GET /projects/{id}/record/ and the public record: every visibility rule
+    is enforced by the server (procurement/record.py), not by the UI.
+
+    admin -> everything incl. payloads; head -> all bids + amounts, no files,
+    no payloads (D3); supplier -> only if they bid, own bid only, contract
+    amount only if they won; public -> winner + date only (D2)."""
+
+    WIN, LOSE = 52111, 57333
+
+    def setUp(self):
+        cache.clear()
+        self.admin, self.head = make_admin(), make_head()
+        self.winner, self.loser, self.outsider = make_supplier(), make_supplier(), make_supplier()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.win = Bid.objects.create(project=self.project, supplier=self.winner, amount=self.WIN,
+                                      status=Bid.Status.QUALIFIED, delivery_timeline="30 days")
+        self.lose = Bid.objects.create(project=self.project, supplier=self.loser, amount=self.LOSE,
+                                       status=Bid.Status.QUALIFIED, delivery_timeline="45 days")
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/bids/{self.win.pk}/select-winner/").status_code, 200)
+        self.client.post(f"/api/awards/{Award.objects.get().pk}/documents/generate/",
+                         {"key": "notice_of_award"}, format="json")
+        self.url = f"/api/projects/{self.project.pk}/record/"
+
+    def _get(self, user):
+        self.client.force_authenticate(user=user)
+        return self.client.get(self.url)
+
+    def test_admin_sees_everything_including_payloads(self):
+        res = self._get(self.admin)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["bid_count"], 2)
+        self.assertEqual({b["amount"] for b in res.data["bids"]}, {f"{self.WIN}.00", f"{self.LOSE}.00"})
+        self.assertEqual(res.data["result"]["amount"], f"{self.WIN}.00")
+        self.assertTrue(all("payload" in a for a in res.data["blockchain"]["anchors"]))
+        stages = {a["stage"] for a in res.data["blockchain"]["anchors"]}
+        self.assertTrue({"EVALUATION_COMPLETED", "BID_SUBMITTED", "AWARDED", "NOA_ISSUED"} <= stages)
+
+    def test_head_sees_all_bids_and_amounts_but_no_payloads_or_bid_files(self):
+        res = self._get(self.head)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(len(res.data["bids"]), 2)
+        self.assertEqual(res.data["result"]["amount"], f"{self.WIN}.00")
+        self.assertFalse(any("payload" in a for a in res.data["blockchain"]["anchors"]))
+        body = str(res.data)
+        self.assertNotIn("/api/files/bid/", body)
+        self.assertNotIn("commitment_salt", body)
+
+    def test_losing_supplier_sees_only_their_own_bid(self):
+        res = self._get(self.loser.user)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual([b["id"] for b in res.data["bids"]], [self.lose.pk])
+        self.assertNotIn("bid_count", res.data)
+        self.assertEqual(res.data["result"]["winner"], self.winner.company)
+        self.assertIsNone(res.data["result"]["amount"])          # not the winner -> no contract amount
+        self.assertFalse(res.data["result"]["you_won"])
+        self.assertEqual(res.data["award_documents"], [])
+        body = str(res.data)
+        self.assertNotIn(str(self.WIN), body)
+        self.assertFalse(any("payload" in a for a in res.data["blockchain"]["anchors"]))
+        # No rival bid anchor (the winner's BID_SUBMITTED) leaks to them.
+        self.assertFalse(any(a["entity_type"] == "BID" for a in res.data["blockchain"]["anchors"]))
+        # Their inclusion receipt is there and checks out.
+        receipt = res.data["receipts"][0]["receipt"]
+        self.assertEqual(receipt["leaf_fields"]["amount"], f"{self.LOSE}.00")
+        self.assertIn(receipt["leaf"], receipt["payload"]["leaves"])
+
+    def test_winning_supplier_sees_amount_and_award_documents(self):
+        res = self._get(self.winner.user)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertTrue(res.data["result"]["you_won"])
+        self.assertEqual(res.data["result"]["amount"], f"{self.WIN}.00")
+        noa = next(d for d in res.data["award_documents"] if d["key"] == "notice_of_award")
+        self.assertTrue(noa["url"])
+        self.assertNotIn(str(self.LOSE), str(res.data))
+
+    def test_supplier_who_did_not_bid_and_anonymous_users_get_nothing(self):
+        self.assertEqual(self._get(self.outsider.user).status_code, 404)
+        self.client.force_authenticate(user=None)
+        self.assertIn(self.client.get(self.url).status_code, (401, 403))
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.get("/api/projects/999999/record/").status_code, 404)
+
+    def test_timeline_marks_what_is_on_chain_and_what_is_database_only(self):
+        events = {e["key"]: e for e in self._get(self.admin).data["timeline"]}
+        self.assertEqual(events[f"bid-{self.lose.pk}"]["source"], "database")
+        self.assertEqual(events["evaluation"]["source"], "blockchain")
+        self.assertEqual(events["awarded"]["source"], "blockchain")
+        self.assertEqual(len(events["awarded"]["anchor_ids"]), 2)        # BID_SUBMITTED + AWARDED
+
+    def test_public_record_shows_winner_and_date_only(self):
+        self.client.force_authenticate(user=None)
+        res = self.client.get(f"/api/public/procurement/{self.project.code}/")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["result"]["state"], "awarded")
+        self.assertEqual(res.data["result"]["winner"], self.winner.company)
+        body = str(res.data)
+        # (make_supplier gives every supplier the same company name, so the
+        # loser's identity can't be checked by name here; no bid rows exist in
+        # the public record at all, which the absence of amounts covers.)
+        for secret in (str(self.WIN), str(self.LOSE), "bids_received", "payload", "leaves"):
+            self.assertNotIn(secret, body)
+
+    def test_public_record_404s_for_unpublished_procurements(self):
+        draft = make_project(status=Project.Status.PENDING_HEAD)
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get(f"/api/public/procurement/{draft.code}/").status_code, 404)
+        self.assertEqual(self.client.get("/api/public/procurement/PC-NOPE-NOPE-NOPE/").status_code, 404)
+
+    def test_closed_procurements_are_listed_publicly_without_bid_details(self):
+        closed = make_project(status=Project.Status.CLOSED)
+        Bid.objects.create(project=closed, supplier=self.loser, amount=61234)
+        self.client.force_authenticate(user=None)
+        res = self.client.get("/api/public/procurement/")
+        self.assertIn(closed.code, [c["code"] for c in res.data["closed"]])
+        self.assertNotIn("61234", str(res.data))
+        detail = self.client.get(f"/api/public/procurement/{closed.code}/")
+        self.assertEqual(detail.data["result"]["state"], "closed")
+        self.assertNotIn("bids_received", detail.data)
+
+
+class AwardedProcurementFixture:
+    """An awarded procurement with project-stage anchors, two bids (one won),
+    the award anchors and a Notice of Award — shared by the packet and record
+    detail access tests."""
+
+    WIN, LOSE = 52111, 57333
+
+    def setUp(self):
+        from .blockchain import anchor_project
+        cache.clear()
+        self.admin, self.head = make_admin(), make_head()
+        self.winner, self.loser, self.outsider = make_supplier(), make_supplier(), make_supplier()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.submitted = anchor_project(self.project, BlockchainAnchor.Stage.SUBMITTED)
+        self.published = anchor_project(self.project, BlockchainAnchor.Stage.BIDDING_OPEN)
+        self.win = Bid.objects.create(project=self.project, supplier=self.winner, amount=self.WIN,
+                                      status=Bid.Status.QUALIFIED, delivery_timeline="30 days")
+        self.lose = Bid.objects.create(project=self.project, supplier=self.loser, amount=self.LOSE,
+                                       status=Bid.Status.QUALIFIED, delivery_timeline="45 days")
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/bids/{self.win.pk}/select-winner/").status_code, 200)
+        self.client.post(f"/api/awards/{Award.objects.get().pk}/documents/generate/",
+                         {"key": "notice_of_award"}, format="json")
+        self.client.force_authenticate(user=None)
+        self.project.refresh_from_db()
+        by = lambda stage: BlockchainAnchor.objects.get(entity_ref=self.project.code, stage=stage)  # noqa: E731
+        self.evaluation = by("EVALUATION_COMPLETED")
+        self.winning_bid = by("BID_SUBMITTED")
+        self.awarded = by("AWARDED")
+        self.noa = by("NOA_ISSUED")
+        self.private = [self.evaluation, self.winning_bid, self.awarded, self.noa]
+        self.win.refresh_from_db()      # salts are set at award time
+        self.lose.refresh_from_db()
+        self.assertTrue(self.win.commitment_salt and self.lose.commitment_salt)
+
+
+
+class VerificationPacketAccessTests(AwardedProcurementFixture, APITestCase):
+    """Verification packets (procurement/packets.py) carry the EXACT payload, so
+    who may fetch which one is enforced here by direct API calls — never by a
+    hidden button. Public: project stages of a public procurement only. Admin /
+    Head: everything. Winner: award records + own bid + own receipt. Loser: own
+    receipt only. Everyone else: 404, the same as a missing anchor."""
+
+    def _public(self, anchor, code=None):
+        return self.client.get(f"/api/public/procurement/{code or self.project.code}/anchors/{anchor.pk}/packet/")
+
+    def _auth(self, user, anchor, project=None):
+        self.client.force_authenticate(user=user)
+        res = self.client.get(f"/api/projects/{(project or self.project).pk}/anchors/{anchor.pk}/packet/")
+        self.client.force_authenticate(user=None)
+        return res
+
+    def _no_secrets(self, res):
+        body = str(res.data)
+        for secret in (str(self.WIN), str(self.LOSE), "supplier_id", "salt", "amount",
+                       self.win.commitment_salt, self.lose.commitment_salt):
+            self.assertNotIn(secret, body)
+
+    # ── public ──
+    def test_public_gets_the_exact_stored_payload_of_project_stages(self):
+        from .blockchain import hash_payload
+        for anchor in (self.submitted, self.published):
+            res = self._public(anchor)
+            self.assertEqual(res.status_code, 200, res.data)
+            anchor.refresh_from_db()
+            self.assertEqual(res.data["payload"], anchor.payload)          # served as stored
+            self.assertEqual(hash_payload(res.data["payload"]), res.data["data_hash"])
+            self.assertTrue(res.data["server_check"]["payload_reproduces_data_hash"])
+            self.assertEqual(res.data["expected"]["chain_id"], 11155111)
+            self.assertIn("sort_keys=True", res.data["hashing"]["canonical_json"])
+            self._no_secrets(res)
+
+    def test_public_never_gets_award_bid_or_evaluation_packets(self):
+        for anchor in self.private:
+            with self.subTest(anchor.stage):
+                res = self._public(anchor)
+                self.assertEqual(res.status_code, 404)
+                self.assertNotIn("payload", res.data)
+
+    def test_public_cannot_reach_an_anchor_through_another_procurements_code(self):
+        other = make_project(status=Project.Status.PUBLISHED)
+        self.assertEqual(self._public(self.published, code=other.code).status_code, 404)
+
+    def test_public_gets_nothing_for_a_procurement_that_is_not_public(self):
+        for status_ in (Project.Status.PENDING_HEAD, Project.Status.REJECTED, Project.Status.DRAFT):
+            Project.objects.filter(pk=self.project.pk).update(status=status_)
+            self.assertEqual(self._public(self.submitted).status_code, 404, status_)
+
+    def test_a_project_payload_with_an_unexpected_key_is_withheld_not_redacted(self):
+        BlockchainAnchor.objects.filter(pk=self.published.pk).update(
+            payload={**self.published.payload, "amount": "52111.00"})
+        self.assertEqual(self._public(self.published).status_code, 404)
+        # Admin still gets it whole.
+        self.assertEqual(self._auth(self.admin, self.published).status_code, 200)
+
+    # ── authenticated ──
+    def test_admin_and_head_get_every_packet(self):
+        for user in (self.admin, self.head):
+            for anchor in [self.submitted, self.published, *self.private]:
+                res = self._auth(user, anchor)
+                self.assertEqual(res.status_code, 200, (user.role, anchor.stage))
+                self.assertNotIn("receipt", res.data)          # no salts for anyone but the bidder
+        award = self._auth(self.head, self.awarded)
+        self.assertEqual(award.data["payload"]["amount"], f"{self.WIN}.00")
+
+    def test_the_winner_gets_award_records_own_bid_and_own_receipt(self):
+        for anchor in (self.awarded, self.noa, self.winning_bid):
+            self.assertEqual(self._auth(self.winner.user, anchor).status_code, 200, anchor.stage)
+        res = self._auth(self.winner.user, self.evaluation)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["receipt"]["leaf_fields"]["bid_id"], self.win.pk)
+        self.assertIn(res.data["receipt"]["leaf"], res.data["payload"]["leaves"])
+        self.assertNotIn(str(self.LOSE), str(res.data))
+
+    def test_a_losing_bidder_gets_only_their_own_receipt(self):
+        for anchor in (self.awarded, self.noa, self.winning_bid):
+            res = self._auth(self.loser.user, anchor)
+            self.assertEqual(res.status_code, 404, anchor.stage)
+            self.assertNotIn(str(self.WIN), str(res.data))
+        res = self._auth(self.loser.user, self.evaluation)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["receipt"]["leaf_fields"]["bid_id"], self.lose.pk)
+        body = str(res.data)
+        self.assertNotIn(str(self.WIN), body)
+        self.assertNotIn(self.win.commitment_salt, body)
+
+    def test_a_supplier_who_did_not_bid_gets_nothing_through_the_authenticated_route(self):
+        for anchor in [self.submitted, *self.private]:
+            self.assertEqual(self._auth(self.outsider.user, anchor).status_code, 404, anchor.stage)
+
+    def test_anonymous_callers_cannot_use_the_authenticated_route(self):
+        res = self.client.get(f"/api/projects/{self.project.pk}/anchors/{self.awarded.pk}/packet/")
+        self.assertIn(res.status_code, (401, 403))
+        self.assertNotIn("payload", res.data)
+
+    def test_an_anchor_of_another_procurement_is_404_even_for_admin(self):
+        other = make_project(status=Project.Status.PUBLISHED)
+        self.assertEqual(self._auth(self.admin, self.awarded, project=other).status_code, 404)
+
+    def test_the_winner_of_one_procurement_gets_nothing_private_from_another(self):
+        other = make_project(status=Project.Status.PUBLISHED)
+        Bid.objects.create(project=other, supplier=self.winner, amount=1000, status=Bid.Status.UNDER_REVIEW)
+        self.assertEqual(self._auth(self.winner.user, self.awarded, project=other).status_code, 404)
+
+
+class AnchorDetailAccessTests(AwardedProcurementFixture, APITestCase):
+    """The record details page (GET .../anchors/{id}/): chain evidence is shown
+    to whoever already sees that step in the trail, but never a payload, never
+    a private amount, and never a file the viewer may not download. The packet
+    stays behind its own rule (`packet_available`)."""
+
+    def _public(self, anchor, code=None):
+        return self.client.get(f"/api/public/procurement/{code or self.project.code}/anchors/{anchor.pk}/")
+
+    def _auth(self, user, anchor, project=None):
+        self.client.force_authenticate(user=user)
+        res = self.client.get(f"/api/projects/{(project or self.project).pk}/anchors/{anchor.pk}/")
+        self.client.force_authenticate(user=None)
+        return res
+
+    def _no_private_data(self, res):
+        body = str(res.data)
+        for secret in (str(self.WIN), str(self.LOSE), "supplier_id", "'payload'", "leaf_fields",
+                       self.win.commitment_salt, self.lose.commitment_salt, "/api/files/"):
+            self.assertNotIn(secret, body)
+
+    def test_public_sees_every_step_of_a_public_procurement_without_private_data(self):
+        for anchor in [self.submitted, self.published, *self.private]:
+            res = self._public(anchor)
+            self.assertEqual(res.status_code, 200, anchor.stage)
+            self.assertEqual(res.data["viewer"], "public")
+            self.assertIsNone(res.data["procurement"]["id"])
+            self._no_private_data(res)
+        self.assertTrue(self._public(self.published).data["packet_available"])
+        for anchor in self.private:
+            self.assertFalse(self._public(anchor).data["packet_available"], anchor.stage)
+
+    def test_public_never_gets_the_winning_bids_document_hash(self):
+        res = self._public(self.winning_bid)
+        self.assertEqual(res.data["record"]["document_hash"], "")
+        self.assertTrue(all(v["document_hash"] == "" for v in res.data["versions"]))
+
+    def test_public_gets_only_the_current_notice_of_award_file_and_only_publicly(self):
+        res = self._public(self.noa)
+        urls = [v["file_url"] for v in res.data["versions"] if v["file_url"]]
+        self.assertTrue(res.data["versions"][-1]["file_url"])            # the current issue
+        self.assertTrue(all(u.endswith(f"/api/public/procurement/{self.project.code}/notice-of-award/") for u in urls))
+        for anchor in (self.awarded, self.winning_bid, self.submitted):
+            self.assertFalse(any(v["file_url"] for v in self._public(anchor).data["versions"]), anchor.stage)
+
+    def test_public_gets_404_across_procurements_and_for_non_public_ones(self):
+        other = make_project(status=Project.Status.PUBLISHED)
+        self.assertEqual(self._public(self.awarded, code=other.code).status_code, 404)
+        self.assertEqual(self.client.get(f"/api/public/procurement/{self.project.code}/anchors/999999/").status_code, 404)
+        Project.objects.filter(pk=self.project.pk).update(status=Project.Status.PENDING_HEAD)
+        self.assertEqual(self._public(self.submitted).status_code, 404)
+
+    def test_admin_and_head_see_everything_and_get_file_links(self):
+        for user in (self.admin, self.head):
+            for anchor in [self.submitted, self.published, *self.private]:
+                res = self._auth(user, anchor)
+                self.assertEqual(res.status_code, 200, (user.role, anchor.stage))
+                self.assertEqual(res.data["procurement"]["id"], self.project.pk)
+                self.assertTrue(res.data["packet_available"])
+                self.assertNotIn("payload", res.data)
+        noa = self._auth(self.head, self.noa)
+        self.assertTrue(noa.data["versions"][-1]["file_url"])
+
+    def test_a_losing_bidder_sees_award_evidence_but_no_packet_no_file_and_no_rival_bid(self):
+        res = self._auth(self.loser.user, self.noa)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["packet_available"])
+        self.assertFalse(any(v["file_url"] for v in res.data["versions"]))
+        self._no_private_data(res)
+        self.assertEqual(self._auth(self.loser.user, self.winning_bid).status_code, 404)
+        self.assertNotIn(self.winning_bid.pk, [r["id"] for r in res.data["records"]])
+
+    def test_the_winner_sees_their_bid_and_award_records_with_packets(self):
+        for anchor in (self.winning_bid, self.awarded, self.noa):
+            res = self._auth(self.winner.user, anchor)
+            self.assertEqual(res.status_code, 200, anchor.stage)
+            self.assertTrue(res.data["packet_available"], anchor.stage)
+        self.assertTrue(self._auth(self.winner.user, self.noa).data["versions"][-1]["file_url"])
+
+    def test_outsiders_anonymous_and_cross_procurement_requests_are_refused(self):
+        self.assertEqual(self._auth(self.outsider.user, self.submitted).status_code, 404)
+        res = self.client.get(f"/api/projects/{self.project.pk}/anchors/{self.awarded.pk}/")
+        self.assertIn(res.status_code, (401, 403))
+        other = make_project(status=Project.Status.PUBLISHED)
+        self.assertEqual(self._auth(self.admin, self.awarded, project=other).status_code, 404)
+
+    def test_missing_chain_evidence_is_reported_as_missing(self):
+        res = self._auth(self.admin, self.submitted)
+        rec = res.data["record"]
+        self.assertEqual(res.data["evidence"], "database")
+        self.assertEqual((rec["tx_hash"], rec["explorer_url"]), ("", ""))
+        self.assertIsNone(rec["chain_anchor_id"])
+        self.assertIsNone(rec["chain_timestamp"])
+        self.assertFalse(rec["chain_finalized"])
+
+    def test_the_explorer_link_is_built_only_from_the_stored_transaction_hash(self):
+        tx = "0x" + "ab" * 32
+        BlockchainAnchor.objects.filter(pk=self.published.pk).update(
+            tx_hash=tx, chain_status=BlockchainAnchor.ChainStatus.CONFIRMED, chain_anchor_id=7,
+            chain_id=11155111, chain_contract="0x" + "12" * 20, chain_finalized=True)
+        res = self._public(self.published)
+        self.assertEqual(res.data["record"]["explorer_url"], f"https://sepolia.etherscan.io/tx/{tx}")
+        self.assertEqual(res.data["evidence"], "verified")
+        self.assertEqual(res.data["record"]["chain_anchor_id"], 7)
+        BlockchainAnchor.objects.filter(pk=self.published.pk).update(chain_status="mismatch")
+        self.assertEqual(self._public(self.published).data["evidence"], "mismatch")
+
+    def test_a_superseded_notice_of_award_is_never_downloadable_by_the_public(self):
+        self.client.force_authenticate(user=self.admin)
+        signed = SimpleUploadedFile("signed.pdf", b"%PDF-1.4 signed", content_type="application/pdf")
+        self.assertEqual(self.client.post(f"/api/awards/{Award.objects.get().pk}/documents/",
+                                          {"key": "notice_of_award", "file": signed}, format="multipart").status_code, 200)
+        self.client.force_authenticate(user=None)
+        res = self._public(self.noa)
+        old, new = res.data["versions"]
+        self.assertEqual((old["current"], new["current"]), (False, True))
+        self.assertIsNone(old["file_url"])
+        self.assertTrue(new["file_url"].endswith("/notice-of-award/"))
+        self.assertEqual(res.data["record"]["superseded_by"], new["anchor_id"])
+        # The winner can still download the superseded issue.
+        win = self._auth(self.winner.user, self.noa)
+        self.assertIn("/api/files/awardversion/", win.data["versions"][0]["file_url"])
+
+    def test_a_record_without_a_stored_payload_says_so_instead_of_claiming_confidentiality(self):
+        self.assertEqual(self._public(self.published).data["packet_unavailable_reason"], None)
+        self.assertEqual(self._public(self.awarded).data["packet_unavailable_reason"], "restricted")
+        BlockchainAnchor.objects.filter(pk=self.published.pk).update(payload={})
+        for res in (self._public(self.published), self._auth(self.admin, self.published)):
+            self.assertFalse(res.data["packet_available"])
+            self.assertEqual(res.data["packet_unavailable_reason"], "missing_payload")
+
+    def test_public_file_notes_speak_to_the_public(self):
+        for anchor in (self.submitted, self.awarded):
+            notes = {v["file_note"] for v in self._public(anchor).data["versions"]}
+            self.assertNotIn("You do not have access to this file.", notes)

@@ -32,7 +32,9 @@ import Lightbox from '../components/ui/Lightbox'
 import RelativeTime from '../components/ui/RelativeTime'
 import Toaster from '../components/ui/Toaster'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
-import { runAnchor } from '../blockchain/anchorStore'
+import { isVerified } from '../blockchain/anchorState'
+import ProcurementRecordPage from '../components/ProcurementRecord'
+import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import SecureImg from '../components/ui/SecureImg'
 import '../style/SupplierDashboard.css'
@@ -82,7 +84,7 @@ function collectBidFiles(b) {
 }
 
 const mapBid = (b) => ({
-  id: b.id, project: b.project_name, projectId: b.project_code, category: b.project_category,
+  id: b.id, project: b.project_name, projectId: b.project_code, projectPk: b.project, category: b.project_category,
   amount: fmtPeso(b.amount), amountRaw: Number(b.amount || 0),
   submitted: fmtDate(b.submitted_at), submittedAt: b.submitted_at, status: b.status, notes: b.notes,
   deliveryTimeline: b.delivery_timeline || '',
@@ -90,8 +92,8 @@ const mapBid = (b) => ({
   additionalComments: b.additional_comments || '',
   files: collectBidFiles(b),
   documents: b.documents || [],  // per-document review state (flag/approve/resubmit)
-  // Blockchain anchors for THIS bid (submitted / qualified / disqualified) — the
-  // supplier's own tamper-evident proof of what they submitted and when.
+  // Blockchain anchors for THIS bid. Only a winning bid has one (BID_SUBMITTED,
+  // written at award time); every other bid is a database record only.
   anchors: b.anchors || [],
   declarations: BID_DECLARATIONS.map(([key, label]) => ({ label, ok: !!b[key] })),
   // Product photos (up to 5) and the project rules that decide whether they
@@ -917,7 +919,11 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
             <div><span>Amount</span><strong>{bid.amount}</strong></div>
             <div><span>Submitted</span><strong>{bid.submitted}</strong></div>
             <div><span>Status</span><strong><StatusBadge domain="bid" status={bid.status} label={BID_LABEL[bid.status]} /></strong></div>
-            <div><span>Blockchain</span><strong><BlockchainBadge anchors={bid.anchors} /></strong></div>
+            <div><span>Blockchain</span><strong>
+              {bid.status === 'winner'
+                ? <BlockchainBadge anchors={bid.anchors} />
+                : <StatusBadge tone="neutral" label="Database record" />}
+            </strong></div>
           </div>
           <div className="sd-bid-body">
             <div className="sd-bid-section">
@@ -1016,8 +1022,9 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
                   Award Documents
                 </h4>
                 <p className="sd-bid-section-hint">
-                  Official documents issued to you for this contract. Each is recorded on the
-                  blockchain — you can verify any of them on the public results page.
+                  Official documents issued to you for this contract. A fingerprint (SHA-256 hash)
+                  of each is recorded on the Sepolia blockchain, so you can check your copy on the
+                  public results page.
                 </p>
                 <div className="sd-doc-list">
                   {(award.documents || []).filter(d => d.url).map(d => (
@@ -1029,11 +1036,15 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
                           Issued {fmtDate(d.issued_at)}
                         </span>
                       </span>
-                      {d.anchored && (
-                        <span className="sd-award-doc-chain" title={`Anchored on-chain (tx ${d.tx_hash})`}>
-                          <Shield size={11} /> Verified
+                      {isVerified(d.anchor) ? (
+                        <span className="sd-award-doc-chain" title={`Verified on-chain (tx ${d.tx_hash})`}>
+                          <Shield size={11} /> Verified on-chain
                         </span>
-                      )}
+                      ) : d.anchored ? (
+                        <span className="sd-muted sd-small" title={`Transaction reported (tx ${d.tx_hash}), not yet verified`}>
+                          Tx reported
+                        </span>
+                      ) : null}
                       <span className="sd-doc-view"><Eye size={13} /> Download</span>
                     </a>
                   ))}
@@ -1041,16 +1052,39 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
               </div>
             )}
 
-            {/* Proof of submission: the hash of this bid + its quotation, and
-                the Sepolia transaction that witnesses it. If a step was never
-                anchored (MetaMask declined, no wallet at the time), it can be
-                anchored from here — the hash is unchanged. */}
+            {/* Only a WINNING bid is fingerprinted on-chain (at award time),
+                so this panel must not promise a "proof of submission" to every
+                bidder — for them the bid is a database record, and the chain
+                only ever sees it inside the evaluation commitment made when
+                the winner is selected. */}
             <div className="sd-bid-section">
-              <BlockchainTrail
-                anchors={bid.anchors}
-                title="Blockchain Proof of Submission"
-                entityRef={bid.projectId}
-              />
+              {/* The full record: timeline, outcome, and — for every bidder —
+                  a receipt to check their bid is inside the evaluation
+                  commitment anchored at award. */}
+              {bid.projectPk && (
+                <Link to={`/supplier/record/${bid.projectPk}`} className="ui-btn ui-btn--secondary ui-btn--sm"
+                  style={{ marginBottom: 10 }}>
+                  <Shield size={13} /> View procurement record &amp; result
+                </Link>
+              )}
+              {bid.status === 'winner' ? (
+                <BlockchainTrail
+                  anchors={bid.anchors}
+                  title="Winning bid & award on-chain"
+                  entityRef={bid.projectId}
+                />
+              ) : (
+                <>
+                  <h4 className="sd-bid-section-label">
+                    <Shield size={13} style={{ verticalAlign: -1, marginRight: 5 }} />
+                    Blockchain
+                  </h4>
+                  <p className="sd-bid-section-hint">
+                    Your bid is kept as a database record. Only the winning bid and the award are
+                    fingerprinted on the Sepolia blockchain — your amount is never published there.
+                  </p>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -1474,7 +1508,8 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
 
   const receiptFor = (b) => {
     const award = awards.find(a => a.bid === b.id || a.project_code === b.projectId)
-    return (award?.anchors || []).find(a => a.stage === 'AWARDED' && a.anchored)
+    // Only a transaction the server has verified counts as a receipt.
+    return (award?.anchors || []).find(a => a.stage === 'AWARDED' && isVerified(a))
   }
 
   return (
@@ -2698,16 +2733,12 @@ export default function SupplierDashboard() {
   // error toast on failure). `formData` is the multipart payload built in BidModal.
   const submitBid = async (project, formData) => {
     try {
-      const created = await apiSubmitBid(project.pk, formData)
+      await apiSubmitBid(project.pk, formData)
       loadBids()
       setToast({ type: 'success', message: 'Bid submitted successfully.' })
-      // The bid is saved at this point. Anchoring it on Sepolia is the optional
-      // follow-up: it hashes the bid + the quotation document, so the supplier
-      // gets tamper-evident proof of what they submitted and when. Not awaited —
-      // declining the MetaMask prompt must not look like a failed submission.
-      if (created?.anchor) {
-        runAnchor(created.anchor, { label: `${project.id} · Bid submitted` })
-      }
+      // Nothing to sign here: bids are not anchored on submission, so a losing
+      // supplier's amount never reaches the public ledger. The bids are
+      // committed on-chain together when the winner is selected.
       return true
     } catch (err) {
       setToast({ type: 'error', message: err.message || 'Could not submit your bid.' })
@@ -2734,7 +2765,8 @@ export default function SupplierDashboard() {
     '/supplier/profile':  'Profile',
     '/supplier/settings': 'Settings',
   }
-  const title = Object.entries(TITLES).find(([path]) => loc.pathname === path)?.[1] || 'Dashboard'
+  const title = Object.entries(TITLES).find(([path]) => loc.pathname === path)?.[1]
+    || (loc.pathname.startsWith('/supplier/record/') ? 'Procurement Record' : 'Dashboard')
 
   return (
     <div className="sd-layout">
@@ -2772,6 +2804,8 @@ export default function SupplierDashboard() {
             <Route path="bids"     element={<SupplierBids bids={bids} awards={awards} onWithdraw={withdrawBid} loading={loadingBids} onResubmitted={loadBids} setToast={setToast} />} />
             <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
             <Route path="reports"  element={<SupplierReportsPage bids={bids} profile={profile} />} />
+            <Route path="record/:id" element={<ProcurementRecordPage className="sd-content" backTo="/supplier/bids" backLabel="Back to my bids" />} />
+            <Route path="record/:id/anchor/:anchorId" element={<ProjectAnchorDetailPage className="sd-content" />} />
             <Route path="profile"  element={<SupplierProfile profile={profile} eligible={eligible} loading={loadingProfile} error={profileError} onRetry={loadProfile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} />} />
             <Route path="settings" element={<SupplierSettings profile={profile} setToast={setToast} onUpdated={() => Promise.all([loadProfile(), loadProjects()])} loading={loadingProfile} error={profileError} onRetry={loadProfile} />} />
             <Route path="*"        element={<SupplierHome projects={projects} bids={bids} awards={awards} failed={loadFailed} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />

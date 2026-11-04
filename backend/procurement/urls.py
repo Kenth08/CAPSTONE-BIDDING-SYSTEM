@@ -9,7 +9,10 @@ from .views import (
     DocumentViewSet,
     NotificationViewSet,
     ProjectViewSet,
+    PublicAnchorDetailView,
+    PublicAnchorPacketView,
     PublicAnchorTrailView,
+    PublicProcurementDetailView,
     PublicProcurementView,
     SupplierViewSet,
 )
@@ -30,11 +33,30 @@ urlpatterns = [
     path("public/summary/", PublicSummaryView.as_view(), name="public-summary"),
     path("dashboard/admin-summary/", AdminSummaryView.as_view(), name="dashboard-admin-summary"),
     path("dashboard/head-summary/", HeadSummaryView.as_view(), name="dashboard-head-summary"),
+    # One procurement's public result (winner + date only) — no login.
+    path(
+        "public/procurement/<str:code>/",
+        PublicProcurementDetailView.as_view(),
+        name="public-procurement-detail",
+    ),
     # Public blockchain trail for one procurement code — no login, no wallet.
     path(
         "public/procurement/<str:code>/anchors/",
         PublicAnchorTrailView.as_view(),
         name="public-procurement-anchors",
+    ),
+    # One record of a public procurement's trail in full (record details page).
+    path(
+        "public/procurement/<str:code>/anchors/<int:anchor_id>/",
+        PublicAnchorDetailView.as_view(),
+        name="public-procurement-anchor-detail",
+    ),
+    # One public anchor's verification packet (payload + hashing rules +
+    # on-chain identity) — project stages only, see procurement/packets.py.
+    path(
+        "public/procurement/<str:code>/anchors/<int:anchor_id>/packet/",
+        PublicAnchorPacketView.as_view(),
+        name="public-procurement-anchor-packet",
     ),
     # Every uploaded document is served from here, never from MEDIA_URL — the
     # route exists in production (MEDIA_URL's does not) and it enforces who may

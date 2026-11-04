@@ -1,0 +1,29 @@
+/* Result of an independent packet check (components/PacketCheck.jsx). */
+.pc {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pc-ok      { color: #a7f3d0; background: rgba(16, 185, 129, 0.09); border: 1px solid rgba(16, 185, 129, 0.28); }
+.pc-bad     { color: #fecaca; background: rgba(239, 68, 68, 0.09);  border: 1px solid rgba(239, 68, 68, 0.28); }
+.pc-pending { color: #fde68a; background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.28);
+              flex-direction: row; align-items: center; }
+.pc-head { display: flex; gap: 10px; align-items: flex-start; }
+.pc-head svg { flex-shrink: 0; margin-top: 1px; }
+.pc-head strong { font-size: 13.5px; letter-spacing: 0.02em; }
+.pc-head p { margin-top: 2px; color: var(--text-muted); }
+.pc-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.pc-step { display: flex; gap: 8px; align-items: flex-start; color: var(--text-muted); }
+.pc-step svg { flex-shrink: 0; margin-top: 2px; }
+.pc-step > div { display: flex; flex-direction: column; min-width: 0; }
+.pc-step small { font-family: var(--font-mono, monospace); font-size: 11px; overflow-wrap: anywhere; opacity: 0.85; }
+.pc-step-pass svg { color: #34d399; }
+.pc-step-fail { color: #fecaca; }
+.pc-step-fail svg { color: #ef4444; }
+.pc-step-skip svg { color: #64748b; }
+.pc-spin { animation: pc-spin 1s linear infinite; }
+@keyframes pc-spin { to { transform: rotate(360deg); } }

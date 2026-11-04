@@ -1,0 +1,94 @@
+/* Procurement record (components/ProcurementRecord.jsx) — built on the shared
+   rf-card / tokens system so it reads like every other dashboard page. */
+
+.pr { display: flex; flex-direction: column; gap: var(--sp-4); }
+.pr-page { display: flex; flex-direction: column; gap: var(--sp-3); }
+.pr-back { align-self: flex-start; }
+
+.pr-head { display: flex; justify-content: space-between; gap: var(--sp-4); flex-wrap: wrap; }
+.pr-title-row { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.pr-title { margin: 0; font-size: var(--fs-page-title); font-weight: var(--fw-bold); color: var(--text-strong); }
+.pr-meta { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-top: var(--sp-2); font-size: var(--fs-small); color: var(--text-subtle); }
+.pr-meta strong { color: var(--text-strong); }
+.pr-viewer { margin: var(--sp-2) 0 0; font-size: var(--fs-caption); color: var(--text-subtle); }
+.pr-head-actions { display: flex; gap: var(--sp-2); align-items: flex-start; flex-wrap: wrap; }
+
+.pr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--sp-4); }
+
+.pr-muted { color: var(--text-subtle); }
+.pr-small { font-size: var(--fs-small); }
+.pr-link { color: var(--c-primary-600); font-weight: var(--fw-medium); display: inline-flex; align-items: center; gap: 4px; text-decoration: none; }
+.pr-link:hover { text-decoration: underline; }
+
+/* Chips: one per evidence state */
+.pr-chip {
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  font-size: var(--fs-micro); font-weight: var(--fw-semibold);
+  padding: 2px 8px; border-radius: 999px; border: 1px solid transparent;
+}
+.pr-chip-ok   { background: var(--tone-success-bg); color: var(--tone-success-fg); border-color: var(--tone-success-border); }
+.pr-chip-info { background: var(--tone-info-bg);    color: var(--tone-info-fg);    border-color: var(--tone-info-border); }
+.pr-chip-warn { background: var(--tone-warning-bg); color: var(--tone-warning-fg); border-color: var(--tone-warning-border); }
+.pr-chip-bad  { background: var(--tone-danger-bg);  color: var(--tone-danger-fg);  border-color: var(--tone-danger-border); }
+.pr-chip-db   { background: var(--tone-neutral-bg); color: var(--tone-neutral-fg); border-color: var(--tone-neutral-border); }
+
+.pr-alert {
+  display: flex; gap: var(--sp-3); padding: var(--sp-4) var(--sp-5); border-radius: 12px;
+  background: var(--tone-danger-bg); color: var(--tone-danger-fg); border: 1px solid var(--tone-danger-border);
+}
+.pr-alert p { margin: 4px 0 0; font-size: var(--fs-small); }
+
+/* Final result */
+.pr-result { display: flex; flex-direction: column; gap: var(--sp-4); }
+.pr-result-main { display: flex; gap: var(--sp-3); align-items: flex-start; }
+.pr-result-icon {
+  width: 40px; height: 40px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--tone-success-bg); color: var(--tone-success-fg); flex-shrink: 0;
+}
+.pr-result-label { font-size: var(--fs-caption); color: var(--text-subtle); }
+.pr-result-winner { font-size: var(--fs-card-title); font-weight: var(--fw-bold); color: var(--text-strong); margin: 2px 0 6px; }
+.pr-result-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--sp-3); margin: 0; }
+.pr-result-facts dt { font-size: var(--fs-caption); color: var(--text-subtle); }
+.pr-result-facts dd { margin: 2px 0 0; font-weight: var(--fw-semibold); color: var(--text-strong); }
+
+/* Award documents */
+.pr-docs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+.pr-doc-top { display: flex; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
+.pr-doc-name { display: inline-flex; align-items: center; gap: 6px; font-weight: var(--fw-semibold); color: var(--text-strong); font-size: var(--fs-small); }
+.pr-doc-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: 6px; }
+.pr-doc-issue { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Timeline */
+.pr-timeline { list-style: none; margin: 0; padding: 0; }
+.pr-tl-row { position: relative; display: flex; gap: var(--sp-3); padding: 0 0 var(--sp-4) 0; }
+.pr-tl-row:not(:last-child)::before {
+  content: ''; position: absolute; left: 5px; top: 14px; bottom: 0; width: 2px; background: var(--border);
+}
+.pr-tl-dot { width: 12px; height: 12px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; background: var(--tone-neutral-solid); }
+.pr-tone-success .pr-tl-dot { background: var(--tone-success-solid); }
+.pr-tone-danger .pr-tl-dot { background: var(--tone-danger-solid); }
+.pr-tl-main { flex: 1; min-width: 0; }
+.pr-tl-top { display: flex; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }
+.pr-tl-label { font-weight: var(--fw-semibold); color: var(--text-strong); font-size: var(--fs-small); }
+.pr-tl-chips { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.pr-tl-when { font-size: var(--fs-caption); color: var(--text-subtle); margin-top: 2px; }
+.pr-tl-detail { font-size: var(--fs-caption); color: var(--text-body); margin-top: 4px; }
+
+/* Receipt check */
+.pr-receipt { display: flex; flex-direction: column; gap: var(--sp-3); align-items: flex-start; }
+.pr-receipt p { margin: 0; }
+.pr-verdict { display: flex; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); border-radius: 10px; width: 100%; box-sizing: border-box; }
+.pr-verdict-ok { background: var(--tone-success-bg); color: var(--tone-success-fg); border: 1px solid var(--tone-success-border); }
+.pr-verdict-bad { background: var(--tone-danger-bg); color: var(--tone-danger-fg); border: 1px solid var(--tone-danger-border); }
+.pr-checks { margin: 6px 0; padding-left: 0; list-style: none; font-size: var(--fs-small); }
+.pr-hashline { display: flex; align-items: center; gap: 6px; font-size: var(--fs-caption); margin-bottom: 4px; }
+
+@media (max-width: 640px) {
+  .pr-title { font-size: var(--fs-card-title); }
+  .pr-head-actions { width: 100%; }
+}
+
+/* An anchor chip that opens the record details page. */
+.pr-chip-link { text-decoration: none; border-radius: 999px; }
+.pr-chip-link:hover .pr-chip, .pr-chip-link:focus-visible .pr-chip { text-decoration: underline; filter: brightness(0.97); }
+.pr-chip-link:focus-visible { outline: 2px solid var(--c-primary-600); outline-offset: 2px; }

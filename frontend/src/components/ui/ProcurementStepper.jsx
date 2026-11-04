@@ -1,5 +1,6 @@
 import { AlertTriangle, Check, Link2, XCircle } from 'lucide-react'
 import { fmtDate } from '../../utils/format'
+import { isVerified } from '../../blockchain/anchorState'
 
 /**
  * The real lifecycle of a procurement in this system, in order. `stages` are
@@ -10,8 +11,10 @@ export const PROCUREMENT_STAGES = [
   { key: 'draft',      label: 'Draft',              stages: [] },
   { key: 'head',       label: 'Head Review',        stages: ['SUBMITTED', 'HEAD_APPROVED', 'HEAD_REJECTED', 'REVISION_REQUESTED'] },
   { key: 'published',  label: 'Published',          sub: 'Bidding open', stages: ['BIDDING_OPEN'] },
-  { key: 'evaluation', label: 'Evaluation',         stages: ['BID_QUALIFIED', 'BID_DISQUALIFIED'] },
-  { key: 'awarded',    label: 'Awarded',            stages: ['AWARDED'] },
+  // Individual qualify/disqualify decisions are not anchored; the evaluation is
+  // committed once, as a whole, when the winner is selected.
+  { key: 'evaluation', label: 'Evaluation',         stages: ['EVALUATION_COMPLETED'] },
+  { key: 'awarded',    label: 'Awarded',            stages: ['BID_SUBMITTED', 'AWARDED'] },
   { key: 'resolution', label: 'BAC Resolution',     stages: ['RESOLUTION_ISSUED'] },
   { key: 'noa',        label: 'Notice of Award',    stages: ['NOA_ISSUED'] },
   { key: 'ntp',        label: 'Notice to Proceed',  stages: ['NTP_ISSUED'] },
@@ -34,7 +37,8 @@ export function procurementSteps(project, award) {
   if (!project) return PROCUREMENT_STAGES.map((s) => ({ ...s, state: 'upcoming' }))
   const st = project.status
   const anchors = project.anchors || []
-  const anchored = (stages) => anchors.some((a) => a.anchored && stages.includes(a.stage))
+  // Chain icon only for a step the server has VERIFIED on-chain, not merely reported.
+  const anchored = (stages) => anchors.some((a) => isVerified(a) && stages.includes(a.stage))
   const docs = Object.fromEntries((award?.documents || []).map((d) => [d.stage, d]))
   const biddingOver = st === 'closed' || st === 'awarded' || (st === 'published' && project.deadline && project.deadline < todayIso())
 
@@ -52,7 +56,11 @@ export function procurementSteps(project, award) {
     draft: project.created_at,
     head: project.reviewed_at,
     published: project.published_at,
-    evaluation: biddingOver ? project.deadline : null,
+    // When the evaluation was committed (at award) if it has been; a
+    // procurement can be awarded before its deadline, so the deadline alone
+    // would date the evaluation in the future.
+    evaluation: anchors.find((a) => a.stage === 'EVALUATION_COMPLETED')?.created_at
+      || (st === 'awarded' ? project.awarded_at : biddingOver ? project.deadline : null),
     awarded: project.awarded_at,
     resolution: docs.RESOLUTION_ISSUED?.issued_at,
     noa: docs.NOA_ISSUED?.issued_at,
@@ -98,8 +106,8 @@ export default function ProcurementStepper({ project, award, label = 'Procuremen
           <span className="rf-pstep-label">
             {s.label}
             {s.anchored && (
-              <span className="rf-pstep-chain" title="Recorded on the Sepolia blockchain">
-                <Link2 size={11} aria-hidden="true" /><span className="sr-only"> (anchored on-chain)</span>
+              <span className="rf-pstep-chain" title="Verified on the Sepolia blockchain">
+                <Link2 size={11} aria-hidden="true" /><span className="sr-only"> (verified on-chain)</span>
               </span>
             )}
           </span>

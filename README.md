@@ -16,12 +16,12 @@ A full-stack procurement management web application built as a capstone project.
 - **Public Transparency Portal** — `/public` — anyone (no login required) can view open biddings and awarded contracts/winners
 
 ### Blockchain Audit Trail (Sepolia)
-Every status transition is hashed (record + its key document) and anchored on an Ethereum smart contract, giving the procurement lifecycle a tamper-evident, independently verifiable history. Hashes only — no documents and no personal data ever go on-chain.
+Each key lifecycle step is fingerprinted (SHA-256 of the record + its key document) and anchored on an Ethereum smart contract, giving the procurement a tamper-evident, independently verifiable history. Hashes only — no documents, amounts or personal data ever go on-chain. Individual bids and qualify/disqualify decisions are database records; they are fixed on-chain together, as one salted evaluation commitment, when the winner is selected. See [BLOCKCHAIN.md](BLOCKCHAIN.md#what-is-on-chain-and-what-is-not).
 
-- **Anchored stages** — `SUBMITTED` → `HEAD_APPROVED` / `HEAD_REJECTED` / `REVISION_REQUESTED` → `BIDDING_OPEN` → `BID_SUBMITTED` → `BID_QUALIFIED` / `BID_DISQUALIFIED` → `AWARDED` → `RESOLUTION_ISSUED` → `NOA_ISSUED` → `NTP_ISSUED`
+- **Anchored stages** — `SUBMITTED` → `HEAD_APPROVED` / `HEAD_REJECTED` / `REVISION_REQUESTED` → `BIDDING_OPEN` → (at award) `BID_SUBMITTED` for the winning bid only → `AWARDED` → `RESOLUTION_ISSUED` → `NOA_ISSUED` → `NTP_ISSUED`. Bid submission and qualify/disqualify are database records only, so losing bids never reach the ledger.
 - **Post-award documents** — the signed BAC Resolution, Notice of Award and Notice to Proceed are uploaded and anchored with their file hash *and* issue date, so a notice can't be swapped or backdated after the fact
 - **MetaMask signing** for the demo, with an optional server-side signing path (`web3.py`) for production
-- **Public verification** — `/public` → *Verify on the Blockchain*: replay any procurement's trail straight from the contract with no account, no wallet and no gas, and check a document you hold against its anchored hash (hashed locally in the browser — the file is never uploaded)
+- **Public verification** — `/public` → *Verify on the Blockchain*: replay any procurement's trail straight from the contract with no account, no wallet and no gas, and check a document you hold against the document hash BidBridge recorded for each step (hashed locally in the browser — the file is never uploaded; the ledger holds the fingerprint of the step record that includes it, see [BLOCKCHAIN.md](BLOCKCHAIN.md))
 - **Never blocks the business flow** — a declined signature, wrong network or empty gas tank leaves the record valid and simply "not yet anchored", retryable from the record itself
 
 📘 **Setup, demo script and design notes: [BLOCKCHAIN.md](BLOCKCHAIN.md)** · contract deploy steps: [contracts/README.md](contracts/README.md)

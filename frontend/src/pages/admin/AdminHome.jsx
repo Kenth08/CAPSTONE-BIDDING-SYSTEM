@@ -2,9 +2,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   AlertTriangle, ArrowRight, Award, ChevronRight, ClipboardCheck, FileWarning, FolderOpen, Gavel,
-  Link2, Loader2, PiggyBank, RefreshCw, RotateCw, Send, ShieldCheck, UserCheck, Users, Wallet,
+  Link2, Loader2, Lock, PiggyBank, RefreshCw, RotateCw, Send, ShieldCheck, UserCheck, Users, Wallet,
 } from 'lucide-react'
 import { apiAdminSummary } from '../../api'
+import { signingBlocked } from '../../blockchain/anchor'
 import { runAnchor, isAnchorBusy, useAnchorActivity } from '../../blockchain/anchorStore'
 import { storedUser } from '../../components/shell/AppHeader'
 import KpiCard, { KpiRow } from '../../components/ui/KpiCard'
@@ -90,19 +91,26 @@ function ChainHealth({ chain, loading, onAnchored }) {
     setBusy(a.id)
     const ok = await runAnchor(a, { label: `${a.entity_ref} · ${a.stage_label}` })
     setBusy(null)
-    if (ok) { toast.success(`${a.entity_ref} · ${a.stage_label} recorded on-chain.`); onAnchored() }
+    if (ok) { toast.success(`${a.entity_ref} · ${a.stage_label}: transaction submitted. It is verified once the server has checked it.`); onAnchored() }
     else toast.error(`${a.entity_ref} · ${a.stage_label} was not anchored. The record is saved — you can retry.`)
   }
   if (loading) return <div className="rf-card-body"><Skeleton width={132} height={132} radius={66} /></div>
-  const { anchored = 0, pending = 0 } = chain || {}
+  const { anchored = 0, pending = 0, verified = 0, unchecked = 0, mismatch = 0 } = chain || {}
   const items = (chain?.pending_items || []).slice(0, 5)
+  const blockedNote = items.map(signingBlocked).find(Boolean) || ''
   if (anchored + pending === 0) {
     return <EmptyState compact icon={Link2} title="Nothing recorded yet" description="Each procurement step is hashed and listed here once it happens." />
   }
   return (
     <>
       <Donut title="Blockchain anchoring" centerLabel="STEPS"
-        segments={[{ label: 'Anchored on Sepolia', value: anchored, tone: 'success' }, { label: 'Waiting for signature', value: pending, tone: 'warning' }]} />
+        segments={[
+          { label: 'Verified on Sepolia', value: verified, tone: 'success' },
+          { label: 'Transaction reported, not yet checked', value: unchecked, tone: 'info' },
+          { label: 'Reported tx does not match', value: mismatch, tone: 'danger' },
+          // `pending` includes mismatches (they need signing again) — count them once.
+          { label: 'Waiting for signature', value: Math.max(pending - mismatch, 0), tone: 'warning' },
+        ].filter((s) => s.value > 0 || s.tone === 'success' || s.tone === 'warning')} />
       {items.length > 0 && (
         <ul className="rf-anchor-list">
           {items.map((a) => (
@@ -117,11 +125,17 @@ function ChainHealth({ chain, loading, onAnchored }) {
                 </div>
               </div>
               <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={() => anchorNow(a)}
-                disabled={busy === a.id || isAnchorBusy(activity)}>
-                {busy === a.id ? <><Loader2 size={13} className="ui-spin" /> Anchoring…</> : <><RotateCw size={13} /> Anchor now</>}
+                disabled={!!signingBlocked(a) || busy === a.id || isAnchorBusy(activity)}
+                title={signingBlocked(a) || undefined}>
+                {busy === a.id ? <><Loader2 size={13} className="ui-spin" /> Anchoring…</>
+                  : signingBlocked(a) ? <><Lock size={13} /> Signing disabled</>
+                  : <><RotateCw size={13} /> Anchor now</>}
               </button>
             </li>
           ))}
+          {blockedNote && (
+            <li className="rf-muted" role="note" style={{ fontSize: 'var(--fs-caption)' }}>{blockedNote}</li>
+          )}
           {pending > items.length && (
             <li className="rf-muted" style={{ fontSize: 'var(--fs-caption)' }}>
               {pending - items.length} more — open a procurement's blockchain trail to anchor older steps.
@@ -207,7 +221,7 @@ export default function AdminHome() {
         <KpiCard label="Not yet on-chain" icon={Link2} loading={loading}
           tone={k.anchors_pending ? 'warning' : 'success'}
           value={k.anchors_pending ?? 0} to="/admin#chain"
-          context={k.anchors_pending ? 'Steps waiting for a signature' : data?.chain?.anchored ? 'Every step is anchored' : 'Nothing recorded yet'} />
+          context={k.anchors_pending ? 'Steps waiting for a signature' : data?.chain?.anchored ? 'Every step has a reported transaction' : 'Nothing recorded yet'} />
         <KpiCard label="ABC of open biddings" icon={Wallet} loading={loading}
           value={pesoCompact(k.open_abc)} title={peso(k.open_abc)} to="/admin/projects?stage=published"
           context={`Across ${k.open_biddings ?? 0} open bidding${k.open_biddings === 1 ? '' : 's'}`} />

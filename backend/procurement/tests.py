@@ -13,8 +13,9 @@ from django.core.signals import request_finished
 from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.files.storage import FileSystemStorage, default_storage
-from django.db import close_old_connections
-from django.test import override_settings
+from django.core.files.base import ContentFile
+from django.db import close_old_connections, transaction
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -24,13 +25,16 @@ from PIL import Image
 from accounts.models import AuditLog
 
 from .blockchain import (
-    anchor_summary, bid_parts, confirm_anchor, hash_file, hash_payload, record_anchor,
+    _commit_bids, anchor_events, anchor_summary, bid_leaf, bid_leaf_fields, bid_parts, confirm_anchor,
+    attach_transaction, inclusion_receipt, hash_file, hash_payload, needs_chain_check, read_chain_anchors,
+    record_anchor,
     submit_anchor_server_side, verify_anchor,
 )
 from accounts.tests import registration_payload
 
 from .document_requirements import CATEGORY_DOCUMENTS, requirements_for, validate_registry
 from .models import (
+    AwardDocumentVersion,
     BID_DOCUMENT_KEYS, SUPPLIER_DOCUMENT_FIELDS, SUPPLIER_DOCUMENT_KEYS, Award, Bid, BidProductImage,
     BlockchainAnchor, Project, Supplier, SupplierCategoryDocument,
 )
@@ -447,13 +451,15 @@ class BlockchainAnchorTests(APITestCase):
             BlockchainAnchor.objects.filter(entity_ref=self.project.code)
             .values_list("stage", flat=True)
         )
-        # No BID_QUALIFIED: qualification happens for every bidder, and only the
-        # winner's bid is published. BID_SUBMITTED appears here even though the
-        # bid was submitted much earlier — it is written at award time, right
-        # before AWARDED, so the trail still reads offer-then-award.
+        # No BID_QUALIFIED: qualification happens for every bidder and is not
+        # anchored one by one. At award time the whole evaluation is committed
+        # once (EVALUATION_COMPLETED, salted — no amounts), then the winning
+        # bid (BID_SUBMITTED, written at award even though the bid came much
+        # earlier) and the award, so the trail reads evaluation-offer-award.
         self.assertEqual(stages, [
             BlockchainAnchor.Stage.HEAD_APPROVED,
             BlockchainAnchor.Stage.BIDDING_OPEN,
+            BlockchainAnchor.Stage.EVALUATION_COMPLETED,
             BlockchainAnchor.Stage.BID_SUBMITTED,
             BlockchainAnchor.Stage.AWARDED,
         ])
@@ -1065,6 +1071,50 @@ class NotFound(Exception):
 
 NotFound.__name__ = "TransactionNotFound"
 
+SEPOLIA = 11155111
+CHAIN_HEAD = 12_000_000          # the fake node's latest block
+
+
+def ledger_event(anchor, ledger, *, anchor_id=7, log_index=0, **overrides):
+    """A decoded AnchorRecorded event (as anchor_events returns it) recording `anchor`."""
+    ev = {"address": ledger, "id": anchor_id, "logIndex": log_index,
+          "entityType": anchor.entity_type, "entityRef": anchor.entity_ref,
+          "stage": anchor.stage, "dataHash": anchor.data_hash,
+          "actor": "0x" + "11" * 20, "timestamp": 1_762_000_000}
+    ev.update(overrides)
+    return ev
+
+
+def state_row(ev):
+    """What the contract's getAnchor(ev.id) returns for an honest event."""
+    return (ev["entityType"], ev["entityRef"], ev["stage"], ev["dataHash"], ev["actor"], ev["timestamp"])
+
+
+def sepolia_node(receipt=None, *, receipt_missing=False, tx_known=True, state=None,
+                 finalized=CHAIN_HEAD - 64, chain_id=SEPOLIA):
+    """A fake web3 that answers like a Sepolia node: chain id, latest and
+    finalized blocks, receipts, and the ledger's getAnchor(id) from `state`
+    ({id: row}; an id not in it reverts like the real contract)."""
+    w3 = MagicMock(name="w3")
+    w3.eth.chain_id = chain_id
+    w3.eth.block_number = CHAIN_HEAD
+    w3.eth.get_block.return_value = {"number": finalized}
+    if receipt_missing:
+        w3.eth.get_transaction_receipt.side_effect = NotFound()
+    else:
+        w3.eth.get_transaction_receipt.return_value = receipt
+    if not tx_known:
+        w3.eth.get_transaction.side_effect = NotFound()
+    rows = {} if state is None else state
+
+    def get_anchor(anchor_id):
+        if anchor_id not in rows:
+            raise ValueError("execution reverted: ProcurementLedger: unknown anchor")
+        return MagicMock(**{"call.return_value": rows[anchor_id]})
+
+    w3.eth.contract.return_value.functions.getAnchor.side_effect = get_anchor
+    return w3
+
 
 class AnchorConfirmationTests(APITestCase):
     """confirm_anchor / `confirm_anchors`: a record may only stay "On-chain" if
@@ -1072,6 +1122,19 @@ class AnchorConfirmationTests(APITestCase):
     is the step that catches one that later fails or is never mined."""
 
     TX = "0x" + "ab" * 32
+    LEDGER = "0x" + "12" * 20
+
+    def setUp(self):
+        # confirm_anchor can only say "confirmed" against a configured ledger.
+        patcher = patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", self.LEDGER)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = {}     # the fake ledger's storage, filled by _event_for
+
+    def _event_for(self, anchor, **overrides):
+        ev = ledger_event(anchor, self.LEDGER, **overrides)
+        self.state[ev["id"]] = state_row(ev)
+        return ev
 
     def _sent(self, minutes_ago=5):
         return BlockchainAnchor.objects.create(
@@ -1082,21 +1145,87 @@ class AnchorConfirmationTests(APITestCase):
         )
 
     def _w3(self, receipt=None, receipt_missing=False, tx_known=True):
-        w3 = MagicMock(name="w3")
-        if receipt_missing:
-            w3.eth.get_transaction_receipt.side_effect = NotFound()
-        else:
-            w3.eth.get_transaction_receipt.return_value = receipt
-        if not tx_known:
-            w3.eth.get_transaction.side_effect = NotFound()
-        return w3
+        return sepolia_node(receipt, receipt_missing=receipt_missing, tx_known=tx_known, state=self.state)
 
-    def test_a_successful_transaction_gets_its_block_number(self):
+    def test_a_successful_transaction_recording_this_anchor_is_confirmed(self):
         anchor = self._sent()
-        outcome = confirm_anchor(anchor, w3=self._w3({"status": 1, "blockNumber": 11962500}))
+        receipt = {"status": 1, "blockNumber": 11962500, "to": self.LEDGER}
+        with patch("procurement.blockchain.anchor_events", return_value=[self._event_for(anchor)]):
+            outcome = confirm_anchor(anchor, w3=self._w3(receipt))
         anchor.refresh_from_db()
         self.assertEqual(outcome, "confirmed")
         self.assertEqual(anchor.block_number, 11962500)
+        self.assertEqual(anchor.tx_hash, self.TX)
+        self.assertEqual(anchor.chain_status, BlockchainAnchor.ChainStatus.CONFIRMED)
+        self.assertTrue(anchor.verified_on_chain)
+
+    def test_a_successful_receipt_without_the_matching_event_is_a_mismatch(self):
+        # A real, successful transaction hash pasted onto the wrong record, or
+        # any tx at all: receipt status 1 alone used to be enough to confirm.
+        cases = {
+            "no event": None,
+            "wrong hash": {"dataHash": "0x" + "ee" * 32},
+            "wrong stage": {"stage": "AWARDED"},
+            "wrong code": {"entityRef": "PC-OTHER"},
+            "wrong entity type": {"entityType": "PROJECT"},
+        }
+        for name, overrides in cases.items():
+            with self.subTest(name):
+                anchor = self._sent()
+                events = [] if overrides is None else [self._event_for(anchor, **overrides)]
+                receipt = {"status": 1, "blockNumber": 5, "to": self.LEDGER}
+                with patch("procurement.blockchain.anchor_events", return_value=events):
+                    self.assertEqual(confirm_anchor(anchor, w3=self._w3(receipt)), "mismatch")
+                anchor.refresh_from_db()
+                self.assertEqual(anchor.chain_status, BlockchainAnchor.ChainStatus.MISMATCH)
+                self.assertEqual(anchor.tx_hash, self.TX)          # kept, visibly flagged
+                self.assertFalse(anchor.verified_on_chain)
+                self.assertIsNone(anchor.block_number)
+        self.assertTrue(AuditLog.objects.filter(action="blockchain.mismatch").exists())
+
+    def test_a_ledger_event_counts_even_when_sent_through_a_smart_account(self):
+        # Regression from the LIVE Sepolia ledger (anchors #11-#14): the wallet
+        # sent the tx to a smart-account/batch executor, which called the
+        # ledger. receipt.to is the executor, but the ledger's own event is in
+        # the receipt — that event is the proof, so this is CONFIRMED.
+        anchor = self._sent()
+        receipt = {"status": 1, "blockNumber": 5, "to": "0x" + "db" * 20}
+        with patch("procurement.blockchain.anchor_events", return_value=[self._event_for(anchor)]):
+            self.assertEqual(confirm_anchor(anchor, w3=self._w3(receipt)), "confirmed")
+
+    def test_without_a_configured_ledger_nothing_is_confirmed(self):
+        anchor = self._sent()
+        with patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", ""):
+            outcome = confirm_anchor(anchor, w3=self._w3({"status": 1, "blockNumber": 1}))
+        self.assertEqual(outcome, "unknown")
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.chain_status, BlockchainAnchor.ChainStatus.UNCHECKED)
+
+    def test_a_mismatched_anchor_can_be_signed_again(self):
+        project = make_project()
+        anchor = BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref=project.code, entity_id=str(project.pk),
+            stage="BIDDING_OPEN", data_hash="0x" + "cd" * 32, tx_hash=self.TX,
+            chain_status=BlockchainAnchor.ChainStatus.MISMATCH)
+        self.client.force_authenticate(user=make_admin())
+        new_tx = "0x" + "cd" * 32
+        res = self.client.post(f"/api/projects/{project.pk}/anchor/",
+                               {"anchor_id": anchor.pk, "tx_hash": new_tx}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.tx_hash, new_tx)
+        self.assertEqual(anchor.chain_status, BlockchainAnchor.ChainStatus.UNCHECKED)
+
+    def test_a_reported_but_unconfirmed_anchor_is_not_re_signed(self):
+        # Idempotency still holds for anything that isn't a known mismatch.
+        project = make_project()
+        anchor = BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref=project.code, entity_id=str(project.pk),
+            stage="BIDDING_OPEN", data_hash="0x" + "cd" * 32, tx_hash=self.TX)
+        self.client.force_authenticate(user=make_admin())
+        self.client.post(f"/api/projects/{project.pk}/anchor/",
+                         {"anchor_id": anchor.pk, "tx_hash": "0x" + "ef" * 32}, format="json")
+        anchor.refresh_from_db()
         self.assertEqual(anchor.tx_hash, self.TX)
 
     def test_a_reverted_transaction_is_cleared_and_audit_logged(self):
@@ -1129,10 +1258,24 @@ class AnchorConfirmationTests(APITestCase):
         stale.refresh_from_db()
         self.assertFalse(stale.anchored)
 
+    def test_a_pruned_node_never_erases_an_anchor_the_ledger_still_holds(self):
+        # Found against the LIVE ledger: the default public RPC prunes old
+        # receipts AND can forget old transactions. "Unknown to the node" used
+        # to mean DROPPED -> the genuine tx hash was cleared. Contract storage
+        # isn't pruned, so if it still holds the record, nothing is touched.
+        stale = self._sent(minutes_ago=600)
+        w3 = self._w3(receipt_missing=True, tx_known=False)
+        held = [(stale.entity_type, stale.entity_ref, stale.stage, stale.data_hash, "0x" + "11" * 20, 1)]
+        w3.eth.contract.return_value.functions.getAnchorsByRef.return_value.call.return_value = held
+        self.assertEqual(confirm_anchor(stale, w3=w3), "unknown")
+        stale.refresh_from_db()
+        self.assertEqual(stale.tx_hash, self.TX)
+        self.assertFalse(AuditLog.objects.filter(action="blockchain.dropped").exists())
+
     def test_a_node_error_changes_nothing(self):
         # An RPC outage is not evidence that the transaction failed.
         anchor = self._sent()
-        w3 = MagicMock()
+        w3 = self._w3()
         w3.eth.get_transaction_receipt.side_effect = ConnectionError("node down")
         self.assertEqual(confirm_anchor(anchor, w3=w3), "unknown")
         anchor.refresh_from_db()
@@ -1160,22 +1303,411 @@ class AnchorConfirmationTests(APITestCase):
         self.assertFalse(anchor.anchored)
         self.assertIn("1 reverted", out.getvalue())
 
-    def test_the_command_skips_anchors_that_are_already_confirmed(self):
+    def test_the_command_skips_anchors_already_confirmed_reconciled_and_final(self):
         BlockchainAnchor.objects.create(
             entity_type=BlockchainAnchor.EntityType.PROJECT, entity_ref="P-2026-001",
             stage=BlockchainAnchor.Stage.HEAD_APPROVED, data_hash="0x" + "cd" * 32,
-            tx_hash=self.TX, block_number=100,
+            tx_hash=self.TX, block_number=100, chain_status=BlockchainAnchor.ChainStatus.CONFIRMED,
+            chain_anchor_id=3, chain_id=SEPOLIA, chain_contract=self.LEDGER, chain_finalized=True,
         )
         w3 = MagicMock()
         with patch("procurement.blockchain.web3_client", return_value=w3):
             call_command("confirm_anchors", "--apply", stdout=io.StringIO())
         w3.eth.get_transaction_receipt.assert_not_called()
 
+    def test_the_command_checks_metamask_anchors_that_carry_a_block_number(self):
+        # MetaMask attaches post the browser's block number, which used to make
+        # the command skip the anchor as if that number were proof.
+        anchor = BlockchainAnchor.objects.create(
+            entity_type=BlockchainAnchor.EntityType.PROJECT, entity_ref="P-2026-001",
+            stage=BlockchainAnchor.Stage.HEAD_APPROVED, data_hash="0x" + "cd" * 32,
+            tx_hash=self.TX, block_number=100, anchored_at=timezone.now(),
+        )
+        w3 = self._w3({"status": 1, "blockNumber": 101, "to": self.LEDGER})
+        with patch("procurement.blockchain.web3_client", return_value=w3), \
+                patch("procurement.blockchain.anchor_events", return_value=[]):
+            call_command("confirm_anchors", "--apply", stdout=io.StringIO())
+        w3.eth.get_transaction_receipt.assert_called_once_with(self.TX)
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.chain_status, BlockchainAnchor.ChainStatus.MISMATCH)
+
     def test_the_command_never_raises(self):
         # It runs inside the Render build; a failure here must not fail a deploy.
         self._sent()
         with patch("procurement.blockchain.web3_client", side_effect=RuntimeError("boom")):
             call_command("confirm_anchors", "--apply", stdout=io.StringIO(), stderr=io.StringIO())
+
+
+class AnchorEventDecodingTests(APITestCase):
+    """anchor_events() against a REAL ABI-encoded AnchorRecorded log, decoded by
+    web3 with contracts/ProcurementLedger.abi.json and no network involved. The
+    mocked tests above stand in for this function; this proves it reads the
+    actual event layout the deployed contract emits."""
+
+    def setUp(self):
+        from web3 import Web3
+        self.Web3 = Web3
+        self.ledger = Web3.to_checksum_address("0x" + "12" * 20)
+        patcher = patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", self.ledger)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.w3 = Web3()   # no provider needed: decoding is local
+
+    def _log(self, address, entity_type, ref, stage, data_hash, anchor_id=7, log_index=0):
+        from eth_abi import encode
+        topic0 = self.Web3.keccak(text="AnchorRecorded(uint256,string,string,string,string,address,uint256)")
+        data = encode(["string", "string", "string", "string", "address", "uint256"],
+                      [entity_type, ref, stage, data_hash, "0x" + "33" * 20, 1700000000])
+        return {
+            "address": address, "topics": [topic0, anchor_id.to_bytes(32, "big")], "data": data,
+            "blockNumber": 9, "blockHash": b"\x01" * 32, "transactionHash": b"\x02" * 32,
+            "transactionIndex": 0, "logIndex": log_index, "removed": False,
+        }
+
+    def test_decodes_our_event_and_ignores_look_alike_contracts(self):
+        h = "0x" + "cd" * 32
+        other = self.Web3.to_checksum_address("0x" + "99" * 20)
+        receipt = {"status": 1, "blockNumber": 9, "to": self.ledger, "logs": [
+            self._log(self.ledger, "AWARD", "PC-AAAA-BBBB-CCCC", "AWARDED", h),
+            self._log(other, "AWARD", "PC-AAAA-BBBB-CCCC", "AWARDED", h),
+        ]}
+        events = anchor_events(self.w3, receipt)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["entityRef"], "PC-AAAA-BBBB-CCCC")
+        self.assertEqual(events[0]["stage"], "AWARDED")
+        self.assertEqual(events[0]["dataHash"], h)
+        # The on-chain identity comes from the event itself.
+        self.assertEqual(events[0]["id"], 7)
+        self.assertEqual(events[0]["logIndex"], 0)
+        self.assertEqual(events[0]["timestamp"], 1700000000)
+        self.assertEqual(events[0]["actor"].lower(), "0x" + "33" * 20)
+
+    def test_confirm_anchor_end_to_end_with_a_real_encoded_receipt(self):
+        h = "0x" + "cd" * 32
+        anchor = BlockchainAnchor.objects.create(
+            entity_type="AWARD", entity_ref="PC-AAAA-BBBB-CCCC", entity_id="1", stage="AWARDED",
+            data_hash=h, tx_hash="0x" + "ab" * 32, anchored_at=timezone.now())
+        good = {"status": 1, "blockNumber": 9, "to": self.ledger,
+                "logs": [self._log(self.ledger, "AWARD", "PC-AAAA-BBBB-CCCC", "AWARDED", h)]}
+        with patch.object(self.w3.eth, "get_transaction_receipt", return_value=good), self._chain():
+            self.assertEqual(confirm_anchor(anchor, w3=self.w3), "confirmed")
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.block_number, 9)
+        self.assertEqual((anchor.chain_anchor_id, anchor.chain_log_index), (7, 0))
+        self.assertEqual(int(anchor.chain_timestamp.timestamp()), 1700000000)
+
+        # The same genuine transaction reused for a DIFFERENT anchor.
+        other = BlockchainAnchor.objects.create(
+            entity_type="AWARD", entity_ref="PC-AAAA-BBBB-CCCC", entity_id="1", stage="NOA_ISSUED",
+            data_hash="0x" + "ef" * 32, tx_hash="0x" + "ab" * 32, anchored_at=timezone.now())
+        with patch.object(self.w3.eth, "get_transaction_receipt", return_value=good), self._chain():
+            self.assertEqual(confirm_anchor(other, w3=self.w3), "mismatch")
+
+    def _chain(self):
+        """The node-facing parts a provider-less Web3 can't answer: Sepolia,
+        a final block, and contract state that agrees with the event."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("procurement.blockchain.network_check", return_value=(True, SEPOLIA)))
+        stack.enter_context(patch("procurement.blockchain.finality", return_value=(40, True)))
+        stack.enter_context(patch("procurement.blockchain._state_agrees", return_value=True))
+        return stack
+
+    def test_a_batched_transaction_gives_each_identical_record_its_own_on_chain_id(self):
+        # Two identical records sent in one batch (smart-account wallets do
+        # this): each event vouches for exactly one anchor row.
+        h = "0x" + "cd" * 32
+        rows = [BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref="PC-AAAA-BBBB-CCCC", entity_id="1", stage="HEAD_APPROVED",
+            data_hash=h, tx_hash="0x" + "ab" * 32, anchored_at=timezone.now()) for _ in range(2)]
+        batch = {"status": 1, "blockNumber": 9, "to": "0x" + "db" * 20, "logs": [
+            self._log(self.ledger, "PROJECT", "PC-AAAA-BBBB-CCCC", "HEAD_APPROVED", h, anchor_id=8, log_index=3),
+            self._log(self.ledger, "PROJECT", "PC-AAAA-BBBB-CCCC", "HEAD_APPROVED", h, anchor_id=7, log_index=1),
+        ]}
+        with patch.object(self.w3.eth, "get_transaction_receipt", return_value=batch), self._chain():
+            self.assertEqual([confirm_anchor(a, w3=self.w3) for a in rows], ["confirmed", "confirmed"])
+            for a in rows:
+                a.refresh_from_db()
+            self.assertEqual([(a.chain_anchor_id, a.chain_log_index) for a in rows], [(7, 1), (8, 3)])
+            # A third identical row can't reuse either event.
+            third = BlockchainAnchor.objects.create(
+                entity_type="PROJECT", entity_ref="PC-AAAA-BBBB-CCCC", entity_id="1", stage="HEAD_APPROVED",
+                data_hash=h, tx_hash="0x" + "ab" * 32, anchored_at=timezone.now())
+            self.assertEqual(confirm_anchor(third, w3=self.w3), "mismatch")
+        self.assertIn("already back another anchor",
+                      AuditLog.objects.filter(action="blockchain.mismatch").latest("id").description)
+
+
+class VerifyChainEndpointTests(APITestCase):
+    """POST /projects/{id}/verify-chain/: the on-demand version of
+    confirm_anchors for one procurement. Admin and Head only."""
+
+    LEDGER = "0x" + "12" * 20
+
+    def setUp(self):
+        cache.clear()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.anchor = BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+            stage="BIDDING_OPEN", data_hash="0x" + "cd" * 32, tx_hash="0x" + "ab" * 32,
+            anchored_at=timezone.now())
+
+    def test_admin_and_head_can_run_it_and_it_confirms(self):
+        event = ledger_event(self.anchor, self.LEDGER)
+        w3 = sepolia_node({"status": 1, "blockNumber": 77, "to": self.LEDGER},
+                          state={event["id"]: state_row(event)})
+        for user in (make_admin(), make_head()):
+            BlockchainAnchor.objects.filter(pk=self.anchor.pk).update(
+                chain_status="unchecked", chain_anchor_id=None)
+            self.client.force_authenticate(user=user)
+            with patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", self.LEDGER), \
+                    patch("procurement.blockchain.web3_client", return_value=w3), \
+                    patch("procurement.blockchain.anchor_events", return_value=[event]):
+                res = self.client.post(f"/api/projects/{self.project.pk}/verify-chain/")
+            self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+            self.assertEqual(res.data["checked"][0]["outcome"], "confirmed")
+            self.assertTrue(res.data["anchors"][0]["verified_on_chain"])
+            self.assertEqual(res.data["anchors"][0]["chain_anchor_id"], 7)
+
+    def test_on_the_wrong_network_it_checks_nothing_and_says_so(self):
+        w3 = sepolia_node({"status": 1, "blockNumber": 77}, chain_id=1)   # Ethereum mainnet
+        self.client.force_authenticate(user=make_admin())
+        with patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", self.LEDGER), \
+                patch("procurement.blockchain.web3_client", return_value=w3):
+            res = self.client.post(f"/api/projects/{self.project.pk}/verify-chain/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["checked"], [])
+        self.assertIn("not Sepolia", res.data["detail"])
+        w3.eth.get_transaction_receipt.assert_not_called()
+        self.anchor.refresh_from_db()
+        self.assertEqual(self.anchor.chain_status, "unchecked")
+
+    def test_suppliers_and_anonymous_users_cannot_run_it(self):
+        res = self.client.post(f"/api/projects/{self.project.pk}/verify-chain/")
+        self.assertIn(res.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
+        self.client.force_authenticate(user=make_supplier().user)
+        res = self.client.post(f"/api/projects/{self.project.pk}/verify-chain/")
+        self.assertIn(res.status_code, (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+
+    def test_without_chain_access_it_changes_nothing_and_says_so(self):
+        self.client.force_authenticate(user=make_admin())
+        with patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", ""):
+            res = self.client.post(f"/api/projects/{self.project.pk}/verify-chain/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertTrue(res.data["detail"])
+        self.anchor.refresh_from_db()
+        self.assertEqual(self.anchor.chain_status, "unchecked")
+
+
+class OnChainIdentityTests(APITestCase):
+    """Stage 2: an anchor is only CONFIRMED on Sepolia, with an event our
+    ledger emitted, that the contract's own storage (getAnchor) agrees with —
+    and only then does it get an on-chain identity, depth and finality."""
+
+    TX = "0x" + "ab" * 32
+    LEDGER = "0x" + "12" * 20
+
+    def setUp(self):
+        patcher = patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", self.LEDGER)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.anchor = BlockchainAnchor.objects.create(
+            entity_type="AWARD", entity_ref="PC-AAAA-BBBB-CCCC", entity_id="4", stage="NOA_ISSUED",
+            data_hash="0x" + "cd" * 32, tx_hash=self.TX, anchored_at=timezone.now())
+        self.event = ledger_event(self.anchor, self.LEDGER, anchor_id=18, log_index=2)
+        self.receipt = {"status": 1, "blockNumber": CHAIN_HEAD - 99, "to": self.LEDGER}
+
+    def _confirm(self, w3=None, events=None, **node):
+        w3 = w3 or sepolia_node(self.receipt, state={18: state_row(self.event)}, **node)
+        with patch("procurement.blockchain.anchor_events",
+                   return_value=[self.event] if events is None else events):
+            outcome = confirm_anchor(self.anchor, w3=w3)
+        self.anchor.refresh_from_db()
+        return outcome
+
+    def test_confirmation_stores_the_on_chain_identity_read_from_the_chain(self):
+        self.assertEqual(self._confirm(), "confirmed")
+        a = self.anchor
+        self.assertEqual((a.chain_anchor_id, a.chain_log_index), (18, 2))
+        self.assertEqual(int(a.chain_timestamp.timestamp()), self.event["timestamp"])
+        self.assertEqual(a.chain_id, SEPOLIA)
+        self.assertEqual(a.chain_contract.lower(), self.LEDGER)
+        self.assertEqual(a.block_number, CHAIN_HEAD - 99)
+        self.assertEqual(a.chain_confirmations, 100)
+        self.assertTrue(a.chain_finalized)
+        self.assertEqual(a.actor_address, self.event["actor"])        # the chain's signer
+        summary = anchor_summary(a)
+        self.assertEqual(summary["chain_anchor_id"], 18)
+        self.assertTrue(summary["chain_finalized"])
+
+    def test_a_node_on_another_network_confirms_nothing(self):
+        for chain_id in (1, 17000, 31337):       # mainnet, Holesky, a local node
+            with self.subTest(chain_id=chain_id):
+                w3 = sepolia_node(self.receipt, state={18: state_row(self.event)}, chain_id=chain_id)
+                self.assertEqual(self._confirm(w3), "wrong_network")
+                w3.eth.get_transaction_receipt.assert_not_called()
+                self.assertEqual(self.anchor.chain_status, "unchecked")
+                self.assertIsNone(self.anchor.chain_anchor_id)
+                self.assertEqual(self.anchor.tx_hash, self.TX)
+
+    def test_a_chain_id_that_cannot_be_read_is_unknown_not_a_pass(self):
+        w3 = sepolia_node(self.receipt, state={18: state_row(self.event)})
+        type(w3.eth).chain_id = property(lambda _self: (_ for _ in ()).throw(ConnectionError("down")))
+        self.assertEqual(self._confirm(w3), "unknown")
+        self.assertEqual(self.anchor.chain_status, "unchecked")
+
+    def test_contract_state_must_agree_with_the_event(self):
+        honest = state_row(self.event)
+        tampered = {
+            "data hash": honest[:3] + ("0x" + "ee" * 32,) + honest[4:],
+            "stage": honest[:2] + ("AWARDED",) + honest[3:],
+            "signer": honest[:4] + ("0x" + "99" * 20, honest[5]),
+            "timestamp": honest[:5] + (honest[5] + 1,),
+        }
+        for name, row in tampered.items():
+            with self.subTest(name):
+                w3 = sepolia_node(self.receipt, state={18: row})
+                self.assertEqual(self._confirm(w3), "unknown")
+                self.assertEqual(self.anchor.chain_status, "unchecked")
+                self.assertIsNone(self.anchor.chain_anchor_id)
+
+    def test_an_event_id_the_contract_does_not_know_is_not_confirmed(self):
+        w3 = sepolia_node(self.receipt, state={})          # getAnchor(18) reverts
+        self.assertEqual(self._confirm(w3), "unknown")
+        self.assertFalse(self.anchor.verified_on_chain)
+
+    def test_a_recent_block_is_confirmed_but_not_final_until_the_chain_says_so(self):
+        self.assertEqual(self._confirm(finalized=CHAIN_HEAD - 150), "confirmed")
+        self.assertEqual(self.anchor.chain_confirmations, 100)
+        self.assertFalse(self.anchor.chain_finalized)
+        # Still on the to-do list for the next pass...
+        self.assertTrue(needs_chain_check().filter(pk=self.anchor.pk).exists())
+        # ...which finds the block final once the finalized head passes it.
+        self.assertEqual(self._confirm(finalized=CHAIN_HEAD - 10), "confirmed")
+        self.assertTrue(self.anchor.chain_finalized)
+        self.assertFalse(needs_chain_check().filter(pk=self.anchor.pk).exists())
+
+    def test_finality_the_node_cannot_report_is_never_assumed(self):
+        w3 = sepolia_node(self.receipt, state={18: state_row(self.event)})
+        w3.eth.get_block.side_effect = ValueError("unknown block tag 'finalized'")
+        self.assertEqual(self._confirm(w3), "confirmed")
+        self.assertFalse(self.anchor.chain_finalized)
+        self.assertEqual(self.anchor.chain_confirmations, 100)
+
+    def test_without_the_latest_block_depth_is_unknown_and_not_final(self):
+        w3 = sepolia_node(self.receipt, state={18: state_row(self.event)})
+        type(w3.eth).block_number = property(lambda _self: (_ for _ in ()).throw(ConnectionError("down")))
+        self.assertEqual(self._confirm(w3), "confirmed")
+        self.assertIsNone(self.anchor.chain_confirmations)
+        self.assertFalse(self.anchor.chain_finalized)
+
+    def test_a_new_transaction_clears_the_previous_identity(self):
+        self._confirm()
+        attach_transaction(self.anchor, "0x" + "ef" * 32)
+        self.anchor.refresh_from_db()
+        for field in ("chain_anchor_id", "chain_log_index", "chain_timestamp", "chain_id",
+                      "chain_confirmations"):
+            self.assertIsNone(getattr(self.anchor, field), field)
+        self.assertEqual(self.anchor.chain_contract, "")
+        self.assertFalse(self.anchor.chain_finalized)
+
+    def test_a_reverted_transaction_leaves_no_identity_behind(self):
+        self.assertEqual(self._confirm(sepolia_node({"status": 0, "blockNumber": 5})), "reverted")
+        self.assertIsNone(self.anchor.chain_anchor_id)
+        self.assertFalse(self.anchor.anchored)
+
+    def test_one_on_chain_record_can_back_only_one_anchor_row(self):
+        from django.db import IntegrityError
+        self._confirm()
+        clone = dict(entity_type="AWARD", entity_ref="PC-AAAA-BBBB-CCCC", entity_id="4", stage="NOA_ISSUED",
+                     data_hash=self.anchor.data_hash, tx_hash=self.TX, chain_id=SEPOLIA,
+                     chain_contract=self.anchor.chain_contract)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            BlockchainAnchor.objects.create(chain_anchor_id=18, **clone)
+        # Unconfirmed rows (no on-chain id) are unconstrained, as before.
+        BlockchainAnchor.objects.create(**clone)
+        BlockchainAnchor.objects.create(**clone)
+
+    def test_the_same_event_cannot_confirm_a_second_identical_row(self):
+        self.assertEqual(self._confirm(), "confirmed")
+        twin = BlockchainAnchor.objects.create(
+            entity_type="AWARD", entity_ref="PC-AAAA-BBBB-CCCC", entity_id="4", stage="NOA_ISSUED",
+            data_hash=self.anchor.data_hash, tx_hash=self.TX, anchored_at=timezone.now())
+        w3 = sepolia_node(self.receipt, state={18: state_row(self.event)})
+        with patch("procurement.blockchain.anchor_events", return_value=[self.event]):
+            self.assertEqual(confirm_anchor(twin, w3=w3), "mismatch")
+        twin.refresh_from_db()
+        self.assertIsNone(twin.chain_anchor_id)
+        self.assertFalse(twin.verified_on_chain)
+
+    def test_the_command_refuses_to_run_against_the_wrong_network(self):
+        w3 = sepolia_node(self.receipt, chain_id=1)
+        out = io.StringIO()
+        with patch("procurement.blockchain.web3_client", return_value=w3):
+            call_command("confirm_anchors", "--apply", stdout=out)
+        self.assertIn("expected 11155111", out.getvalue())
+        w3.eth.get_transaction_receipt.assert_not_called()
+
+    def test_the_command_reconciles_anchors_confirmed_before_identity_was_stored(self):
+        BlockchainAnchor.objects.filter(pk=self.anchor.pk).update(
+            chain_status=BlockchainAnchor.ChainStatus.CONFIRMED, block_number=CHAIN_HEAD - 99)
+        w3 = sepolia_node(self.receipt, state={18: state_row(self.event)})
+        with patch("procurement.blockchain.web3_client", return_value=w3), \
+                patch("procurement.blockchain.anchor_events", return_value=[self.event]):
+            call_command("confirm_anchors", "--apply", stdout=io.StringIO())
+        self.anchor.refresh_from_db()
+        self.assertEqual(self.anchor.chain_anchor_id, 18)
+
+    def test_the_public_trail_exposes_only_public_on_chain_identity(self):
+        project = make_project(status=Project.Status.PUBLISHED)
+        BlockchainAnchor.objects.filter(pk=self.anchor.pk).update(entity_ref=project.code)
+        self._confirm()
+        res = self.client.get(f"/api/public/procurement/{project.code}/anchors/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        row = res.data["anchors"][0]
+        self.assertEqual(row["chain_anchor_id"], 18)
+        self.assertEqual(row["chain_id"], SEPOLIA)
+        self.assertNotIn("payload", row)
+
+    def test_the_server_fallback_read_refuses_another_network(self):
+        w3 = sepolia_node(chain_id=1)
+        with patch("procurement.blockchain.web3_client", return_value=w3):
+            self.assertEqual(read_chain_anchors("PC-AAAA-BBBB-CCCC"), [])
+        w3.eth.contract.assert_not_called()
+
+
+class AnchorIdentityMigrationTests(TransactionTestCase):
+    """0024 is additive: rows written before it keep every value and read as
+    "no on-chain identity yet" — nothing is backfilled or guessed."""
+
+    def test_existing_anchors_survive_the_migration_unchanged(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        before = [("procurement", "0023_evaluation_commitment")]
+        after = [("procurement", "0024_anchor_onchain_identity")]
+        executor = MigrationExecutor(connection)
+        executor.migrate(before)
+        old_apps = executor.loader.project_state(before).apps
+        OldAnchor = old_apps.get_model("procurement", "BlockchainAnchor")
+        old = OldAnchor.objects.create(
+            entity_type="PROJECT", entity_ref="PRC-2026-976X-TVMX", stage="SUBMITTED",
+            data_hash="0x" + "cd" * 32, tx_hash="0x" + "ab" * 32, block_number=8_000_000,
+            chain_status="confirmed")
+
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(after)
+        new = executor.loader.project_state(after).apps.get_model("procurement", "BlockchainAnchor")
+        row = new.objects.get(pk=old.pk)
+        self.assertEqual((row.tx_hash, row.block_number, row.chain_status),
+                         ("0x" + "ab" * 32, 8_000_000, "confirmed"))
+        self.assertIsNone(row.chain_anchor_id)
+        self.assertIsNone(row.chain_timestamp)
+        self.assertEqual(row.chain_contract, "")
+        self.assertFalse(row.chain_finalized)
+        # ...and it is queued for reconciliation, not treated as complete.
+        self.assertTrue(needs_chain_check(BlockchainAnchor.objects.filter(pk=old.pk)).exists())
 
 
 class ServerSubmitRetryTests(APITestCase):
@@ -1257,6 +1789,116 @@ class ServerSubmitRetryTests(APITestCase):
             self.assertTrue(anchor_summary(anchor)["server_signing"])
         with patch("procurement.blockchain.SERVER_SIGNING_ENABLED", False):
             self.assertFalse(anchor_summary(anchor)["server_signing"])
+
+
+class SigningDisabledTests(APITestCase):
+    """BLOCKCHAIN_WALLET_SIGNING=False (the local read-only demo): nothing can be
+    written on-chain from this deployment. Turning off SERVER signing alone was
+    not enough — "Anchor now" still opened MetaMask and the API still accepted
+    the resulting tx hash. Now every write through /anchor/ is refused, even a
+    hand-made request, and every anchor tells the browser not to offer one."""
+
+    TX = "0x" + "ab" * 32
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.head = make_head()
+        self.project = make_project(status=Project.Status.PENDING_HEAD)
+        self.client.force_authenticate(user=self.head)
+        res = self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        self.anchor_id = res.data["anchor"]["id"]
+        self.url = f"/api/projects/{self.project.pk}/anchor/"
+
+    def _off(self):
+        return patch("procurement.blockchain.WALLET_SIGNING_ENABLED", False)
+
+    def _assert_untouched(self):
+        anchor = BlockchainAnchor.objects.get(pk=self.anchor_id)
+        self.assertEqual((anchor.tx_hash, anchor.anchored), ("", False))
+        self.assertFalse(AuditLog.objects.filter(action="blockchain.anchored").exists())
+
+    def test_a_metamask_tx_hash_is_refused(self):
+        with self._off():
+            res = self.client.post(self.url, {
+                "anchor_id": self.anchor_id, "tx_hash": self.TX, "block_number": 1,
+                "actor_address": "0x" + "11" * 20,
+            }, format="json")
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(res.data["code"], "signing_disabled")
+        self._assert_untouched()
+
+    def test_a_stage_only_attach_is_refused_too(self):
+        with self._off():
+            res = self.client.post(self.url, {"stage": "HEAD_APPROVED", "tx_hash": self.TX}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self._assert_untouched()
+
+    def test_server_submit_is_refused_even_with_server_signing_on(self):
+        with self._off(), patch("procurement.blockchain.SERVER_SIGNING_ENABLED", True), \
+                patch("procurement.blockchain.submit_anchor_server_side") as submit:
+            res = self.client.post(self.url, {"anchor_id": self.anchor_id, "server_submit": True}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        submit.assert_not_called()
+        self._assert_untouched()
+
+    def test_role_checks_still_come_first(self):
+        supplier = make_supplier(verified=True)
+        self.client.force_authenticate(user=supplier.user)
+        with self._off():
+            res = self.client.post(self.url, {"anchor_id": self.anchor_id, "tx_hash": self.TX}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self._assert_untouched()
+
+    def test_transitions_still_work_and_never_sign_automatically(self):
+        # The business flow is never blocked; the anchor is computed and stored,
+        # just never sent — not even by the server's own automatic signing.
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        with self._off(), patch("procurement.blockchain.SERVER_SIGNING_ENABLED", True), \
+                patch("procurement.blockchain.submit_anchor_server_side") as submit:
+            res = self.client.post(f"/api/projects/{project.pk}/approve/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        submit.assert_not_called()
+        self.assertFalse(res.data["anchor"]["signing_enabled"])
+        self.assertFalse(res.data["anchor"]["server_signing"])
+        self.assertEqual(BlockchainAnchor.objects.get(pk=res.data["anchor"]["id"]).tx_hash, "")
+
+    def test_server_side_submit_is_a_no_op(self):
+        anchor = BlockchainAnchor.objects.get(pk=self.anchor_id)
+        with self._off(), patch("procurement.blockchain.SERVER_SIGNING_ENABLED", True), \
+                patch("procurement.blockchain.BLOCKCHAIN_PRIVATE_KEY", "0x" + "22" * 32), \
+                patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", "0x" + "33" * 20), \
+                patch("procurement.blockchain._load_web3") as load_web3:
+            self.assertIsNone(submit_anchor_server_side(anchor))
+        load_web3.assert_not_called()
+
+    def test_every_anchor_tells_the_browser(self):
+        anchor = BlockchainAnchor.objects.get(pk=self.anchor_id)
+        with self._off():
+            self.assertFalse(anchor_summary(anchor)["signing_enabled"])
+            record = self.client.get(f"/api/projects/{self.project.pk}/anchors/")
+        self.assertEqual(record.status_code, status.HTTP_200_OK)
+        rows = record.data if isinstance(record.data, list) else record.data.get("anchors", [])
+        self.assertTrue(rows)
+        self.assertTrue(all(row["signing_enabled"] is False for row in rows))
+
+    def test_production_default_is_unchanged(self):
+        # Unset → signing allowed; only an explicit False turns it off.
+        import os
+        from .blockchain import _env_flag
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("BLOCKCHAIN_WALLET_SIGNING", None)
+            self.assertTrue(_env_flag("BLOCKCHAIN_WALLET_SIGNING", "True"))
+        for value, expected in (("True", True), ("true", True), ("False", False), ("false", False), ("0", False)):
+            with patch.dict(os.environ, {"BLOCKCHAIN_WALLET_SIGNING": value}):
+                self.assertIs(_env_flag("BLOCKCHAIN_WALLET_SIGNING", "True"), expected, value)
+        # ...and attach works exactly as before.
+        with patch("procurement.blockchain.WALLET_SIGNING_ENABLED", True):
+            anchor = BlockchainAnchor.objects.get(pk=self.anchor_id)
+            self.assertTrue(anchor_summary(anchor)["signing_enabled"])
+            res = self.client.post(self.url, {"anchor_id": self.anchor_id, "tx_hash": self.TX}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(BlockchainAnchor.objects.get(pk=self.anchor_id).tx_hash, self.TX)
 
 
 class PayloadVersionTests(APITestCase):
@@ -1739,7 +2381,7 @@ class BidProductImageTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
 
         anchors = list(BlockchainAnchor.objects.filter(entity_ref=self.project.code))
-        self.assertEqual({a.stage for a in anchors}, {"BID_SUBMITTED", "AWARDED"})
+        self.assertEqual({a.stage for a in anchors}, {"EVALUATION_COMPLETED", "BID_SUBMITTED", "AWARDED"})
         before = {a.id: a.data_hash for a in anchors}
         for a in anchors:
             self.assertNotIn("product_images", a.payload)
@@ -2268,18 +2910,361 @@ class DashboardSummaryTests(APITestCase):
         # published + closed + awarded = 100000 + 50000 + 50000
         self.assertEqual(float(res.data["total_published_abc"]), 200000)
         self.assertEqual(res.data["awards"][0]["winner"], self.supplier.company)
-        self.assertFalse(res.data["awards"][0]["anchored"])
+        self.assertFalse(res.data["awards"][0]["verified_on_chain"])
 
     def test_public_summary_exposes_no_private_fields(self):
         res = self.client.get("/api/public/summary/")
         body = json.dumps(res.data, default=str)
-        # Losing bid amounts never appear; the winning amount is the published award.
+        # No bid amounts at all: not the losers', and not the contract amount
+        # either (decision D2: the public sees the winner only).
         self.assertNotIn("48765", body)
         self.assertNotIn("47321", body)
+        self.assertNotIn("45000", body)
         for private in ("contact", "email", "Jane Dela Cruz", "tin", "phone", "documents",
                         "payload", "data_hash", "reference_image", "supplier_id"):
             self.assertNotIn(private, body)
         self.assertEqual(set(res.data["awards"][0]),
-                         {"code", "name", "category", "winner", "amount", "awarded_at", "anchored", "explorer_url"})
+                         {"code", "name", "category", "winner", "awarded_at", "verified_on_chain", "explorer_url"})
         self.assertEqual(set(res.data["open"][0]),
                          {"code", "name", "category", "budget", "deadline", "published_at", "bids"})
+
+
+class EvaluationCommitmentTests(APITestCase):
+    """EVALUATION_COMPLETED: one salted commitment, written at award time, to
+    every bid received and its final outcome. Proves the evaluation was fixed
+    when the award was made, without putting any losing amount on-chain."""
+
+    def setUp(self):
+        cache.clear()
+        self._media = tempfile.mkdtemp()
+        self._override = override_settings(MEDIA_ROOT=self._media)
+        self._override.enable()
+        self.admin = make_admin()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.winner_supplier = make_supplier()
+        self.loser_supplier = make_supplier()
+        self.third_supplier = make_supplier()
+        self.win = Bid.objects.create(project=self.project, supplier=self.winner_supplier, amount=41111,
+                                      status=Bid.Status.QUALIFIED, quotation_document=dummy_pdf("q1.pdf"))
+        self.lose = Bid.objects.create(project=self.project, supplier=self.loser_supplier, amount=43333,
+                                       status=Bid.Status.QUALIFIED, quotation_document=dummy_pdf("q2.pdf"))
+        self.dq = Bid.objects.create(project=self.project, supplier=self.third_supplier, amount=39999,
+                                     status=Bid.Status.DISQUALIFIED, quotation_document=dummy_pdf("q3.pdf"))
+        self.client.force_authenticate(user=self.admin)
+        self.res = self.client.post(f"/api/bids/{self.win.pk}/select-winner/")
+        self.anchor = BlockchainAnchor.objects.get(stage=BlockchainAnchor.Stage.EVALUATION_COMPLETED)
+
+    def tearDown(self):
+        self._override.disable()
+        shutil.rmtree(self._media, ignore_errors=True)
+
+    def test_awarding_signs_evaluation_then_winning_bid_then_award(self):
+        self.assertEqual(self.res.status_code, status.HTTP_200_OK, self.res.data)
+        self.assertEqual([a["stage"] for a in self.res.data["anchor_sequence"]],
+                         ["EVALUATION_COMPLETED", "BID_SUBMITTED", "AWARDED"])
+
+    def test_commitment_covers_every_bid_but_reveals_no_amount_or_supplier(self):
+        payload = self.anchor.payload
+        self.assertEqual(payload["bid_count"], 3)
+        self.assertEqual(len(payload["leaves"]), 3)
+        self.assertEqual(set(payload), {"v", "entity", "stage", "code", "bid_count", "leaves"})
+        body = json.dumps(payload)
+        for secret in ("41111", "43333", "39999", "winner", "disqualified"):
+            self.assertNotIn(secret, body)
+        for bid in Bid.objects.filter(project=self.project):
+            self.assertEqual(len(bid.commitment_salt), 64)
+            self.assertTrue(bid.committed_document_hash.startswith("0x"))
+        self.assertEqual(self.anchor.document_hash, "")
+
+    def test_the_salt_is_what_makes_a_leaf_unguessable(self):
+        bid = Bid.objects.get(pk=self.lose.pk)
+        unsalted = dict(bid_leaf_fields(bid), salt="")
+        self.assertNotEqual(hash_payload(unsalted), bid_leaf(bid))
+        self.assertIn(bid_leaf(bid), self.anchor.payload["leaves"])
+
+    def test_an_honest_record_verifies(self):
+        self.assertEqual(verify_anchor(self.anchor, deep=True)["status"], "match")
+
+    def test_repricing_regrading_adding_or_dropping_a_bid_is_detected(self):
+        changes = {
+            "re-priced losing bid": lambda: Bid.objects.filter(pk=self.lose.pk).update(amount=40000),
+            "re-graded bid": lambda: Bid.objects.filter(pk=self.dq.pk).update(status=Bid.Status.QUALIFIED),
+            "dropped bid": lambda: Bid.objects.filter(pk=self.dq.pk).delete(),
+            "added bid": lambda: Bid.objects.create(project=self.project, supplier=make_supplier(), amount=1),
+        }
+        for name, change in changes.items():
+            with self.subTest(name):
+                sid = transaction.savepoint()
+                change()
+                self.assertEqual(verify_anchor(self.anchor)["status"], "mismatch", name)
+                transaction.savepoint_rollback(sid)
+        self.assertEqual(verify_anchor(self.anchor)["status"], "match")
+
+    def test_a_replaced_losing_quotation_is_caught_by_the_deep_check(self):
+        bid = Bid.objects.get(pk=self.lose.pk)
+        bid.quotation_document.save("swapped.pdf", ContentFile(b"%PDF-1.4 a different offer"))
+        self.assertEqual(verify_anchor(self.anchor)["status"], "match")          # record unchanged
+        deep = verify_anchor(self.anchor, deep=True)
+        self.assertEqual(deep["document"], "mismatch")
+        self.assertEqual(deep["status"], "mismatch")
+
+    def test_evaluation_is_final_after_award(self):
+        for action in ("qualify", "disqualify"):
+            res = self.client.post(f"/api/bids/{self.dq.pk}/{action}/")
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, action)
+        self.dq.refresh_from_db()
+        self.assertEqual(self.dq.status, Bid.Status.DISQUALIFIED)
+        self.assertEqual(verify_anchor(self.anchor)["status"], "match")
+
+    def test_commitments_are_never_rewritten(self):
+        bid = Bid.objects.get(pk=self.lose.pk)
+        salt = bid.commitment_salt
+        _commit_bids([bid])
+        bid.refresh_from_db()
+        self.assertEqual(bid.commitment_salt, salt)
+
+    def test_inclusion_receipt_lets_a_bidder_check_their_own_bid(self):
+        receipt = inclusion_receipt(Bid.objects.get(pk=self.lose.pk))
+        self.assertEqual(hash_payload(receipt["leaf_fields"]), receipt["leaf"])
+        self.assertIn(receipt["leaf"], receipt["payload"]["leaves"])
+        self.assertEqual(hash_payload(receipt["payload"]), receipt["anchor"]["data_hash"])
+        # Only their OWN amount is in it; the other leaves are opaque.
+        body = json.dumps(receipt, default=str)
+        self.assertIn("43333", body)
+        self.assertNotIn("41111", body)
+        self.assertNotIn("39999", body)
+
+    def test_public_trail_shows_only_the_hash(self):
+        self.client.force_authenticate(user=None)
+        res = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/")
+        row = next(a for a in res.data["anchors"] if a["stage"] == "EVALUATION_COMPLETED")
+        self.assertEqual(row["data_hash"], self.anchor.data_hash)
+        self.assertEqual(row["integrity"]["status"], "match")
+        body = json.dumps(res.data, default=str)
+        salt = Bid.objects.get(pk=self.win.pk).commitment_salt
+        for secret in ("41111", "43333", "39999", "leaves", "salt", salt):
+            self.assertNotIn(secret, body)
+
+
+class PayloadHashVectorTests(APITestCase):
+    """contracts/payload-hash-vectors.json is shared with the browser tests
+    (frontend/src/blockchain/packetVerify.test.js): both hashers must produce
+    these exact values, or a verifier's browser would reject honest records."""
+
+    def test_the_backend_reproduces_every_shared_vector(self):
+        from pathlib import Path
+        from django.conf import settings
+        path = Path(settings.BASE_DIR).parent / "contracts" / "payload-hash-vectors.json"
+        vectors = json.loads(path.read_text(encoding="utf-8"))["vectors"]
+        self.assertGreaterEqual(len(vectors), 6)
+        for v in vectors:
+            with self.subTest(v["name"]):
+                self.assertEqual(hash_payload(v["payload"]), v["data_hash"])
+
+
+class VerificationPacketContentTests(APITestCase):
+    """A packet serves the payload EXACTLY as stored at anchoring time — never
+    rebuilt from the live record, never re-serialized — and says plainly when
+    that payload can't support an independent check."""
+
+    def setUp(self):
+        from .packets import build_packet
+        self.build_packet = build_packet
+        self.project = make_project(status=Project.Status.PUBLISHED)
+
+    def _anchor(self, payload, **fields):
+        return BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+            stage=fields.pop("stage", "SUBMITTED"),
+            data_hash=fields.pop("data_hash", hash_payload(payload) if payload else "0x" + "00" * 32),
+            payload=payload, **fields)
+
+    def test_a_legacy_v1_payload_is_served_as_stored_not_rebuilt(self):
+        v1 = {"v": 1, "entity": "PROJECT", "stage": "SUBMITTED", "code": self.project.code,
+              "name": "Old name, since edited", "category": "", "type": "", "budget": "1.00",
+              "status": "pending_head", "deadline": "", "reviewed_at": "", "published_at": "",
+              "created_at": "2026-07-27T14:10:00+00:00", "document_hash": ""}
+        anchor = self._anchor(v1)
+        packet = self.build_packet(anchor)
+        self.assertEqual(packet["payload"], v1)
+        self.assertEqual(packet["payload_version"], 1)
+        self.assertTrue(packet["server_check"]["payload_reproduces_data_hash"])
+        self.assertTrue(any("Legacy (v1)" in x for x in packet["limitations"]))
+        # The public route serves it too: every v1 project key is public.
+        res = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/{anchor.pk}/packet/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["payload"], v1)
+
+    def test_a_missing_payload_is_reported_not_invented(self):
+        packet = self.build_packet(self._anchor({}))
+        self.assertIsNone(packet["payload"])
+        self.assertFalse(packet["server_check"]["payload_reproduces_data_hash"])
+        self.assertTrue(any("was not stored" in x for x in packet["limitations"]))
+
+    def test_a_payload_that_no_longer_reproduces_its_hash_is_flagged_not_fixed(self):
+        good = {"v": 2, "entity": "PROJECT", "stage": "SUBMITTED", "code": self.project.code,
+                "name": "x", "document_hash": ""}
+        anchor = self._anchor(good)
+        BlockchainAnchor.objects.filter(pk=anchor.pk).update(payload={**good, "name": "edited"})
+        anchor.refresh_from_db()
+        packet = self.build_packet(anchor)
+        self.assertEqual(packet["payload"]["name"], "edited")             # as stored
+        self.assertEqual(packet["data_hash"], hash_payload(good))         # as recorded
+        self.assertFalse(packet["server_check"]["payload_reproduces_data_hash"])
+        self.assertTrue(any("does not reproduce" in x for x in packet["limitations"]))
+
+    def test_the_packet_carries_the_on_chain_identity_and_honest_gaps(self):
+        payload = {"v": 2, "entity": "PROJECT", "stage": "SUBMITTED", "code": self.project.code,
+                   "name": "x", "document_hash": "0x" + "ab" * 32}
+        unlinked = self.build_packet(self._anchor(payload, tx_hash="0x" + "cd" * 32))
+        self.assertIsNone(unlinked["recorded"]["chain_anchor_id"])
+        self.assertTrue(any("find it by searching" in x for x in unlinked["limitations"]))
+        linked = self.build_packet(self._anchor(
+            {**payload, "stage": "HEAD_APPROVED"}, stage="HEAD_APPROVED", tx_hash="0x" + "cd" * 32, chain_anchor_id=18, chain_id=11155111,
+            chain_contract="0x" + "12" * 20, chain_finalized=True))
+        self.assertEqual(linked["recorded"]["chain_anchor_id"], 18)
+        self.assertEqual(linked["document_hash"], "0x" + "ab" * 32)
+        self.assertFalse(any("searching" in x for x in linked["limitations"]))
+        self.assertTrue(linked["server_check"]["payload_reproduces_data_hash"])
+
+
+class AwardDocumentVersionTests(APITestCase):
+    """Re-issuing a post-award document must not lose the earlier issue: every
+    issue keeps its exact stored bytes, hash, issue date and anchor
+    (AwardDocumentVersion), downloadable under the award-document rules."""
+
+    def setUp(self):
+        import hashlib
+        self.sha = lambda data: "0x" + hashlib.sha256(data).hexdigest()
+        cache.clear()
+        self._media = tempfile.mkdtemp()
+        override = override_settings(MEDIA_ROOT=self._media)
+        override.enable()
+        self.addCleanup(override.disable)
+        self.addCleanup(shutil.rmtree, self._media, ignore_errors=True)
+        self.admin, self.head = make_admin(), make_head()
+        self.winner, self.loser = make_supplier(), make_supplier()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        win = Bid.objects.create(project=self.project, supplier=self.winner, amount=50000, status=Bid.Status.QUALIFIED)
+        Bid.objects.create(project=self.project, supplier=self.loser, amount=60000, status=Bid.Status.QUALIFIED)
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/bids/{win.pk}/select-winner/").status_code, 200)
+        self.award = Award.objects.get()
+        # Issue 1: generated draft. Issue 2: the signed scan replaces it.
+        self.assertEqual(self.client.post(f"/api/awards/{self.award.pk}/documents/generate/",
+                                          {"key": "notice_of_award"}, format="json").status_code, 200)
+        signed = SimpleUploadedFile("signed-noa.pdf", b"%PDF-1.4 signed notice", content_type="application/pdf")
+        res = self.client.post(f"/api/awards/{self.award.pk}/documents/",
+                               {"key": "notice_of_award", "file": signed}, format="multipart")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.client.force_authenticate(user=None)
+        self.v1, self.v2 = AwardDocumentVersion.objects.filter(award=self.award, key="notice_of_award")
+
+    def _bytes(self, version):
+        version.file.open("rb")
+        try:
+            return version.file.read()
+        finally:
+            version.file.close()
+
+    def test_each_issue_keeps_its_own_bytes_hash_date_and_anchor(self):
+        self.assertEqual((self.v1.version, self.v2.version), (1, 2))
+        self.assertTrue(self.v1.generated)
+        self.assertFalse(self.v2.generated)
+        self.assertEqual(self.v2.original_filename, "signed-noa.pdf")
+        self.assertNotEqual(self.v1.file.name, self.v2.file.name)
+        for v in (self.v1, self.v2):
+            self.assertEqual(self.sha(self._bytes(v)), v.document_hash)      # exact stored bytes
+            self.assertEqual(v.anchor.document_hash, v.document_hash)          # the anchored hash
+            self.assertEqual(v.anchor.payload["issued_at"], v.issued_at.isoformat())
+        self.award.refresh_from_db()
+        self.assertEqual(self.award.notice_of_award.name, self.v2.file.name)  # current = latest
+        self.assertEqual(self._bytes(self.v2), b"%PDF-1.4 signed notice")
+
+    def test_an_earlier_issue_downloads_under_the_award_document_rules(self):
+        url = f"/api/files/awardversion/{self.v1.pk}/file/"
+        for user, expected in ((self.admin, 200), (self.head, 200), (self.winner.user, 200),
+                               (self.loser.user, 404)):
+            self.client.force_authenticate(user=user)
+            res = self.client.get(url)
+            self.assertEqual(res.status_code, expected, getattr(user, "username", user))
+            if expected == 200:
+                body = b"".join(res.streaming_content)
+                self.assertEqual(self.sha(body), self.v1.document_hash)
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get(url).status_code, 404)         # never public
+
+    def test_the_version_list_marks_current_and_superseded_issues(self):
+        from .document_versions import versions_for
+        files = lambda kind, record, field: (f"{kind}/{record.pk}/{field}", "x.pdf")  # noqa: E731
+        versions = versions_for(self.v1.anchor, file_for=files)
+        self.assertEqual([(v["number"], v["total"], v["current"]) for v in versions], [(1, 2, False), (2, 2, True)])
+        self.assertEqual([v["anchor_id"] for v in versions], [self.v1.anchor_id, self.v2.anchor_id])
+        self.assertEqual(versions[0]["file_url"], f"awardversion/{self.v1.pk}/file")
+        self.assertTrue(all(v["preserved"] and v["fingerprinted"] for v in versions))
+
+    def test_issues_from_before_version_history_are_listed_but_never_invented(self):
+        from .document_versions import versions_for
+        files = lambda kind, record, field: (f"{kind}/{record.pk}/{field}", None)  # noqa: E731
+        AwardDocumentVersion.objects.all().delete()       # as if issued before this table existed
+        old, new = versions_for(self.v1.anchor, file_for=files)
+        self.assertFalse(old["preserved"])
+        self.assertIsNone(old["file_url"])
+        self.assertIn("not preserved", old["file_note"])
+        self.assertEqual(old["document_hash"], BlockchainAnchor.objects.get(pk=old["anchor_id"]).document_hash)
+        # The newest issue falls back to the award's current file, because its
+        # issue date still equals the one the anchor hashed...
+        self.assertEqual(new["file_url"], f"award/{self.award.pk}/notice_of_award")
+        # ...and stops doing so once that date no longer matches.
+        Award.objects.filter(pk=self.award.pk).update(noa_issued_at=timezone.now() + timedelta(days=1))
+        _, new = versions_for(self.v1.anchor, file_for=files)
+        self.assertIsNone(new["file_url"])
+        self.assertIn("no longer belongs", new["file_note"])
+
+    def test_an_issue_is_kept_even_when_anchoring_is_off(self):
+        self.client.force_authenticate(user=self.admin)
+        with patch("procurement.blockchain.ANCHORING_ENABLED", False):
+            res = self.client.post(f"/api/awards/{self.award.pk}/documents/generate/",
+                                   {"key": "notice_to_proceed"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        v = AwardDocumentVersion.objects.get(award=self.award, key="notice_to_proceed")
+        self.assertIsNone(v.anchor)
+        self.assertEqual(self.sha(self._bytes(v)), v.document_hash)
+
+    def test_history_keeping_never_breaks_an_issue(self):
+        self.client.force_authenticate(user=self.admin)
+        with patch("procurement.document_versions.AwardDocumentVersion.objects.create",
+                   side_effect=RuntimeError("db down")):
+            res = self.client.post(f"/api/awards/{self.award.pk}/documents/generate/",
+                                   {"key": "award_resolution"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.award.refresh_from_db()
+        self.assertTrue(self.award.award_resolution)
+
+    def test_a_missing_file_is_reported_as_missing_not_as_forbidden(self):
+        from .document_versions import versions_for
+        files = lambda kind, record, field: (f"{kind}/{record.pk}/{field}", None)  # noqa: E731
+        AwardDocumentVersion.objects.all().delete()
+        Award.objects.filter(pk=self.award.pk).update(notice_of_award="")
+        *_, new = versions_for(self.v1.anchor, file_for=files)
+        self.assertIsNone(new["file_url"])
+        self.assertEqual(new["file_note"], "No file is stored for this document.")
+
+
+class ConfirmedSignerTests(APITestCase):
+    """The signer shown for a confirmed record is the one the chain recorded,
+    not whatever address the browser posted with its tx hash."""
+
+    LEDGER = "0x" + "12" * 20
+
+    def test_confirmation_replaces_a_reported_signer_with_the_on_chain_one(self):
+        anchor = BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref="PC-AAAA-BBBB-CCCC", stage="SUBMITTED",
+            data_hash="0x" + "cd" * 32, tx_hash="0x" + "ab" * 32, actor_address="0x" + "99" * 20,
+            anchored_at=timezone.now())
+        ev = ledger_event(anchor, self.LEDGER, actor="0x" + "77" * 20)
+        w3 = sepolia_node({"status": 1, "blockNumber": CHAIN_HEAD - 5}, state={ev["id"]: state_row(ev)})
+        with patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", self.LEDGER),                 patch("procurement.blockchain.anchor_events", return_value=[ev]):
+            self.assertEqual(confirm_anchor(anchor, w3=w3), "confirmed")
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.actor_address, "0x" + "77" * 20)

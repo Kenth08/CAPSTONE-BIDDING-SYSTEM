@@ -469,6 +469,15 @@ class Bid(SecureUploadsMixin, models.Model):
     # Only required when the project has a reference image.
     specification_confirmed = models.BooleanField(default=False)
 
+    # ── Evaluation commitment (set once, at award time) ───────────────────────
+    # Inputs to this bid's leaf in the EVALUATION_COMPLETED anchor (see
+    # blockchain.bid_leaf). The salt is random and secret: without it, a leaf
+    # (and so the public anchor hash) could be brute-forced back to an amount.
+    # Never serialized except in the bid owner's own inclusion receipt.
+    # db_default so the previous release can keep inserting rows mid-deploy.
+    commitment_salt = models.CharField(max_length=64, blank=True, default="", db_default="")
+    committed_document_hash = models.CharField(max_length=66, blank=True, default="", db_default="")
+
     class Meta:
         ordering = ["-submitted_at"]
         # One bid per supplier per project (re-submitting updates the amount).
@@ -620,6 +629,11 @@ class BlockchainAnchor(models.Model):
         RESOLUTION_ISSUED = "RESOLUTION_ISSUED", "BAC Resolution issued"
         NOA_ISSUED = "NOA_ISSUED", "Notice of Award issued"
         NTP_ISSUED = "NTP_ISSUED", "Notice to Proceed issued"
+        # Written once, at award time: a salted commitment to EVERY bid received
+        # and its final outcome (blockchain.evaluation_payload). Proves the set
+        # of bids and the evaluation were fixed when the award was made, without
+        # putting any losing bidder's amount on the public ledger.
+        EVALUATION_COMPLETED = "EVALUATION_COMPLETED", "Evaluation completed (all bids committed)"
 
     entity_type = models.CharField(max_length=10, choices=EntityType.choices)
     # The procurement code (e.g. "PC-7K4M-Q9XT-3HWD") for EVERY anchor — project, bid
@@ -647,20 +661,114 @@ class BlockchainAnchor(models.Model):
     anchored_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # What the SERVER found when it read this transaction back from Sepolia
+    # (blockchain.confirm_anchor). A tx_hash on its own is only a claim the
+    # browser posted; it counts as on-chain once this says CONFIRMED: a
+    # successful transaction to the ledger contract that emitted an
+    # AnchorRecorded event with exactly this entity/code/stage/hash.
+    # db_default so the previous release can keep inserting rows mid-deploy.
+    class ChainStatus(models.TextChoices):
+        UNCHECKED = "unchecked", "Not checked yet"
+        CONFIRMED = "confirmed", "Confirmed on-chain"
+        MISMATCH = "mismatch", "Transaction does not contain this record"
+        REVERTED = "reverted", "Last transaction failed on-chain"
+        DROPPED = "dropped", "Last transaction was never mined"
+
+    chain_status = models.CharField(
+        max_length=12, choices=ChainStatus.choices,
+        default=ChainStatus.UNCHECKED, db_default=ChainStatus.UNCHECKED)
+    chain_checked_at = models.DateTimeField(null=True, blank=True)
+
+    # The on-chain identity of the record, copied from the AnchorRecorded event
+    # the server decoded (and cross-checked with the contract's getAnchor) when
+    # it confirmed the transaction. Never typed in or guessed: empty until then,
+    # and left empty for older anchors whose receipt the RPC can no longer serve.
+    # `chain_anchor_id` is the contract's own index (getAnchor(id)) — not this
+    # row's id and not the tx hash; one transaction can carry several of them.
+    chain_anchor_id = models.PositiveBigIntegerField(null=True, blank=True)
+    chain_log_index = models.PositiveIntegerField(null=True, blank=True)
+    chain_timestamp = models.DateTimeField(null=True, blank=True)   # block time stored by the contract
+    chain_id = models.PositiveBigIntegerField(null=True, blank=True)  # network actually read (eth_chainId)
+    chain_contract = models.CharField(max_length=42, blank=True, default="", db_default="")
+    # Depth when last checked (1 = in the latest block), and whether that block
+    # was at or below the chain's `finalized` block. False also when the node
+    # could not report finality — "not shown to be final", never assumed final.
+    chain_confirmations = models.PositiveBigIntegerField(null=True, blank=True)
+    chain_finalized = models.BooleanField(default=False, db_default=False)
+
     class Meta:
         ordering = ["created_at", "id"]
         indexes = [
             models.Index(fields=["entity_ref", "created_at"]),
             models.Index(fields=["entity_type", "entity_id"]),
         ]
+        constraints = [
+            # One on-chain record can back only one anchor row: a batched
+            # transaction carries several events, each claimed once, and the
+            # same event can never be "reused" to vouch for a second record.
+            models.UniqueConstraint(
+                fields=["chain_id", "chain_contract", "chain_anchor_id"],
+                condition=models.Q(chain_anchor_id__isnull=False),
+                name="uniq_onchain_anchor_record",
+            ),
+        ]
 
     @property
     def anchored(self):
+        """A transaction has been REPORTED for this anchor. Not proof by
+        itself — see `verified_on_chain`."""
         return bool(self.tx_hash)
+
+    @property
+    def verified_on_chain(self):
+        return bool(self.tx_hash) and self.chain_status == self.ChainStatus.CONFIRMED
 
     def __str__(self):
         state = self.tx_hash[:12] + "…" if self.tx_hash else "not anchored"
         return f"{self.entity_ref} {self.stage} ({state})"
+
+
+class AwardDocumentVersion(models.Model):
+    """One issue of a post-award document (BAC Resolution, NOA, NTP), kept for
+    good so every issue stays downloadable and verifiable.
+
+    Re-issuing a document replaces the file on the Award row. Storage keeps the
+    old bytes (names are random and nothing deletes them), but nothing else
+    remembers where they are — so the version row records the stored NAME at
+    issue time. No copy is made: `file` points at exactly the bytes that were
+    hashed and anchored.
+
+    Issues made before this table existed have no row. They still appear as
+    versions (from their anchors), with their file marked "not preserved":
+    the anchor never recorded the file name, and it is not guessed."""
+
+    KEY_CHOICES = [(key, label) for key, label, _, _ in AWARD_DOCUMENT_FIELDS]
+
+    award = models.ForeignKey(Award, on_delete=models.CASCADE, related_name="document_versions")
+    key = models.CharField(max_length=32, choices=KEY_CHOICES)
+    version = models.PositiveIntegerField()      # issue number, 1 = first issue of this document
+    file = models.FileField(upload_to=award_doc_path, max_length=255)
+    original_filename = models.CharField(max_length=255, blank=True)
+    document_hash = models.CharField(max_length=66, blank=True)   # SHA-256 of the stored bytes
+    issued_at = models.DateTimeField()
+    generated = models.BooleanField(default=False)               # generated PDF vs uploaded scan
+    # The anchor written for this issue, when anchoring produced one. Never
+    # filled in afterwards by guesswork.
+    anchor = models.OneToOneField(
+        BlockchainAnchor, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="document_version")
+    issued_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["award_id", "key", "version"]
+        constraints = [
+            models.UniqueConstraint(fields=["award", "key", "version"], name="uniq_award_document_version"),
+        ]
+
+    def __str__(self):
+        return f"{self.award_id} {self.key} v{self.version}"
 
 
 class Notification(models.Model):

@@ -251,6 +251,49 @@ export async function apiPublicAnchors(code, { deep = false } = {}) {
   return res.json() // { code, name, status, contract_address, anchors: [...] }
 }
 
+// One procurement's public result: winner and date only (no amounts, no bids).
+// 404 for anything that was never opened to the public. No token.
+export async function apiPublicRecord(code) {
+  let res
+  try {
+    res = await fetch(`${API_URL}/public/procurement/${encodeURIComponent(code)}/`)
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (res.status === 404) throw new Error(`No public procurement found with reference "${code}".`)
+  if (!res.ok) throw new Error('Unable to load this procurement right now. Please try again later.')
+  return res.json() // { code, name, status, result: { state, winner?, awarded_at? }, ... }
+}
+
+// One record of a public procurement in full (record details page).
+export async function apiPublicAnchorDetail(code, anchorId) {
+  let res
+  try {
+    res = await fetch(
+      `${API_URL}/public/procurement/${encodeURIComponent(code)}/anchors/${encodeURIComponent(anchorId)}/`)
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (res.status === 404) throw new Error('Not found.')
+  if (!res.ok) throw new Error('Unable to load this record right now. Please try again later.')
+  return res.json()
+}
+
+// One PUBLIC anchor's verification packet (project stages of a public
+// procurement only). 404 → null: the record has no public packet.
+export async function apiPublicPacket(code, anchorId) {
+  let res
+  try {
+    res = await fetch(
+      `${API_URL}/public/procurement/${encodeURIComponent(code)}/anchors/${encodeURIComponent(anchorId)}/packet/`)
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error('Unable to load the verification packet right now.')
+  return res.json()
+}
+
 // ── Token refresh ─────────────────────────────────────────────────────────────
 // Access tokens live 15 minutes; refresh tokens a day and are ROTATED: every
 // refresh returns a new refresh token and the server blacklists the old one.
@@ -533,6 +576,22 @@ export const apiListDocuments = () => apiFetch('/documents/')
 // A record with no transaction yet simply reads as "not yet anchored" and can be
 // retried; the procurement data itself is already saved either way.
 export const apiListProjectAnchors = (projectId) => apiFetch(`/projects/${projectId}/anchors/`)
+// Admin/Head: have the SERVER read this procurement's reported transactions
+// back from Sepolia and check each receipt really records its anchor. Read-only
+// on the chain — it never sends a transaction.
+// The whole procurement, filing → award, with its blockchain evidence — scoped
+// to the caller by the server (procurement/record.py). `deep` (Admin/Head)
+// also re-reads and re-hashes every anchored document.
+export const apiProjectRecord = (projectId, { deep = false } = {}) =>
+  apiFetch(`/projects/${projectId}/record/${deep ? '?deep=1' : ''}`)
+export const apiVerifyProjectChain = (projectId) =>
+  apiFetch(`/projects/${projectId}/verify-chain/`, { method: 'POST' })
+// One anchor's verification packet, scoped to the caller's role (server-side).
+export const apiProjectPacket = (projectId, anchorId) =>
+  apiFetch(`/projects/${projectId}/anchors/${anchorId}/packet/`)
+// One record of a procurement in full, scoped to the caller's role (server-side).
+export const apiProjectAnchorDetail = (projectId, anchorId) =>
+  apiFetch(`/projects/${projectId}/anchors/${anchorId}/`)
 
 // Explicit per-entity helpers, for callers that would rather not use attach_url.
 const anchorBody = ({ anchorId, stage, txHash, blockNumber, actorAddress }) =>

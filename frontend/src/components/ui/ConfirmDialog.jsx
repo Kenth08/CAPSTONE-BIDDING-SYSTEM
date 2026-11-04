@@ -35,7 +35,7 @@ export default function ConfirmDialog({
         {onChain && (
           <p className="rf-dialog-chain">
             <Link2 size={13} aria-hidden="true" />
-            This step is hashed and recorded on the Sepolia blockchain, so it can't be quietly changed later.
+            A fingerprint (SHA-256 hash) of this step is recorded on the Sepolia blockchain once signed, so it can't be quietly changed later.
           </p>
         )}
         <div className="rf-dialog-actions">

@@ -1,0 +1,107 @@
+{
+  "_about": "Payloads and the data_hash the BACKEND (blockchain.hash_payload) computes for them. Both backend and browser tests assert against this file, so the two hashers can never drift apart. Regenerate only if hash_payload itself is intentionally changed — which would break every existing anchor.",
+  "vectors": [
+    {
+      "name": "project v2, ASCII",
+      "payload": {
+        "v": 2,
+        "entity": "PROJECT",
+        "stage": "BIDDING_OPEN",
+        "code": "PC-7K4M-Q9XT-3HWD",
+        "name": "Office Supplies Q4",
+        "category": "office_supplies",
+        "type": "goods",
+        "budget": "250000.00",
+        "bidding_period_days": 14,
+        "delivery_period_days": 30,
+        "created_at": "2026-11-03T08:15:00.123456+00:00",
+        "document_hash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "data_hash": "0x32082deee4f9029988a97ccbcf1e7b0d9e15ae12c44b647cd04000ca4fb1f160"
+    },
+    {
+      "name": "project v2, non-ASCII and emoji",
+      "payload": {
+        "v": 2,
+        "entity": "PROJECT",
+        "stage": "SUBMITTED",
+        "code": "PC-ÑAAA-BBBB-CCCC",
+        "name": "Pañuelo & ₱ supplies — “Dasmariñas” 🚀",
+        "category": "",
+        "type": "",
+        "budget": "0.00",
+        "bidding_period_days": 0,
+        "delivery_period_days": 0,
+        "created_at": "",
+        "document_hash": ""
+      },
+      "data_hash": "0x71cd8d80da46a941a33c170e39914d827cd08a88ffd9f53741e60474bbaea353"
+    },
+    {
+      "name": "control characters, quotes, backslash, DEL",
+      "payload": {
+        "v": 2,
+        "name": "tab\there \"quoted\" back\\slash newline\n cr\r bell\u0007 del nbsp "
+      },
+      "data_hash": "0xa7f35dd89bc6d50bd0f8fbdae9f0663913cc407a55e6476c88cdb47d1b367e01"
+    },
+    {
+      "name": "project v1 (legacy: status, deadline, reviewed_at, published_at)",
+      "payload": {
+        "v": 1,
+        "entity": "PROJECT",
+        "stage": "HEAD_APPROVED",
+        "code": "P-2026-005",
+        "name": "Legacy",
+        "category": "it_equipment",
+        "type": "goods",
+        "budget": "99999.99",
+        "status": "approved",
+        "deadline": "2026-08-01",
+        "reviewed_at": "2026-07-27T14:20:00+00:00",
+        "published_at": "",
+        "created_at": "2026-07-27T14:10:00+00:00",
+        "document_hash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "data_hash": "0x00a8e4d033ebc1d1e987f2f0d036ca6b0dbc2a400a671acb9a81d9be624e5928"
+    },
+    {
+      "name": "award document",
+      "payload": {
+        "v": 2,
+        "entity": "AWARD",
+        "stage": "NOA_ISSUED",
+        "project_code": "PC-7K4M-Q9XT-3HWD",
+        "award_id": 4,
+        "bid_id": 9,
+        "supplier_id": 3,
+        "amount": "229900.00",
+        "status": "noa_issued",
+        "awarded_at": "2026-11-03T09:00:00+00:00",
+        "issued_at": "2026-11-04",
+        "document_hash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "data_hash": "0x3213526a965838618af68d5d9ceb684ff530e307d14c5b459fed3efbf653eeac"
+    },
+    {
+      "name": "nested keys sorted at every level, empty containers, null, booleans",
+      "payload": {
+        "z": {
+          "b": [
+            3,
+            1,
+            {
+              "y": null,
+              "x": true
+            }
+          ],
+          "a": {}
+        },
+        "a": [],
+        "m": false,
+        "big": 9007199254740991
+      },
+      "data_hash": "0xfc75f7a02dea70ef8eb1350052be5d079857d3d515f87220681cd189143c96cc"
+    }
+  ]
+}

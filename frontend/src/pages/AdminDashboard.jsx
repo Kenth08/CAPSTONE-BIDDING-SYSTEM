@@ -38,7 +38,9 @@ import {
 } from '../utils/bidProjects'
 import AnchorActivity from '../components/AnchorActivity'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
-import { runAnchor } from '../blockchain/anchorStore'
+import { signingBlocked } from '../blockchain/anchor'
+import { runAnchor, runAnchorSequence } from '../blockchain/anchorStore'
+import { ANCHOR_STATES, anchorState } from '../blockchain/anchorState'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import AdminHome from './admin/AdminHome'
 import Toaster from '../components/ui/Toaster'
@@ -48,6 +50,8 @@ import DataTable from '../components/ui/DataTable'
 import ActionConfirm from '../components/ui/ConfirmDialog'
 import Countdown from '../components/ui/Countdown'
 import ProcurementStepper from '../components/ui/ProcurementStepper'
+import ProcurementRecordPage from '../components/ProcurementRecord'
+import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import SecureImg from '../components/ui/SecureImg'
 import '../style/AdminDashboard.css'
 
@@ -349,6 +353,9 @@ function ProjectHistoryPage() {
                   <td className="ad-actions-col">
                     <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/bids/${p.id}`)}>
                       <Eye size={13} /> View Bids
+                    </button>
+                    <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/record/${p.id}`)}>
+                      <ShieldCheck size={13} /> Record
                     </button>
                   </td>
                 </tr>
@@ -2898,18 +2905,16 @@ function BidEvaluationPage() {
   const lowest = inRunning.length > 1 ? Math.min(...inRunning.map(b => Number(b.amount))) : null
 
   // Qualify/disqualify only change the bid's own status — refetch just the
-  // bids table, not the project header too. The evaluation decision is anchored
-  // afterwards (not awaited: the decision is already saved, and the on-chain
-  // write is an optional witness that can be retried from the bid's trail).
-  const act = async (bid, fn, errMsg, stageLabel, okMsg) => {
+  // bids table, not the project header too. Individual evaluation decisions are
+  // NOT anchored (that would publish every bidder's outcome one by one); they
+  // are database records, audit-logged, and committed to the chain together
+  // when the winner is selected.
+  const act = async (bid, fn, errMsg, okMsg) => {
     setBusyId(bid.id)
     try {
-      const updated = await fn(bid.id)
+      await fn(bid.id)
       loadBidsList()
       setToast({ type: 'success', message: okMsg })
-      if (updated?.anchor) {
-        runAnchor(updated.anchor, { label: `${project?.code || ''} · ${stageLabel}` })
-      }
     }
     catch (e) { setToast({ type: 'error', message: e.message || errMsg }) }
     finally { setBusyId(null) }
@@ -2939,11 +2944,13 @@ function BidEvaluationPage() {
       await load()
       refreshProjects()  // the project is now Awarded — refresh the shared store
       setToast({ type: 'success', message: `${bid.supplier_name} selected as the winning bidder.` })
-      // Final link in the chain: the award itself. Anchored as AWARD, so the
-      // public trail ends with an unambiguous "this contract went to this bid".
-      if (result?.anchor) {
-        runAnchor(result.anchor, { label: `${project?.code || ''} · Contract awarded` })
-      }
+      // Awarding produces several anchors (the winning bid, the award…). Sign
+      // them in order, one wallet prompt at a time. Not awaited: the award is
+      // already saved, the on-chain writes are follow-ups that can be retried.
+      const sequence = result?.anchor_sequence || (result?.anchor ? [result.anchor] : [])
+      runAnchorSequence(sequence.map(a => ({
+        anchor: a, label: `${project?.code || ''} · ${a.stage_label || a.stage}`,
+      })))
     } catch (e) {
       setToast({ type: 'error', message: e.message || 'Could not select winner.' })
     } finally {
@@ -2956,25 +2963,28 @@ function BidEvaluationPage() {
     qualify: (b) => ({
       title: `Qualify ${b.supplier_name}?`, tone: 'primary', confirmLabel: 'Qualify bid',
       points: [`The ${peso(b.amount)} bid is marked Qualified for ${project.code}.`, 'The supplier is notified of the result.',
-        'A qualified bid can then be selected as the winner.'],
-      run: () => act(b, apiQualifyBid, 'Could not qualify.', 'Bid qualified', `${b.supplier_name}'s bid qualified.`),
+        'A qualified bid can then be selected as the winner.',
+        'Saved as a database record (audit-logged). It is not written to the blockchain on its own.'],
+      run: () => act(b, apiQualifyBid, 'Could not qualify.', `${b.supplier_name}'s bid qualified.`),
     }),
     disqualify: (b) => ({
       title: `Disqualify ${b.supplier_name}?`, tone: 'danger', confirmLabel: 'Disqualify bid',
       points: [`The ${peso(b.amount)} bid is marked Disqualified for ${project.code}.`, 'The supplier is notified of the result.',
-        'A disqualified bid cannot be selected as the winner.'],
-      run: () => act(b, apiDisqualifyBid, 'Could not disqualify.', 'Bid disqualified', `${b.supplier_name}'s bid disqualified.`),
+        'A disqualified bid cannot be selected as the winner.',
+        'Saved as a database record (audit-logged). It is not written to the blockchain on its own.'],
+      run: () => act(b, apiDisqualifyBid, 'Could not disqualify.', `${b.supplier_name}'s bid disqualified.`),
     }),
     revision: (b, docs) => ({
-      title: 'Request a document revision?', tone: 'warning', confirmLabel: 'Send request', onChain: false,
+      title: 'Request a document revision?', tone: 'warning', confirmLabel: 'Send request',
       points: [`${Object.keys(docs).length} document(s) on ${b.supplier_name}'s bid are flagged and the supplier is asked to re-upload them.`,
         'The bid stays in this bidding — it is not disqualified.', 'It cannot be selected as the winner until the files are fixed.'],
       run: () => requestRevision(b, docs),
     }),
     winner: (b) => ({
-      title: 'Select the winning bidder?', tone: 'primary', confirmLabel: 'Award contract',
+      title: 'Select the winning bidder?', tone: 'primary', confirmLabel: 'Award contract', onChain: true,
       points: [`${project.name} (${project.code}) is awarded to ${b.supplier_name} for ${peso(b.amount)}.`,
         'The procurement becomes Awarded and every bidder is notified.',
+        'Fingerprints of the evaluation result, the winning bid and the award are recorded on Sepolia — never the amounts or names themselves.',
         'You then issue the BAC Resolution, Notice of Award and Notice to Proceed from Awards.'],
       run: () => confirmWinner(b),
     }),
@@ -3081,8 +3091,12 @@ function BidEvaluationPage() {
     },
   ] : []
 
+  // A procurement can be awarded before its deadline — "closed" with a future
+  // date would be false, so say what actually happened.
+  const deadlinePassed = project?.deadline && new Date(project.deadline) < new Date(new Date().toDateString())
   const closedLabel = project && project.status !== 'published' && project.deadline
-    ? `Bidding closed ${fmtDate(project.deadline)}` : null
+    ? (deadlinePassed ? `Bidding closed ${fmtDate(project.deadline)}` : `Awarded before the ${fmtDate(project.deadline)} deadline`)
+    : null
 
   return (
     <div className="ad-content">
@@ -3136,6 +3150,10 @@ function BidEvaluationPage() {
                 <button className="ad-btn-timeline" onClick={() => setShowTimeline(true)}>
                   <Clock size={14} /> View Timeline
                 </button>
+                <button className="ad-btn-timeline" onClick={() => navigate(`/admin/record/${project.id}`)}
+                  title="The whole procurement with the blockchain evidence for each step">
+                  <ShieldCheck size={14} /> Procurement record
+                </button>
               </div>
             </div>
             <div style={{ padding: '0 20px 16px' }}>
@@ -3181,7 +3199,7 @@ function BidEvaluationPage() {
               publication, every bid, and the award. Anything not yet anchored
               can be signed from here. */}
           <div className="ad-card" style={{ padding: 0, overflow: 'hidden' }}>
-            <BlockchainTrail anchors={project.anchors} entityRef={project.code} />
+            <BlockchainTrail anchors={project.anchors} entityRef={project.code} projectId={project.id} />
           </div>
         </>
       )}
@@ -3206,7 +3224,7 @@ function BidEvaluationPage() {
       {dialog && (
         <ActionConfirm
           title={dialog.title} points={dialog.points} tone={dialog.tone}
-          confirmLabel={dialog.confirmLabel} onChain={dialog.onChain !== false}
+          confirmLabel={dialog.confirmLabel} onChain={dialog.onChain === true}
           busy={busyId === pending.bid.id}
           onCancel={() => setPending(null)}
           onConfirm={async () => { const run = dialog.run; setPending(null); await run() }}
@@ -3243,9 +3261,10 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
   }
 
   const issuedOn = doc.issued_at ? fmtDate(doc.issued_at) : ''
+  const chainState = anchorState(doc.anchor)
 
   return (
-    <div className={`ad-award-doc${issued ? ' is-issued' : ''}${issued && doc.anchored ? ' is-onchain' : ''}`}>
+    <div className={`ad-award-doc${issued ? ' is-issued' : ''}${issued && chainState === 'verified' ? ' is-onchain' : ''}`}>
       {/* Must match validate_upload on the backend (PDF/JPG/PNG, 5 MB) — an
           accept list that offers more than the server takes just invites an
           error at the end of the upload. */}
@@ -3264,16 +3283,16 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
             title={`Issued ${issuedOn} — click to open`}>
             <FileText size={13} aria-hidden="true" /> <span>{shortLabel}</span>
           </a>
-          {doc.anchored ? (
+          {chainState === 'verified' || chainState === 'reported' ? (
             <a
-              className="ad-award-doc-chain is-anchored"
+              className={`ad-award-doc-chain${chainState === 'verified' ? ' is-anchored' : ''}`}
               href={doc.explorer_url}
               target="_blank"
               rel="noreferrer"
-              title={`Anchored on-chain (tx ${doc.tx_hash})`}
-              aria-label={`${shortLabel} is anchored on-chain — view transaction`}
+              title={`${ANCHOR_STATES[chainState].text} (tx ${doc.tx_hash})`}
+              aria-label={`${shortLabel}: ${ANCHOR_STATES[chainState].text} — view transaction`}
             >
-              <ShieldCheck size={11} /> On-chain
+              {chainState === 'verified' ? <><ShieldCheck size={11} /> Verified</> : <><Link2 size={11} /> Tx reported</>}
             </a>
           ) : (
             // The document is saved either way — this only completes the
@@ -3282,10 +3301,11 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
             <button
               className="ad-award-doc-chain is-retry"
               onClick={() => onAnchor(award, doc)}
-              disabled={!doc.anchor}
-              title={doc.anchor ? 'Record this document on the blockchain' : 'No anchor was recorded for this document'}
+              disabled={!doc.anchor || !!signingBlocked(doc.anchor)}
+              title={!doc.anchor ? 'No anchor was recorded for this document'
+                : signingBlocked(doc.anchor) || 'Record this document on the blockchain'}
             >
-              <Link2 size={11} /> {doc.anchor ? 'Anchor now' : 'Not anchored'}
+              <Link2 size={11} /> {doc.anchor && !signingBlocked(doc.anchor) ? 'Anchor now' : 'Not anchored'}
             </button>
           )}
           {/* Replace the generated notice with the signed scan once it comes
@@ -3461,6 +3481,9 @@ function AwardsPage() {
                   <div className="ad-cell-stack">
                     <span>{a.project_name}</span>
                     <RefCode code={a.project_code} />
+                    <Link to={`/admin/record/${a.project}`} className="ad-btn-view-sm" style={{ alignSelf: 'flex-start' }}>
+                      <ShieldCheck size={12} /> Procurement record
+                    </Link>
                   </div>
                 </td>
                 <td className="ad-num">{peso(a.amount)}</td>
@@ -3501,9 +3524,10 @@ function AwardsPage() {
             <li><span className="ad-award-step-n">3</span><div><strong>NTP</strong><span>Authorization for the supplier to begin work</span></div></li>
           </ol>
           <p style={{ marginTop: 10 }}>
-            Each upload is hashed together with its issue date and recorded on the blockchain, so a
-            notice can never be swapped or backdated afterwards. Replacing a document adds a new
-            entry to the trail rather than overwriting the original.
+            Each upload is fingerprinted (SHA-256) together with its issue date, and the fingerprint
+            is recorded on the blockchain once signed, so a notice can't be swapped or backdated
+            quietly. Replacing a document adds a new entry to the trail — the earlier one is shown
+            as superseded, not altered.
           </p>
           <p className="ad-muted ad-small" style={{ marginTop: 6 }}>
             Accepted formats: PDF, JPG or PNG, up to 5 MB. Scan or export the signed document.
@@ -3776,19 +3800,21 @@ export default function AdminDashboard() {
     '/admin/reports':   'Reports & Analytics',
   }
   const title = PAGE_TITLES[loc.pathname]
-    || (loc.pathname.startsWith('/admin/bids/') ? 'Bid Evaluation' : 'Admin Dashboard')
+    || (loc.pathname.startsWith('/admin/bids/') ? 'Bid Evaluation'
+      : loc.pathname.startsWith('/admin/record/') ? 'Procurement Record' : 'Admin Dashboard')
 
   // Breadcrumbs: Admin › Section › (sub-page)
   const CRUMB_SECTIONS = {
     projects: 'Projects', planning: 'Planning', suppliers: 'Suppliers',
-    bids: 'Bids', awards: 'Awards', reports: 'Reports',
+    bids: 'Bids', awards: 'Awards', reports: 'Reports', record: 'Procurement Record',
   }
   const [, , section, sub] = loc.pathname.split('/')
   const crumbs = [{ label: 'Admin', to: '/admin' }]
   if (!section || !CRUMB_SECTIONS[section]) crumbs.push({ label: 'Dashboard' })
   else {
-    crumbs.push({ label: CRUMB_SECTIONS[section], to: `/admin/${section}` })
-    if (sub) crumbs.push({ label: section === 'bids' ? 'Evaluation' : sub === 'history' ? 'History' : sub })
+    // /admin/record has no index page of its own, so that crumb is plain text.
+    crumbs.push({ label: CRUMB_SECTIONS[section], to: section === 'record' ? undefined : `/admin/${section}` })
+    if (sub) crumbs.push({ label: section === 'bids' ? 'Evaluation' : section === 'record' ? `#${sub}` : sub === 'history' ? 'History' : sub })
   }
 
   // "/admin/projects/history" and "/admin/bids/:id" keep their parent highlighted.
@@ -3830,6 +3856,8 @@ export default function AdminDashboard() {
             <Route path="bids"      element={<BidsPage />} />
             <Route path="bids/:id"  element={<BidEvaluationPage />} />
             <Route path="awards"    element={<AwardsPage />} />
+            <Route path="record/:id" element={<ProcurementRecordPage className="ad-content" backTo="/admin/awards" backLabel="Back to awards" />} />
+            <Route path="record/:id/anchor/:anchorId" element={<ProjectAnchorDetailPage className="ad-content" />} />
             <Route path="reports"   element={<ReportsPage />} />
             <Route path="*"         element={<AdminHome />} />
           </Routes>
