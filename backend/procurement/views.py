@@ -34,6 +34,7 @@ from .blockchain import (
 )
 from .anchor_detail import build_anchor_detail, may_view_anchor
 from .document_versions import record_award_document_version
+from .project_documents import record_project_document_versions, snapshot_documents
 from .packets import packet_for
 from .record import PUBLIC_STATUSES, build_record, public_record, viewer_for
 from .document_requirements import (
@@ -1166,6 +1167,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             entity_type="Project", entity_id=project.id,
             description=f"Created procurement {project.code} - {project.name} (sent for approval).",
         )
+        record_project_document_versions(project, user=user)
         # First link in the chain: the procurement as filed, hashed together with
         # its Purchase Request document. Picked up by create() above.
         self._create_anchor = anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
@@ -1319,6 +1321,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
                     status=http_status.HTTP_400_BAD_REQUEST,
                 )
 
+            previous = snapshot_documents(project)
             reviews = dict(project.document_reviews or {})
             updated = []
             for key in PROCUREMENT_DOCUMENT_KEYS:
@@ -1339,6 +1342,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             project.status = Project.Status.PENDING_HEAD
             project.save()
 
+        record_project_document_versions(project, keys=updated, user=request.user, previous=previous)
         notify_heads(
             f"\"{project.name}\" ({project.code}) re-submitted {len(updated)} document(s) for review.",
             link="/head/pending",

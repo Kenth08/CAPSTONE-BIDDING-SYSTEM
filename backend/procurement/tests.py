@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import shutil
@@ -32,9 +33,12 @@ from .blockchain import (
 )
 from accounts.tests import registration_payload
 
+from . import blockchain, payload_v3
+from .canonical import NonCanonicalPayload, validate_canonical
 from .document_requirements import CATEGORY_DOCUMENTS, requirements_for, validate_registry
 from .models import (
     AwardDocumentVersion,
+    PROCUREMENT_DOCUMENT_KEYS, ProjectDocumentVersion,
     BID_DOCUMENT_KEYS, SUPPLIER_DOCUMENT_FIELDS, SUPPLIER_DOCUMENT_KEYS, Award, Bid, BidProductImage,
     BlockchainAnchor, Project, Supplier, SupplierCategoryDocument,
 )
@@ -3268,3 +3272,511 @@ class ConfirmedSignerTests(APITestCase):
             self.assertEqual(confirm_anchor(anchor, w3=w3), "confirmed")
         anchor.refresh_from_db()
         self.assertEqual(anchor.actor_address, "0x" + "77" * 20)
+
+
+# ── Stage 5 Phase 2: v3 encoding, the five-document manifest, version history ──
+
+def shared_vectors():
+    from pathlib import Path
+    from django.conf import settings
+    path = Path(settings.BASE_DIR).parent / "contracts" / "payload-hash-vectors.json"
+    return json.loads(path.read_text(encoding="utf-8"))["vectors"]
+
+
+def v3_vectors():
+    return [v for v in shared_vectors() if v["payload"].get("v") == 3]
+
+
+def document_pdf(body, name="doc.pdf"):
+    return SimpleUploadedFile(name, b"%PDF-1.4 " + body, content_type="application/pdf")
+
+
+class CanonicalValidatorTests(APITestCase):
+    def test_objects_strings_and_integers_pass(self):
+        validate_canonical({"a": "Pañuelo 🚀", "n": 2 ** 53 - 1, "m": -1, "o": {"b": ""}})
+
+    def test_everything_else_is_refused(self):
+        for bad in (None, True, False, 1.5, [], [1], (1,), {1, 2}, 2 ** 53, -(2 ** 53), b"x", timezone.now()):
+            with self.subTest(repr(bad)):
+                with self.assertRaises(NonCanonicalPayload):
+                    validate_canonical({"outer": {"inner": bad}})
+
+    def test_keys_must_be_ascii_strings(self):
+        for key in (1, None, "ñ"):
+            with self.subTest(repr(key)):
+                with self.assertRaises(NonCanonicalPayload):
+                    validate_canonical({key: "x"})
+
+    def test_hash_payload_itself_stays_lenient_for_the_anchors_it_already_hashed(self):
+        self.assertTrue(hash_payload({"n": 1.5, "x": None, "l": [1]}).startswith("0x"))
+
+
+class ProjectStagePayloadV3Tests(APITestCase):
+    def _valid(self):
+        return json.loads(json.dumps(v3_vectors()[0]["payload"]))
+
+    def test_the_shared_file_has_v3_cases_and_each_passes_the_schema(self):
+        vectors = v3_vectors()
+        self.assertGreaterEqual(len(vectors), 4)
+        self.assertTrue(any(ord(c) > 127 for v in vectors for c in v["payload"]["name"]))
+        for v in vectors:
+            with self.subTest(v["name"]):
+                payload_v3.validate_project_stage(v["payload"])
+                self.assertEqual(hash_payload(v["payload"]), v["data_hash"])
+
+    def test_the_builder_produces_the_first_vector_exactly(self):
+        from datetime import datetime
+        from decimal import Decimal
+        from types import SimpleNamespace
+        from zoneinfo import ZoneInfo
+        vector = v3_vectors()[0]
+        expected = vector["payload"]
+        # Stored in Manila time on purpose: the payload's text must still be UTC.
+        created = datetime(2026, 11, 3, 16, 15, 0, 123456, tzinfo=ZoneInfo("Asia/Manila"))
+        project = SimpleNamespace(
+            code=expected["code"], name=expected["name"], category=expected["category"], type=expected["type"],
+            budget=Decimal(expected["budget"]), bidding_period_days=expected["bidding_period_days"],
+            delivery_period_days=expected["delivery_period_days"], created_at=created)
+        built = payload_v3.project_payload(project, expected["stage"], expected["documents"])
+        self.assertEqual(built, expected)
+        self.assertEqual(hash_payload(built), vector["data_hash"])
+
+    def test_reordered_fields_and_manifest_entries_hash_the_same(self):
+        """Section 7: 24 insertion orders, one data_hash. The browser side is in
+        packetVerify.test.js."""
+        from itertools import islice, permutations
+        for vector in v3_vectors():
+            payload = vector["payload"]
+            top = list(payload)
+            orders = list(islice(permutations(payload["documents"]), 24))
+            self.assertEqual(len(orders), 24)
+            for i, order in enumerate(orders):
+                keys = top[i % len(top):] + top[:i % len(top)]
+                shuffled = {key: payload[key] for key in reversed(keys)}
+                shuffled["documents"] = {
+                    k: dict(reversed(list(payload["documents"][k].items()))) for k in order
+                }
+                self.assertEqual(hash_payload(shuffled), vector["data_hash"])
+
+    def test_a_different_kind_tag_gives_a_different_hash_and_is_refused(self):
+        valid = self._valid()
+        other = {**valid, "kind": payload_v3.KIND_AWARD_PRIVATE}
+        self.assertNotEqual(hash_payload(valid), hash_payload(other))
+        with self.assertRaises(NonCanonicalPayload):
+            payload_v3.validate_project_stage(other)
+
+    def test_anything_outside_the_schema_is_refused(self):
+        def top(**changes):
+            return lambda p: p.update(changes)
+
+        def entry(key="terms_of_reference", **changes):
+            return lambda p: p["documents"][key].update(changes)
+
+        def drop(key):
+            return lambda p: p.pop(key)
+
+        evidence = "purchase_request"     # the first vector is SUBMITTED
+        cases = {
+            "extra field": top(status="approved"),
+            "missing field": drop("category"),
+            "wrong version": top(v=2),
+            "version as a boolean": top(v=True),
+            "wrong kind": top(kind="evaluation/3"),
+            "wrong entity": top(entity="BID"),
+            "not a project stage": top(stage="AWARDED"),
+            "empty code": top(code=""),
+            "null name": top(name=None),
+            "budget as a number": top(budget=250000),
+            "budget with one decimal": top(budget="250000.5"),
+            "budget with a comma": top(budget="250,000.00"),
+            "local time": top(created_at="2026-11-03T16:15:00+08:00"),
+            "date only": top(created_at="2026-11-03"),
+            "period as a boolean": top(bidding_period_days=True),
+            "negative period": top(delivery_period_days=-1),
+            "an array": top(documents=[]),
+            "evidence key of another stage": top(document_key="terms_of_reference"),
+            "evidence hash differs from the manifest": top(document_hash="0x" + "f" * 64),
+            "manifest entry missing": lambda p: p["documents"].pop("terms_of_reference"),
+            "manifest entry extra": lambda p: p["documents"].update(
+                reference_image={"state": "absent", "sha256": "", "version": 0}),
+            "entry with an extra key": entry(file_name="tor.pdf"),
+            "entry key missing": lambda p: p["documents"]["terms_of_reference"].pop("version"),
+            "unknown state": entry(state="missing"),
+            "uppercase hash": entry(sha256="0x" + "A" * 64),
+            "hash without 0x": entry(sha256="a" * 64),
+            "present without a hash": entry(sha256=""),
+            "present at version 0": entry(version=0),
+            "absent with a hash": entry(state="absent", version=0),
+            "absent with a version": entry(state="absent", sha256="", version=1),
+            "unreadable with a hash": entry(state="unreadable"),
+            "unreadable at version 0": entry(state="unreadable", sha256="", version=0),
+            "version as a string": entry(version="1"),
+        }
+        self.assertEqual(self._valid()["document_key"], evidence)
+        for name, change in cases.items():
+            with self.subTest(name):
+                payload = self._valid()
+                change(payload)
+                with self.assertRaises(NonCanonicalPayload):
+                    payload_v3.validate_project_stage(payload)
+
+
+class ProjectDocumentCase(APITestCase):
+    """A temporary media root, plus filing and revising through the real API."""
+
+    def setUp(self):
+        cache.clear()
+        media = tempfile.mkdtemp()
+        override = override_settings(MEDIA_ROOT=media)
+        override.enable()
+        self.addCleanup(override.disable)
+        self.addCleanup(shutil.rmtree, media, ignore_errors=True)
+        self.admin, self.head = make_admin(), make_head()
+
+    def file_project(self, purchase_request=b"pr one"):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post("/api/projects/", {
+            "name": "Laptops", "type": "Goods", "category": "IT Equipment", "delivery_location": "HQ",
+            "budget": "1000", "bidding_period_days": 10, "delivery_period_days": 30,
+            "purchase_request": document_pdf(purchase_request, "my-pr.pdf"),
+            "technical_specifications": document_pdf(b"specs"), "terms_of_reference": document_pdf(b"tor"),
+            "approved_budget_document": document_pdf(b"abc"), "bid_evaluation_criteria": document_pdf(b"criteria"),
+        }, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        return Project.objects.get(pk=res.data["id"])
+
+    def revise(self, project, body, key="purchase_request", expect=status.HTTP_200_OK):
+        self.client.force_authenticate(user=self.head)
+        res = self.client.post(f"/api/projects/{project.pk}/request-revision/",
+                               {"documents": {key: "please fix"}}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(f"/api/projects/{project.pk}/resubmit-documents/",
+                               {key: document_pdf(body, "revised.pdf")}, format="multipart")
+        self.assertEqual(res.status_code, expect, res.data)
+        project.refresh_from_db()
+
+    def versions(self, project, key="purchase_request"):
+        return list(ProjectDocumentVersion.objects.filter(project=project, key=key).order_by("version"))
+
+    @staticmethod
+    def stored_bytes(row):
+        row.file.open("rb")
+        try:
+            return row.file.read()
+        finally:
+            row.file.close()
+
+    def legacy_project(self, **files):
+        """A project filed before version history existed: files, no rows."""
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        for key, body in files.items():
+            setattr(project, key, document_pdf(body))
+        project.save()
+        return project
+
+
+class ProjectDocumentVersionTests(ProjectDocumentCase):
+    def test_filing_records_version_one_of_all_five_documents(self):
+        project = self.file_project()
+        rows = ProjectDocumentVersion.objects.filter(project=project)
+        self.assertEqual(sorted(r.key for r in rows), sorted(PROCUREMENT_DOCUMENT_KEYS))
+        for row in rows:
+            self.assertEqual(row.version, 1)
+            self.assertEqual(row.project_code, project.code)
+            self.assertEqual(row.uploaded_by, self.admin)
+            self.assertEqual(row.file.name, getattr(project, row.key).name)
+            self.assertEqual(row.sha256, hash_file(getattr(project, row.key)))
+            self.assertIsNotNone(row.recorded_at)
+        self.assertEqual(self.versions(project)[0].original_filename, "my-pr.pdf")
+
+    def test_the_same_bytes_uploaded_three_times_is_one_version(self):
+        project = self.file_project(b"same")
+        self.revise(project, b"same")
+        self.revise(project, b"same")
+        rows = self.versions(project)
+        self.assertEqual([r.version for r in rows], [1])
+        manifest = blockchain.document_manifest(project)
+        self.assertEqual(manifest["purchase_request"]["version"], 1)
+        self.assertEqual(manifest["purchase_request"]["sha256"], rows[0].sha256)
+
+    def test_different_bytes_are_a_new_version_and_the_old_file_is_kept(self):
+        project = self.file_project(b"first")
+        first_name = project.purchase_request.name
+        self.revise(project, b"second")
+        first, second = self.versions(project)
+        self.assertEqual((first.version, second.version), (1, 2))
+        self.assertEqual(first.file.name, first_name)
+        self.assertNotEqual(second.file.name, first_name)
+        self.assertEqual(self.stored_bytes(first), b"%PDF-1.4 first")
+        self.assertEqual(self.stored_bytes(second), b"%PDF-1.4 second")
+        self.assertEqual(second.sha256, hash_file(project.purchase_request))
+        self.assertEqual(second.original_filename, "revised.pdf")
+        # Only the replaced document moved.
+        self.assertEqual([r.version for r in self.versions(project, "terms_of_reference")], [1])
+
+    def test_going_back_to_earlier_bytes_is_a_new_version(self):
+        project = self.file_project(b"A")
+        self.revise(project, b"B")
+        self.revise(project, b"A")
+        rows = self.versions(project)
+        self.assertEqual([r.version for r in rows], [1, 2, 3])
+        self.assertEqual(rows[0].sha256, rows[2].sha256)
+        self.assertNotEqual(rows[0].sha256, rows[1].sha256)
+
+    def test_history_starts_from_the_file_on_record_and_nothing_is_invented(self):
+        project = self.legacy_project(purchase_request=b"older", terms_of_reference=b"tor")
+        older_name = project.purchase_request.name
+        self.assertFalse(ProjectDocumentVersion.objects.filter(project=project).exists())
+        self.revise(project, b"newer")
+        baseline, replacement = self.versions(project)
+        self.assertEqual((baseline.version, baseline.file.name), (1, older_name))
+        self.assertIsNone(baseline.uploaded_by)     # unknown, so not guessed
+        self.assertEqual(self.stored_bytes(baseline), b"%PDF-1.4 older")
+        self.assertEqual((replacement.version, replacement.uploaded_by), (2, self.admin))
+        # Documents nobody touched get no row, and no document gains a made-up one.
+        self.assertEqual(self.versions(project, "terms_of_reference"), [])
+        self.assertEqual(ProjectDocumentVersion.objects.filter(project=project).count(), 2)
+
+    def test_absent_and_unreadable_stay_different_things(self):
+        from .project_documents import document_state
+        project = self.legacy_project(purchase_request=b"pr")
+        self.assertEqual(document_state(project.terms_of_reference), ("absent", ""))
+        state, sha = document_state(project.purchase_request)
+        self.assertEqual((state, sha), ("present", hash_file(project.purchase_request)))
+        with patch("django.db.models.fields.files.FieldFile.open", side_effect=OSError("storage down")):
+            self.assertEqual(document_state(project.purchase_request), ("unreadable", ""))
+        project.purchase_request.storage.delete(project.purchase_request.name)
+        self.assertEqual(document_state(project.purchase_request), ("unreadable", ""))
+
+    def test_the_hash_is_of_what_storage_holds_not_what_the_field_has_in_memory(self):
+        from .project_documents import document_state
+        project = self.legacy_project(purchase_request=b"stored")
+        expected = "0x" + hashlib.sha256(b"%PDF-1.4 stored").hexdigest()
+        project.purchase_request.file = ContentFile(b"only in memory")
+        self.assertEqual(document_state(project.purchase_request), ("present", expected))
+
+    def test_a_replacement_storage_cannot_read_keeps_its_name_without_a_new_version_later(self):
+        project = self.file_project(b"first")
+        with patch("procurement.project_documents.document_state", return_value=("unreadable", "")):
+            self.revise(project, b"second")
+        first, second = self.versions(project)
+        self.assertEqual((second.version, second.sha256), (2, ""))
+        self.assertEqual(second.file.name, project.purchase_request.name)
+        # Readable again: the same stored file, so still version 2.
+        manifest = blockchain.document_manifest(project)
+        self.assertEqual(manifest["purchase_request"]["state"], "present")
+        self.assertEqual(manifest["purchase_request"]["version"], 2)
+        self.assertEqual(len(self.versions(project)), 2)
+
+    def test_a_history_failure_never_breaks_the_action(self):
+        with patch("procurement.project_documents._capture", side_effect=RuntimeError("db down")):
+            project = self.file_project()
+            self.revise(project, b"second")
+        self.assertFalse(ProjectDocumentVersion.objects.filter(project=project).exists())
+        self.assertEqual(project.status, Project.Status.PENDING_HEAD)
+
+    def test_rows_are_write_once(self):
+        project = self.file_project()
+        row = self.versions(project)[0]
+        original = row.sha256
+        row.sha256 = "0x" + "0" * 64
+        queryset = ProjectDocumentVersion.objects.filter(pk=row.pk)
+        for attempt in (row.save, row.delete, queryset.delete, lambda: queryset.update(sha256=""),
+                        lambda: ProjectDocumentVersion.objects.bulk_update([row], ["sha256"])):
+            with self.assertRaises(TypeError):
+                attempt()
+        self.assertEqual(ProjectDocumentVersion.objects.get(pk=row.pk).sha256, original)
+
+    def test_deleting_a_project_keeps_its_versions_and_their_files(self):
+        project = self.file_project(b"kept")
+        code, pk = project.code, project.pk
+        row_pks = list(ProjectDocumentVersion.objects.filter(project=project).values_list("pk", flat=True))
+        self.assertEqual(self.client.delete(f"/api/projects/{pk}/").status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Project.objects.filter(pk=pk).exists())
+        rows = ProjectDocumentVersion.objects.filter(pk__in=row_pks)
+        self.assertEqual(rows.count(), 5)
+        for row in rows:
+            self.assertIsNone(row.project)
+            self.assertEqual(row.project_code, code)
+        self.assertEqual(self.stored_bytes(rows.get(key="purchase_request")), b"%PDF-1.4 kept")
+
+
+class PayloadV3GateTests(ProjectDocumentCase):
+    """Writing is off and refused at start-up. The writer tests switch the flag on
+    in-process only, which is the only way v3 can be written in this phase."""
+
+    def _lifecycle(self):
+        project = self.file_project()
+        self.revise(project, b"second")
+        self.client.force_authenticate(user=self.head)
+        self.assertEqual(self.client.post(f"/api/projects/{project.pk}/approve/").status_code, 200)
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/projects/{project.pk}/publish/").status_code, 200)
+        return project
+
+    def test_the_flag_is_off_by_default_and_nothing_v3_is_written(self):
+        self.assertIs(blockchain.PAYLOAD_V3_ENABLED, False)
+        self.assertEqual(blockchain.PAYLOAD_VERSION, 2)
+        self.assertNotIn(3, blockchain.PAYLOAD_RULES)
+        with patch.object(payload_v3, "project_payload", side_effect=AssertionError("v3 builder called")), \
+                patch.object(blockchain, "document_manifest", side_effect=AssertionError("manifest built")):
+            project = self._lifecycle()
+            win = Bid.objects.create(project=project, supplier=make_supplier(), amount=900,
+                                     status=Bid.Status.QUALIFIED)
+            self.assertEqual(self.client.post(f"/api/bids/{win.pk}/select-winner/").status_code, 200)
+        anchors = BlockchainAnchor.objects.filter(entity_ref=project.code)
+        self.assertEqual(
+            sorted(set(anchors.values_list("stage", flat=True))),
+            sorted({"SUBMITTED", "REVISION_REQUESTED", "HEAD_APPROVED", "BIDDING_OPEN",
+                    "EVALUATION_COMPLETED", "BID_SUBMITTED", "AWARDED"}))
+        for anchor in anchors:
+            with self.subTest(anchor.stage):
+                self.assertEqual(anchor.payload["v"], 2)
+                self.assertNotIn("kind", anchor.payload)
+                self.assertNotIn("documents", anchor.payload)
+        # History-keeping is not v3 writing: it runs regardless of the flag.
+        self.assertEqual(len(self.versions(project)), 2)
+
+    def test_v2_anchors_verify_as_before_while_history_is_kept(self):
+        project = self._lifecycle()
+        submitted = BlockchainAnchor.objects.get(entity_ref=project.code, stage="SUBMITTED")
+        self.assertEqual(verify_anchor(submitted)["status"], "match")
+        # A replaced Purchase Request is still reported by the deep check.
+        self.assertEqual(verify_anchor(submitted, deep=True)["document"], "mismatch")
+        opened = BlockchainAnchor.objects.get(entity_ref=project.code, stage="BIDDING_OPEN")
+        self.assertEqual(verify_anchor(opened, deep=True)["status"], "match")
+
+    def test_the_gate_refuses_a_true_flag(self):
+        blockchain.check_v3_gate(False)
+        with self.assertRaisesMessage(ImproperlyConfigured, "PAYLOAD_V3_ENABLED"):
+            blockchain.check_v3_gate(True)
+
+    def test_app_start_runs_the_gate(self):
+        from django.apps import apps
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            with self.assertRaisesMessage(ImproperlyConfigured, "PAYLOAD_V3_ENABLED"):
+                apps.get_app_config("procurement").ready()
+        apps.get_app_config("procurement").ready()
+
+    def test_a_real_process_refuses_to_start_with_the_flag_on(self):
+        """The whole path: environment variable, django.setup(), ready(). No
+        database is touched: setup never connects."""
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+        from django.conf import settings
+        backend = Path(settings.BASE_DIR)
+
+        def start(value):
+            env = {**os.environ, "DB_HOST": "", "DJANGO_SETTINGS_MODULE": "config.settings",
+                   "PYTHONPATH": str(backend), "PYTHONIOENCODING": "utf-8", "PAYLOAD_V3_ENABLED": value}
+            return subprocess.run([sys.executable, "-c", "import django; django.setup(); print('STARTED')"],
+                                  cwd=backend, env=env, capture_output=True, text=True, encoding="utf-8",
+                                  timeout=120)
+
+        refused = start("true")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("ImproperlyConfigured", refused.stderr)
+        self.assertNotIn("STARTED", refused.stdout)
+        allowed = start("false")
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertIn("STARTED", allowed.stdout)
+
+    def test_the_writer_records_a_valid_project_stage_payload(self):
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            project = self.file_project()
+        anchor = BlockchainAnchor.objects.get(entity_ref=project.code, stage="SUBMITTED")
+        payload_v3.validate_project_stage(anchor.payload)
+        self.assertEqual(anchor.payload["kind"], "project-stage/3")
+        self.assertEqual(hash_payload(anchor.payload), anchor.data_hash)
+        self.assertEqual(anchor.payload["document_key"], "purchase_request")
+        self.assertEqual(anchor.document_hash, hash_file(project.purchase_request))
+        self.assertEqual(anchor.document_hash, anchor.payload["document_hash"])
+        for key in PROCUREMENT_DOCUMENT_KEYS:
+            entry = anchor.payload["documents"][key]
+            self.assertEqual(entry, {"state": "present", "sha256": hash_file(getattr(project, key)), "version": 1})
+
+    def test_the_revision_loop_moves_the_version_and_earlier_anchors_keep_theirs(self):
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            project = self.file_project(b"first")
+            self.revise(project, b"second")
+            self.client.force_authenticate(user=self.head)
+            self.assertEqual(self.client.post(f"/api/projects/{project.pk}/approve/").status_code, 200)
+        first, second = self.versions(project)
+        submitted = BlockchainAnchor.objects.get(entity_ref=project.code, stage="SUBMITTED")
+        approved = BlockchainAnchor.objects.get(entity_ref=project.code, stage="HEAD_APPROVED")
+        self.assertEqual(submitted.payload["documents"]["purchase_request"],
+                         {"state": "present", "sha256": first.sha256, "version": 1})
+        self.assertEqual(approved.payload["documents"]["purchase_request"],
+                         {"state": "present", "sha256": second.sha256, "version": 2})
+        self.assertEqual(hash_payload(submitted.payload), submitted.data_hash)
+
+    def test_reuploading_identical_bytes_leaves_the_next_manifest_identical(self):
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            project = self.file_project(b"same")
+            self.revise(project, b"same")
+            self.client.force_authenticate(user=self.head)
+            self.assertEqual(self.client.post(f"/api/projects/{project.pk}/approve/").status_code, 200)
+        submitted = BlockchainAnchor.objects.get(entity_ref=project.code, stage="SUBMITTED")
+        approved = BlockchainAnchor.objects.get(entity_ref=project.code, stage="HEAD_APPROVED")
+        self.assertEqual(submitted.payload["documents"], approved.payload["documents"])
+
+    def test_a_document_never_uploaded_is_absent_at_version_zero(self):
+        project = self.legacy_project(purchase_request=b"pr")
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            anchor = blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+        entry = anchor.payload["documents"]["terms_of_reference"]
+        self.assertEqual(entry, {"state": "absent", "sha256": "", "version": 0})
+        # "" is not a digest, so no file a verifier could choose ever matches it.
+        self.assertNotEqual(hash_file(project.purchase_request), entry["sha256"])
+        self.assertEqual(self.versions(project, "terms_of_reference"), [])
+
+    def test_storage_failing_while_hashing_records_unreadable_and_the_transition_succeeds(self):
+        project = self.file_project()
+        self.client.force_authenticate(user=self.head)
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True), \
+                patch("django.db.models.fields.files.FieldFile.open", side_effect=OSError("storage down")):
+            res = self.client.post(f"/api/projects/{project.pk}/approve/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        project.refresh_from_db()
+        self.assertEqual(project.status, Project.Status.APPROVED)
+        anchor = BlockchainAnchor.objects.get(entity_ref=project.code, stage="HEAD_APPROVED")
+        for key in PROCUREMENT_DOCUMENT_KEYS:
+            self.assertEqual(anchor.payload["documents"][key], {"state": "unreadable", "sha256": "", "version": 1})
+        self.assertEqual(anchor.document_hash, "")
+
+    def test_a_writer_failure_leaves_no_anchor_and_the_transition_succeeds(self):
+        project = self.file_project()
+        self.client.force_authenticate(user=self.head)
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True), \
+                patch.object(payload_v3, "project_payload", side_effect=NonCanonicalPayload("bad")):
+            res = self.client.post(f"/api/projects/{project.pk}/approve/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(BlockchainAnchor.objects.filter(entity_ref=project.code, stage="HEAD_APPROVED").exists())
+
+    def test_the_builder_never_returns_a_payload_outside_the_schema(self):
+        project = self.file_project()
+        project.budget = -1
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            self.assertIsNone(blockchain.anchor_project(project, BlockchainAnchor.Stage.HEAD_APPROVED))
+        self.assertFalse(BlockchainAnchor.objects.filter(entity_ref=project.code, stage="HEAD_APPROVED").exists())
+
+    def test_with_signing_off_a_v3_anchor_is_stored_and_nothing_is_sent(self):
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True), \
+                patch.object(blockchain, "WALLET_SIGNING_ENABLED", False), \
+                patch.object(blockchain, "submit_anchor_server_side") as submit:
+            project = self.file_project()
+        submit.assert_not_called()
+        anchor = BlockchainAnchor.objects.get(entity_ref=project.code, stage="SUBMITTED")
+        self.assertEqual(anchor.payload["v"], 3)
+        self.assertEqual(anchor.tx_hash, "")
+
+    def test_until_its_verification_ships_a_v3_anchor_is_unavailable_never_altered(self):
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            project = self.file_project()
+        anchor = BlockchainAnchor.objects.get(entity_ref=project.code, stage="SUBMITTED")
+        result = verify_anchor(anchor, deep=True)
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("payload version 3", result["detail"])

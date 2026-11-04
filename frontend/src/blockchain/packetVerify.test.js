@@ -14,6 +14,49 @@ test('every backend hash vector is reproduced byte-for-byte in the browser', asy
   }
 })
 
+// ── project-stage/3 (Stage 5 Phase 2): same hashes whatever the insertion order ─
+const V3_VECTORS = VECTORS.vectors.filter((v) => v.payload.v === 3)
+
+function permutationsOf(items) {
+  if (items.length < 2) return [items]
+  return items.flatMap((item, i) =>
+    permutationsOf([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]))
+}
+
+test('project-stage/3 vectors are in the shared file and reproduced byte-for-byte', async () => {
+  assert.ok(V3_VECTORS.length >= 4)
+  assert.ok(V3_VECTORS.some((v) => /[^\x00-\x7f]/.test(v.payload.name)), 'needs a non-ASCII case')
+  for (const v of V3_VECTORS) {
+    assert.equal(v.payload.kind, 'project-stage/3')
+    assert.equal(await hashPayload(v.payload), v.data_hash, v.name)
+  }
+})
+
+test('24 insertion orders of a project-stage/3 payload give one hash', async () => {
+  for (const v of V3_VECTORS) {
+    const top = Object.keys(v.payload)
+    const orders = permutationsOf(Object.keys(v.payload.documents)).slice(0, 24)
+    assert.equal(orders.length, 24)
+    for (const [i, order] of orders.entries()) {
+      const shuffled = {}
+      for (const key of [...top.slice(i % top.length), ...top.slice(0, i % top.length)].reverse()) {
+        shuffled[key] = v.payload[key]
+      }
+      shuffled.documents = {}
+      for (const key of order) {
+        const { version, state, sha256 } = v.payload.documents[key]
+        shuffled.documents[key] = { version, state, sha256 }
+      }
+      assert.equal(await hashPayload(shuffled), v.data_hash, `${v.name} #${i}`)
+    }
+  }
+})
+
+test('the kind tag is part of the hash', async () => {
+  const [v] = V3_VECTORS
+  assert.notEqual(await hashPayload({ ...v.payload, kind: 'award-private/3' }), v.data_hash)
+})
+
 test('numbers JavaScript cannot represent exactly are refused, not mis-hashed', async () => {
   await assert.rejects(hashPayload({ n: 2 ** 53 }), /too large/)
   await assert.rejects(hashPayload({ n: 1.5 }), /only integers/)

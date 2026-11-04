@@ -28,9 +28,10 @@ from datetime import timezone as dt_timezone
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 
-from . import payload_v2
+from . import payload_v2, payload_v3
 from .canonical import hash_payload  # noqa: F401 — re-exported: `from .blockchain import hash_payload`
 from .models import AWARD_DOCUMENT_ISSUED_FIELDS, BlockchainAnchor
+from .project_documents import document_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,22 @@ def check_writer_version(version, rules):
 
 check_writer_version(PAYLOAD_VERSION, PAYLOAD_RULES)
 
+# Writes project-stage/3 anchors instead of v2 when on (anchor_project). Off, and
+# refused at start-up while the checks that must guard it don't exist yet. v3 has
+# no entry in PAYLOAD_RULES until its verification ships, so a v3 payload reports
+# "unsupported payload version", never "altered".
+PAYLOAD_V3_ENABLED = _env_flag("PAYLOAD_V3_ENABLED", "False")
+
+
+def check_v3_gate(enabled):
+    """Refuse to start with v3 writing on. Run from ProcurementConfig.ready(), so
+    it fires at process start and on `migrate`, not at the first request."""
+    if enabled:
+        raise ImproperlyConfigured(
+            "PAYLOAD_V3_ENABLED is on, but v3 writing is not available yet: anchors "
+            "written now could not be verified or corrected. Unset it."
+        )
+
 
 class UnsupportedPayload(Exception):
     """An anchor's payload version has no rules on this server."""
@@ -319,10 +336,27 @@ def award_parts(award, stage, document_hash=None, rules=None):
 
 def anchor_project(project, stage, *, document_field=None):
     """Hash a project at `stage` (with its key document) and record the anchor."""
+    if PAYLOAD_V3_ENABLED:
+        return _anchor_project_v3(project, stage)
     payload, doc_hash = project_parts(project, stage, document_field=document_field)
     return record_anchor(
         BlockchainAnchor.EntityType.PROJECT, project.code, stage, payload,
         entity_id=project.id, document_hash=doc_hash,
+    )
+
+
+def _anchor_project_v3(project, stage):
+    """project-stage/3: the stage with all five documents. Never raises."""
+    if not ANCHORING_ENABLED:
+        return None
+    try:
+        payload = payload_v3.project_payload(project, stage, document_manifest(project))
+    except Exception:  # noqa: BLE001 — anchoring must never break the request
+        logger.exception("Failed to build the v3 payload for %s/%s", project.code, stage)
+        return None
+    return record_anchor(
+        BlockchainAnchor.EntityType.PROJECT, project.code, stage, payload,
+        entity_id=project.id, document_hash=payload["document_hash"],
     )
 
 

@@ -771,6 +771,65 @@ class AwardDocumentVersion(models.Model):
         return f"{self.award_id} {self.key} v{self.version}"
 
 
+class ProjectDocumentVersionQuerySet(models.QuerySet):
+    """Bulk writes would skip the model's own guard, so they are refused too."""
+
+    def _refuse(self, *args, **kwargs):
+        raise TypeError("Project document versions are write-once.")
+
+    update = delete = bulk_update = _refuse
+
+
+class ProjectDocumentVersion(models.Model):
+    """One distinct content of a procurement document (procurement/project_documents.py).
+
+    `file` records the stored NAME, as AwardDocumentVersion does: replacing a
+    document leaves the old bytes in storage, so no copy is made.
+
+    Write-once: the app can add a row, never edit or delete one, and neither the
+    Django admin, a serializer nor a file route exposes them. Deleting a project
+    before bidding opens is allowed and its anchors outlive it, so the rows do
+    too: `project` goes null and `project_code` still says whose they were."""
+
+    KEY_CHOICES = [(key, label) for key, label, _ in PROCUREMENT_DOCUMENT_FIELDS]
+
+    project = models.ForeignKey(
+        Project, on_delete=models.SET_NULL, null=True, related_name="document_versions")
+    project_code = models.CharField(max_length=20)
+    key = models.CharField(max_length=32, choices=KEY_CHOICES)
+    version = models.PositiveIntegerField()      # 1 = first known content of this document
+    file = models.FileField(upload_to=procurement_doc_path, max_length=255)
+    original_filename = models.CharField(max_length=255, blank=True)
+    # SHA-256 of the stored bytes. Blank only if storage couldn't read the file
+    # when this row was written.
+    sha256 = models.CharField(max_length=66, blank=True)
+    # Null when the uploader isn't known: a file that was already on the project
+    # when history began. `recorded_at` is when this row was written, which for
+    # those files is later than their upload.
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ProjectDocumentVersionQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["project_code", "key", "version"]
+        constraints = [
+            models.UniqueConstraint(fields=["project", "key", "version"], name="uniq_project_document_version"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise TypeError("Project document versions are write-once.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise TypeError("Project document versions are write-once.")
+
+    def __str__(self):
+        return f"{self.project_code} {self.key} v{self.version}"
+
+
 class Notification(models.Model):
     """A simple in-app notification (e.g. bid evaluation result / award)."""
 

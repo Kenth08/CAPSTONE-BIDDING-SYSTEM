@@ -40,6 +40,7 @@ from .models import (
     BlockchainAnchor,
     FileDownloadToken,
     Project,
+    ProjectDocumentVersion,
     Supplier,
 )
 from .storage_crypto import MAGIC, decrypt_bytes
@@ -1181,3 +1182,93 @@ class AnchorDetailAccessTests(AwardedProcurementFixture, APITestCase):
         for anchor in (self.submitted, self.awarded):
             notes = {v["file_note"] for v in self._public(anchor).data["versions"]}
             self.assertNotIn("You do not have access to this file.", notes)
+
+
+class SupersededProjectDocumentPrivacyTests(APITestCase):
+    """Decision B keeps superseded project documents. Nothing may serve them:
+    this phase adds no route, serializer or admin page for version rows."""
+
+    def setUp(self):
+        cache.clear()
+        media = tempfile.mkdtemp()
+        override = override_settings(MEDIA_ROOT=media)
+        override.enable()
+        self.addCleanup(override.disable)
+        self.addCleanup(shutil.rmtree, media, ignore_errors=True)
+        self.admin, self.head = make_admin(), make_head()
+        self.supplier = make_supplier()
+
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post("/api/projects/", {
+            "name": "Laptops", "type": "Goods", "category": "IT Equipment", "delivery_location": "HQ",
+            "budget": "1000", "bidding_period_days": 10, "delivery_period_days": 30,
+            "purchase_request": dummy_pdf("pr.pdf"), "technical_specifications": dummy_pdf(),
+            "terms_of_reference": dummy_pdf("secret-old-tor.pdf"), "approved_budget_document": dummy_pdf(),
+            "bid_evaluation_criteria": dummy_pdf(),
+        }, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.project = Project.objects.get(pk=res.data["id"])
+
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{self.project.pk}/request-revision/",
+                         {"documents": {"terms_of_reference": "fix"}}, format="json")
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/projects/{self.project.pk}/resubmit-documents/", {
+            "terms_of_reference": SimpleUploadedFile("new-tor.pdf", b"%PDF-1.4 new", content_type="application/pdf"),
+        }, format="multipart")
+        self.client.force_authenticate(user=self.head)
+        self.client.post(f"/api/projects/{self.project.pk}/approve/")
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/projects/{self.project.pk}/publish/").status_code, 200)
+
+        self.old = ProjectDocumentVersion.objects.get(project=self.project, key="terms_of_reference", version=1)
+        self.old_stem = os.path.splitext(os.path.basename(self.old.file.name))[0]
+
+    def _as_everyone(self):
+        for user in (None, self.admin, self.head, self.supplier.user):
+            self.client.force_authenticate(user=user)
+            yield user
+
+    def test_no_response_reveals_a_superseded_file(self):
+        project, code = self.project, self.project.code
+        anchor = BlockchainAnchor.objects.get(entity_ref=code, stage="BIDDING_OPEN")
+        paths = [
+            "/api/projects/", f"/api/projects/{project.pk}/", f"/api/projects/{project.pk}/record/",
+            f"/api/projects/{project.pk}/anchors/{anchor.pk}/",
+            f"/api/projects/{project.pk}/anchors/{anchor.pk}/packet/",
+            "/api/public/procurement/", f"/api/public/procurement/{code}/",
+            f"/api/public/procurement/{code}/anchors/",
+            f"/api/public/procurement/{code}/anchors/{anchor.pk}/",
+            f"/api/public/procurement/{code}/anchors/{anchor.pk}/packet/",
+        ]
+        served = 0
+        for user in self._as_everyone():
+            for path in paths:
+                with self.subTest(user=getattr(user, "username", "anonymous"), path=path):
+                    body = self.client.get(path).content.decode("utf-8")
+                    served += 1
+                    self.assertNotIn(self.old_stem, body)
+                    self.assertNotIn("secret-old-tor", body)
+                    self.assertNotIn("document_versions", body)
+                    self.assertNotIn("projectversion", body)
+        self.assertEqual(served, 40)
+
+    def test_no_file_route_addresses_a_version_row(self):
+        for user in self._as_everyone():
+            for kind in ("projectversion", "projectdocumentversion", "project_document_version"):
+                with self.subTest(user=getattr(user, "username", "anonymous"), kind=kind):
+                    res = self.client.get(f"/api/files/{kind}/{self.old.pk}/file/")
+                    self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+            # A version's id on the project route is just that project's id space.
+            res = self.client.get(f"/api/files/project/{self.project.pk}/file/")
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_the_project_file_route_only_ever_serves_the_current_file(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get(f"/api/files/project/{self.project.pk}/terms_of_reference/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(b"".join(res.streaming_content), b"%PDF-1.4 new")
+
+    def test_the_django_admin_does_not_expose_them(self):
+        from django.contrib import admin
+        self.assertFalse(admin.site.is_registered(ProjectDocumentVersion))
