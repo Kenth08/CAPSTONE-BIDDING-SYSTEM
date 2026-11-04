@@ -45,7 +45,7 @@ const MESSAGES = {
   // waits for the receipt) or broadcast (server signing), but "Verified
   // on-chain" is only shown once the server has read it back and found this
   // exact fingerprint in it.
-  done: 'Transaction submitted to Sepolia. It shows as “Verified on-chain” once the server has checked it.',
+  done: 'Transaction submitted to Sepolia. It shows as “Confirmed on-chain” once the server has checked it.',
   rejected: 'Not anchored — the MetaMask signature was declined. You can retry any time.',
   unavailable: 'Not anchored — no wallet or contract configured. The record is saved and can be anchored later.',
   error: 'Could not anchor this record. The record itself is saved — you can retry.',

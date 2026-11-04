@@ -549,7 +549,7 @@ button.rf-bar-row:focus-visible { outline: none; box-shadow: var(--focus-ring); 
 .lpx-verified {
   display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: var(--r-pill);
   font-size: var(--fs-caption); font-weight: var(--fw-semibold); text-decoration: none;
-  color: var(--tone-success-fg); background: var(--tone-success-bg); border: 1px solid var(--tone-success-border);
+  color: var(--tone-info-fg); background: var(--tone-info-bg); border: 1px solid var(--tone-info-border);
 }
 .lpx-verified:hover { text-decoration: underline; }
 .lpx-verified:focus-visible { outline: none; box-shadow: var(--focus-ring); }

@@ -333,10 +333,13 @@ flaky response can never rewrite an existing entry in the trail.
    existed still appear as versions (from their anchors) but their file is
    marked "not preserved": the anchor never recorded where it was stored, and
    it is not guessed.
-9. **Green means independently verified, nothing else.** The record details
+9. **Green means a selected document was verified, with complete record checks, nothing else.** The record details
    page (`/…/record/:id/anchor/:anchorId`, public `/public/procurement/:code/record/:anchorId`)
    shows the server's chain evidence in neutral colours; only the browser's own
-   packet check can show **VERIFIED — MATCH**.
+   packet check can show green: a v3 record with all five documents recorded, a
+   selected file matching the version it bound, and the transaction read back. With no
+   file it is blue, **RECORD MATCH — DOCUMENT NOT CHECKED**. Server confirmation is blue
+   "Confirmed on-chain" everywhere, and v1/v2 records keep a blue legacy status.
 
 ---
 

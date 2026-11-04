@@ -12,6 +12,7 @@ import DataTable from '../components/ui/DataTable'
 import KpiCard, { KpiRow } from '../components/ui/KpiCard'
 import StatusBadge from '../components/ui/StatusBadge'
 import Thumbnail from '../components/ui/Thumbnail'
+import { publicDate } from '../blockchain/recordView'
 import { fmtDate, peso, pesoCompact } from '../utils/format'
 import '../style/PublicResultsPage.css'
 
@@ -126,7 +127,7 @@ export default function PublicResultsPage() {
           </div>
         : <div className="rf-stack-cell">
             <span className="pub-winner"><Trophy size={13} aria-hidden="true" /> {r.winner}</span>
-            <span className="rf-muted">Awarded {fmtDate(r.awarded_at)}</span>
+            <span className="rf-muted">Awarded {publicDate(r.awarded_at)}</span>
           </div>),
     },
     {
@@ -199,7 +200,7 @@ export default function PublicResultsPage() {
           <KpiCard label="ABC open for bidding" icon={Search} loading={loading}
             value={pesoCompact(openAbc)} title={peso(openAbc)} context="Approved budgets of open biddings" />
           <KpiCard label="Contracts awarded" icon={Trophy} tone="success" loading={loading} value={winners.length}
-            context={winners[0] ? `Latest ${fmtDate(winners[0].awarded_at)}` : 'None yet'} />
+            context={winners[0] ? `Latest ${publicDate(winners[0].awarded_at)}` : 'None yet'} />
           {onChain != null && (
             <KpiCard label="Steps on Ethereum Sepolia" icon={ShieldCheck} to="/public#verify" value={onChain}
               context="Read live from the ledger contract" />

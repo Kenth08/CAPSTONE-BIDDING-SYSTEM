@@ -5,7 +5,7 @@ import {
 import CopyHash from './ui/CopyHash'
 
 import { apiVerifyProjectChain } from '../api'
-import { ANCHOR_STATES, anchorState, canSign } from '../blockchain/anchorState'
+import { ANCHOR_STATES, anchorChip, anchorState, canSign, hasIncompleteEvidence } from '../blockchain/anchorState'
 import { signingBlocked } from '../blockchain/anchor'
 import { isAnchorBusy, runAnchor, useAnchorActivity } from '../blockchain/anchorStore'
 import { txUrl } from '../blockchain/contract'
@@ -16,9 +16,9 @@ const fmtWhen = (v) =>
   v ? new Date(v).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : '—'
 
 /**
- * Compact "on the blockchain" badge. Counts only steps the SERVER has verified
+ * Compact "on the blockchain" badge. Counts only steps the SERVER has confirmed
  * on-chain (receipt + matching AnchorRecorded event) — a stored tx hash alone
- * is a "reported" transaction, not proof, so it never turns the badge green.
+ * is a "reported" transaction, not proof. Never green: see anchorState.js.
  */
 export function BlockchainBadge({ anchors = [], onClick }) {
   const list = anchors || []
@@ -26,20 +26,23 @@ export function BlockchainBadge({ anchors = [], onClick }) {
   const states = list.map(anchorState)
   const verified = states.filter((s) => s === 'verified').length
   const mismatched = states.includes('mismatch')
+  const incomplete = list.filter(hasIncompleteEvidence).length
 
   const cls = total === 0 ? 'bc-badge-pending'
     : mismatched ? 'bc-badge-bad'
+    : incomplete ? 'bc-badge-partial'
     : verified === total ? 'bc-badge-anchored'
     : 'bc-badge-partial'
   const label =
     total === 0 ? 'Not anchored'
-    : mismatched ? `Check needed · ${verified}/${total} verified`
-    : verified === total ? `Verified on-chain · ${verified}/${total}`
-    : `${verified}/${total} verified on-chain`
+    : mismatched ? `Check needed · ${verified}/${total} confirmed`
+    : incomplete ? `${verified}/${total} confirmed · ${incomplete} with incomplete evidence`
+    : verified === total ? `Confirmed on-chain · ${verified}/${total}`
+    : `${verified}/${total} confirmed on-chain`
   const Icon = mismatched ? AlertTriangle : verified > 0 && verified === total ? ShieldCheck : Link2
 
   const content = (
-    <span className={`bc-badge ${cls}`} title="Steps whose Sepolia transaction the server has read back and verified">
+    <span className={`bc-badge ${cls}`} title="Steps whose Sepolia transaction the server has read back and confirmed">
       <Icon size={12} /> {label}
     </span>
   )
@@ -143,7 +146,7 @@ export default function BlockchainTrail({
             <span className="bc-panel-sub">
               {list.length === 0
                 ? 'Nothing recorded yet'
-                : `${verified} of ${list.length} verified on Sepolia${reported ? ` · ${reported} reported, not yet checked` : ''}`}
+                : `${verified} of ${list.length} confirmed on Sepolia${reported ? ` · ${reported} reported, not yet checked` : ''}`}
             </span>
           </span>
         </div>
@@ -174,6 +177,7 @@ export default function BlockchainTrail({
         <ol className="bc-timeline">
           {list.map((a) => {
             const st = states[a.id]
+            const chip = anchorChip(a)
             return (
               <li key={a.id} className={`bc-row ${ROW_CLS[st]}`}>
                 <span className="bc-row-marker" aria-hidden="true">
@@ -196,8 +200,8 @@ export default function BlockchainTrail({
                     </div>
                     <div className="bc-row-side">
                       {st !== 'pending' && (
-                        <span className={`bc-badge ${CHIP_CLS[st]}`}>
-                          {st === 'verified' && <ShieldCheck size={11} />} {ANCHOR_STATES[st].text}
+                        <span className={`bc-badge ${chip.tone === 'warning' ? 'bc-badge-partial' : CHIP_CLS[st]}`} title={chip.title}>
+                          {st === 'verified' && <ShieldCheck size={11} />} {chip.text}
                         </span>
                       )}
                       {canSign(a) && canSignAnchor(a) && (
@@ -253,7 +257,7 @@ export default function BlockchainTrail({
         <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
         <span>
           Only a SHA-256 fingerprint of each record and its key document is written to the
-          Sepolia ledger — never the documents, amounts or names themselves. “Verified on-chain”
+          Sepolia ledger — never the documents, amounts or names themselves. “Confirmed on-chain”
           means the server read the transaction back and found exactly this fingerprint;
           “Transaction reported” means a transaction hash was submitted but not yet checked.
         </span>

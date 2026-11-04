@@ -35,8 +35,9 @@ from .blockchain import (
 from .anchor_detail import build_anchor_detail, may_view_anchor
 from .document_versions import record_award_document_version
 from .project_documents import record_project_document_versions, snapshot_documents
-from .packets import packet_for
-from .record import PUBLIC_STATUSES, build_record, public_record, viewer_for
+from .packets import is_public_packet, packet_for
+from .record import PUBLIC_STATUSES, build_record, public_date, public_record, viewer_for
+from .verification import summarize
 from .document_requirements import (
     CATEGORY_DOCUMENT_INDEX,
     EXPIRY_SUFFIX,
@@ -425,6 +426,7 @@ class PublicAnchorTrailView(APIView):
         integrity = {a.id: verify_anchor(a, deep=deep) for a in anchors}
         trail = [
             {
+                **_public_chain_fields(a),
                 "id": a.id,
                 "entity_type": a.entity_type,
                 "stage": a.stage,
@@ -443,16 +445,22 @@ class PublicAnchorTrailView(APIView):
                 # What the SERVER found reading the transaction back. The page
                 # still reads the contract itself; this is the second opinion.
                 "chain_status": a.chain_status,
-                "chain_checked_at": a.chain_checked_at,
-                **chain.chain_identity(a),
                 "verified_on_chain": a.verified_on_chain,
                 "explorer_url": (ETHERSCAN_TX_URL + a.tx_hash) if a.tx_hash else "",
-                "recorded_at": a.created_at,
-                "anchored_at": a.anchored_at,
+                # Dates only: see record.public_date.
+                "recorded_at": public_date(a.created_at),
+                "anchored_at": public_date(a.anchored_at),
+                "chain_checked_at": public_date(a.chain_checked_at),
+                # A project stage's five document hashes, so a file can be matched
+                # to the version it was recorded as. Public with its packet only.
+                "document_manifest": (
+                    a.payload["documents"]
+                    if is_public_packet(a, project) and a.payload.get("v") == 3 else None),
                 # Does the record STILL hash to what was published? Comparing the
                 # stored hash with the chain only proves the anchor row is
                 # intact; this proves the data behind it is.
                 "integrity": integrity[a.id],
+                "verification": summarize(a, integrity[a.id]),
             }
             for a in anchors
         ]
@@ -477,6 +485,13 @@ class PublicAnchorTrailView(APIView):
             "altered_count": len(altered),
             "anchors": trail,
         })
+
+
+def _public_chain_fields(anchor):
+    """The on-chain identity for a public response, its time as a date."""
+    fields = chain.chain_identity(anchor)
+    fields["chain_timestamp"] = public_date(fields["chain_timestamp"])
+    return fields
 
 
 class PublicProcurementView(APIView):

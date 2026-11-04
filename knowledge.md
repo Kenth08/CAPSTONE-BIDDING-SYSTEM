@@ -77,8 +77,10 @@ revision without rejecting the project.
 
 ### Payload v3 and commitment openings (built, not active)
 
-`PAYLOAD_V3_ENABLED` is off and the app refuses to start with it on. Nothing in
-the live request path calls this code, and every new anchor is still v2.
+`PAYLOAD_V3_ENABLED` is off and the app refuses to start with it on, and every new
+anchor is still v2. Only verification is live: `verify_anchor` reads a v3 payload
+if one exists (`payload_v3_reader`, in `blockchain.READ_ONLY_RULES`, outside the
+registry a writer version must be in). None exists outside tests.
 
 - A commitment is `SHA-256(canonical({kind, private fields, salt}))`, with a fresh
   256-bit salt per commitment. Its "opening" is that exact object, kept encrypted
@@ -103,6 +105,39 @@ from the server process's local clock (Asia/Manila on Render). So from 16:00 to 
 UTC, a committed `awarded_at` shows the day before the Manila award date: convert to
 Asia/Manila before comparing dates. Awards made before this field existed may have no
 exact time, and their openings are refused rather than filled in.
+
+### Verification outcomes
+
+Every check ends in one of five outcomes, the same in the server's account
+(`verification.summarize`) and the browser's independent check (`packetVerify.js`):
+
+| Outcome | Shown as | Meaning |
+|---|---|---|
+| `verified` | Verified | Every check that ran agreed and the transaction was read back. A hash alone never counts |
+| `hash_mismatch` | Mismatch | A recomputed hash disagrees: an edited payload or record, or different document bytes |
+| `not_found` | Missing evidence | Evidence that should exist doesn't: no transaction, payload, record, kept version or stored file. In the browser: no such ledger record |
+| `unconfirmed` | Unavailable or incomplete evidence | Evidence exists but can't be read or decided: storage down, unreadable file, unsupported version, unconfirmed transaction, lost key, incomplete manifest |
+| `invalid_tx` | Invalid transaction | A reported transaction failed, was never mined, is malformed, or doesn't record this entry |
+
+Evidence completeness is separate from integrity. Green means one thing, labelled
+`SELECTED DOCUMENT VERIFIED — RECORD CHECKS COMPLETE`: in the browser's own check, a v3
+record with all five documents recorded, a selected file whose bytes match the version
+that record bound, and a transaction read back and agreeing. It is about that one file.
+With no file the status is blue, `RECORD MATCH — DOCUMENT NOT CHECKED`, with outcome
+`verified` and `green: false`. For a v3 record a skipped transaction check (a pruned
+receipt, or no transaction reported) is `unconfirmed`, in blue; v1 and v2 stay `verified`
+under their original rules. A transaction hash, a server confirmation or a successful API
+response is never green. An incomplete manifest is `unconfirmed`, in amber, labelled
+`MATCH — INCOMPLETE EVIDENCE` with the count and names, even with a matching file. v1
+and v2 records show a blue legacy status. Results are tied to the record and file they
+were computed from, so changing or clearing the file removes them at once.
+
+`document_evidence` checks the exact version an anchor fingerprinted, not the file on
+record now. For v1/v2 it stands beside `integrity.document`, which keeps its
+original meaning: does the file on record NOW still match? A normal revision makes
+that `mismatch` too, so `verification.historical` reports the version evidence beside
+the frozen result, and only `tamper_indicated` when it supports that conclusion. A
+current file in no recorded version stays `unconfirmed` until Phase 5 sets the rules.
 
 ### Planned for Phase 6
 

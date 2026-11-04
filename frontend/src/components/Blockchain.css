@@ -25,7 +25,7 @@
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.bc-activity.is-done    { border-left-color: var(--tone-success-solid); }
+.bc-activity.is-done    { border-left-color: var(--tone-info-solid); }
 .bc-activity.is-warn    { border-left-color: var(--tone-warning-solid); }
 .bc-activity.is-error   { border-left-color: var(--tone-danger-solid); }
 
@@ -33,7 +33,7 @@
 @keyframes bc-spin { to { transform: rotate(360deg); } }
 
 .bc-activity-icon { flex-shrink: 0; margin-top: 1px; color: var(--tone-info-fg); }
-.bc-activity.is-done  .bc-activity-icon { color: var(--tone-success-fg); }
+.bc-activity.is-done  .bc-activity-icon { color: var(--tone-info-fg); }
 .bc-activity.is-warn  .bc-activity-icon { color: var(--tone-warning-fg); }
 .bc-activity.is-error .bc-activity-icon { color: var(--tone-danger-fg); }
 
@@ -118,7 +118,7 @@
   border: 1px solid transparent;
   white-space: nowrap;
 }
-.bc-badge-anchored { background: var(--tone-success-bg); color: var(--tone-success-fg); border-color: var(--tone-success-border); }
+.bc-badge-anchored { background: var(--tone-info-bg); color: var(--tone-info-fg); border-color: var(--tone-info-border); }
 .bc-badge-partial  { background: var(--tone-warning-bg); color: var(--tone-warning-fg); border-color: var(--tone-warning-border); }
 .bc-badge-pending  { background: var(--tone-neutral-bg); color: var(--tone-neutral-fg); border-color: var(--tone-neutral-border); }
 .bc-badge-reported { background: var(--tone-info-bg); color: var(--tone-info-fg); border-color: var(--tone-info-border); }
@@ -196,7 +196,7 @@
   border-radius: 2px;
   background: var(--border);
 }
-.bc-row.is-anchored:not(:last-child)::before { background: var(--c-primary-200); }
+.bc-row.is-anchored:not(:last-child)::before { background: var(--tone-info-border); }
 .bc-row-marker {
   width: 28px;
   height: 28px;
@@ -213,9 +213,9 @@
   box-shadow: 0 0 0 1px var(--border);
 }
 .bc-row.is-anchored .bc-row-marker {
-  background: var(--c-primary-500);
+  background: var(--tone-info-solid);
   color: #fff;
-  box-shadow: 0 0 0 1px var(--c-primary-500);
+  box-shadow: 0 0 0 1px var(--tone-info-solid);
 }
 .bc-row.is-pending .bc-row-marker { background: var(--tone-warning-bg); color: var(--tone-warning-fg); box-shadow: 0 0 0 1px var(--tone-warning-border); }
 .bc-row.is-reported .bc-row-marker { background: var(--tone-info-bg); color: var(--tone-info-fg); box-shadow: 0 0 0 1px var(--tone-info-border); }

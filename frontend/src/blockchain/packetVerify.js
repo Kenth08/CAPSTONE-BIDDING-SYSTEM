@@ -18,9 +18,17 @@
 //               (skipped — not failed — when the node no longer serves the receipt:
 //               contract STATE is the authoritative record; the tx only delivered it)
 //
-// Green ('verified') only when every check passed.
+// `outcome` is one of five results. Integrity is not completeness (payloadV3.js): a
+// passed check also reports `completeness`, a `display` and `green`, which is true only
+// for a record with all five documents, a selected file that matches, and a transaction
+// read back. An incomplete one keeps its genuine fingerprint (`integrity: 'match'`)
+// under the 'unconfirmed' outcome, in amber.
+//
+// A result belongs to the inputs it was computed from: see isCurrentCheck.
 
+import { completenessOf, matchManifest, passedDisplay, payloadProblem, versionProblem } from './payloadV3.js'
 import { hashPayload } from './receipt.js'
+import { publicDate } from './recordView.js'
 
 export const OUTCOMES = {
   verified: 'VERIFIED — MATCH',
@@ -29,6 +37,27 @@ export const OUTCOMES = {
   not_found: 'RECORD NOT FOUND',
   invalid_tx: 'INVALID TRANSACTION',
 }
+
+// The same five outcomes in plain words, as the server's check names them.
+export const OUTCOME_CATEGORY = {
+  verified: 'Verified',
+  hash_mismatch: 'Mismatch',
+  not_found: 'Missing evidence',
+  unconfirmed: 'Unavailable or incomplete evidence',
+  invalid_tx: 'Invalid transaction',
+}
+/**
+ * Is this result still about what is on screen now? A result computed for another
+ * record, or another file (or none), must not be shown, not even while its replacement
+ * is being worked out. A check in progress is not shown as anything but in progress.
+ */
+export const isCurrentCheck = (state, loadPacket, fileHash) =>
+  Boolean(state) && state.phase !== 'loading' && state.loadPacket === loadPacket && state.fileHash === fileHash
+
+// What a mismatch establishes: that values differ. Not why, and not who.
+const MISMATCH_NOTE = 'The bytes or data differ from the recorded fingerprint. '
+  + 'This shows a difference; it does not by itself show why, or that anyone acted maliciously.'
+const OUTCOME_TONE = { verified: 'ok', hash_mismatch: 'bad', not_found: 'bad', invalid_tx: 'bad', unconfirmed: 'pending' }
 
 const HEX32 = /^0x[0-9a-fA-F]{64}$/
 const same = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase()
@@ -61,6 +90,11 @@ export async function verifyPacket(packet, { fileHash = null, trusted, reader })
   const done = (outcome, extra = {}) => ({
     outcome,
     label: OUTCOMES[outcome],
+    category: OUTCOME_CATEGORY[outcome],
+    green: false,
+    checkedFileHash: fileHash,
+    display: { green: false, tone: OUTCOME_TONE[outcome], label: OUTCOMES[outcome],
+      note: outcome === 'hash_mismatch' ? MISMATCH_NOTE : '' },
     documentChecked: Boolean(fileHash) && results.get('document').status === 'pass',
     checks: [...results.values()],
     ...extra,
@@ -80,22 +114,36 @@ export async function verifyPacket(packet, { fileHash = null, trusted, reader })
     set('packet', 'fail', `Missing or malformed: ${missing.join(', ')}. This record cannot be checked independently.`)
     return done('unconfirmed')
   }
-  set('packet', 'pass', `Packet v${p.packet_version ?? '?'} for payload v${p.payload_version ?? '?'}.`)
   const payload = p.payload
   const rec = p.recorded
+  // Never guessed at, and never reported as a mismatch: this browser simply has no
+  // rules for that version. Refused before anything is compared.
+  const unreadable = versionProblem(payload)
+  if (unreadable) {
+    set('packet', 'fail', `This record uses an ${unreadable}, so it can't be checked here.`)
+    return done('unconfirmed')
+  }
+  set('packet', 'pass', `Packet v${p.packet_version ?? '?'} for payload v${p.payload_version ?? '?'}.`)
 
   // ── document ──
+  // v3 binds five documents: a file matches any of them, and the result names which.
+  let documentMatch = null
   if (fileHash) {
     const docHash = payload.document_hash
-    if (!docHash) {
+    documentMatch = matchManifest(payload, fileHash)
+    if (!docHash && !documentMatch && !isObject(payload.documents)) {
       set('document', 'fail', 'This record does not fingerprint a document, so no file can be matched to it.')
       return done('unconfirmed')
     }
-    if (!same(docHash, fileHash)) {
-      set('document', 'fail', `The file hashes to ${fileHash}, the record holds ${docHash}.`)
+    if (!documentMatch && (!docHash || !same(docHash, fileHash))) {
+      set('document', 'fail', isObject(payload.documents)
+        ? `The file hashes to ${fileHash}, which is none of the documents this record binds.`
+        : `The file hashes to ${fileHash}, the record holds ${docHash}.`)
       return done('hash_mismatch')
     }
-    set('document', 'pass', fileHash)
+    set('document', 'pass', documentMatch
+      ? `${documentMatch.label}, version ${documentMatch.version}: ${fileHash}`
+      : fileHash)
   } else {
     set('document', 'skip', 'No document selected — checking the record only.')
   }
@@ -111,6 +159,13 @@ export async function verifyPacket(packet, { fileHash = null, trusted, reader })
   if (!same(computed, p.data_hash)) {
     set('payload', 'fail', `The payload hashes to ${computed}, not the recorded ${p.data_hash}.`)
     return done('hash_mismatch', { computedHash: computed })
+  }
+  // After the hash, as on the server: a payload that was edited is a mismatch above;
+  // one that hashes correctly and is still outside its schema proves nothing.
+  const outOfSchema = payloadProblem(payload)
+  if (outOfSchema) {
+    set('payload', 'fail', `The payload is outside its schema (${outOfSchema}), so it can't be checked here.`)
+    return done('unconfirmed', { computedHash: computed })
   }
   set('payload', 'pass', computed)
 
@@ -215,11 +270,13 @@ export async function verifyPacket(packet, { fileHash = null, trusted, reader })
   if (badSigner || badTime) {
     set('signer', 'fail', [
       badSigner && `the ledger's signer is ${row.actor}, the record says ${rec.actor_address}`,
-      badTime && `the ledger's time is ${row.timestamp}, the record says ${recordedTime}`,
+      // No values: this text is on public pages, and they show dates only.
+      badTime && "the ledger's time differs from the time the record states",
     ].filter(Boolean).join('; ') + '.')
     return done('invalid_tx', { computedHash: computed, onChainId })
   }
-  set('signer', 'pass', `Signed by ${row.actor} at ${new Date(Number(row.timestamp) * 1000).toISOString()}`
+  // The exact times were compared above. Only the date is shown (see publicDate).
+  set('signer', 'pass', `Signed by ${row.actor} on ${publicDate(Number(row.timestamp) * 1000)}`
     + (signerKnown ? '' : ' (the ledger’s own record; no server-confirmed signer to compare with)'))
 
   // ── transaction ──
@@ -251,5 +308,21 @@ export async function verifyPacket(packet, { fileHash = null, trusted, reader })
     }
   }
 
-  return done('verified', { computedHash: computed, onChainId, locatedBy })
+  const completeness = completenessOf(payload)
+  const display = passedDisplay(completeness, {
+    documentMatch,
+    documentChecked: Boolean(fileHash) && results.get('document').status === 'pass',
+    transactionChecked: results.get('transaction').status === 'pass',
+  })
+  return done(display.outcome, {
+    integrity: 'match',
+    green: display.green === true,
+    completeness,
+    display,
+    documentMatch,
+    computedHash: computed,
+    onChainId,
+    locatedBy,
+    ...(display.outcome === 'verified' ? {} : { label: display.label }),
+  })
 }

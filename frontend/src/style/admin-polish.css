@@ -302,7 +302,7 @@
   background: var(--surface);
 }
 .ad-award-doc:not(.is-issued) { grid-template-columns: minmax(0, 1fr) auto auto auto; background: var(--surface-muted); border-style: dashed; }
-.ad-award-doc.is-onchain { border-color: var(--tone-success-border); }
+.ad-award-doc.is-onchain { border-color: var(--tone-info-border); }
 .ad-award-doc-name {
   display: inline-flex; align-items: center; gap: 6px; min-width: 0;
   font-size: var(--fs-caption); font-weight: 600; color: var(--text-strong); text-decoration: none;
@@ -316,8 +316,8 @@ a.ad-award-doc-name:hover { color: var(--c-primary-700); text-decoration: underl
   font-size: 10.5px !important; font-weight: 600 !important; letter-spacing: 0 !important;
   border: 1px solid transparent !important; white-space: nowrap; text-decoration: none !important;
 }
-.ad-award-doc-chain.is-anchored { background: var(--tone-success-bg) !important; color: var(--tone-success-fg) !important; border-color: var(--tone-success-border) !important; }
-.ad-award-doc-chain.is-anchored:hover { background: var(--c-primary-100) !important; }
+.ad-award-doc-chain.is-anchored { background: var(--tone-info-bg) !important; color: var(--tone-info-fg) !important; border-color: var(--tone-info-border) !important; }
+.ad-award-doc-chain.is-anchored:hover { filter: brightness(0.97); }
 .ad-award-doc-chain.is-retry { background: var(--tone-warning-bg) !important; color: var(--tone-warning-fg) !important; border-color: var(--tone-warning-border) !important; cursor: pointer; }
 .ad-award-doc-chain.is-retry:hover:not(:disabled) { background: #fef3c7 !important; }
 .ad-award-doc-chain.is-retry:disabled { background: var(--tone-neutral-bg) !important; color: var(--text-faint) !important; border-color: var(--border) !important; }

@@ -8,7 +8,7 @@
 // browser (PacketCheck → packetVerify) and only when the server says this
 // viewer may have the record's packet. A database row or a stored "verified"
 // flag never turns anything green here: only PacketCheck's own result does.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   AlertCircle, AlertTriangle, ArrowLeft, Database, Download, ExternalLink, Eye, FileText,
@@ -17,13 +17,12 @@ import {
 
 import { apiProjectAnchorDetail, apiProjectPacket, apiPublicAnchorDetail, apiPublicPacket } from '../api'
 import { sha256File } from '../blockchain/anchor'
-import { chainRows, evidenceBanner, txLink, versionLabel } from '../blockchain/recordView'
+import { chainRows, evidenceBanner, legacyDocumentNote, outcomeChip, payloadNotStored, recordTime, txLink, versionLabel } from '../blockchain/recordView'
 import PacketCheck from './PacketCheck'
 import CopyHash from './ui/CopyHash'
 import EmptyState from './ui/EmptyState'
 import StatusBadge from './ui/StatusBadge'
 import { Skeleton } from './Skeleton'
-import { fmtDateTime } from '../utils/format'
 import { normalizeProcurementCode } from '../utils/procurementCode'
 import '../style/PublicResultsPage.css'
 import '../style/procurement-record.css'
@@ -45,7 +44,7 @@ function ChainList({ detail }) {
                 {r.value} <ExternalLink size={11} />
               </a>
             ) : (
-              <span className={r.mono ? 'rd-mono' : ''}>{r.time ? fmtDateTime(r.value) : r.value}</span>
+              <span className={r.mono ? 'rd-mono' : ''}>{r.time ? recordTime(detail.viewer, r.value) : r.value}</span>
             )}
           </dd>
         </div>
@@ -77,7 +76,7 @@ function VersionsTable({ detail, recordHref }) {
                     <strong>{versionLabel(v)}</strong>
                     {here && <span className="pr-chip pr-chip-info rd-here">Viewing</span>}
                   </td>
-                  <td>{v.issued_at ? fmtDateTime(v.issued_at) : <span className="rd-missing">Unknown</span>}</td>
+                  <td>{v.issued_at ? recordTime(detail.viewer, v.issued_at) : <span className="rd-missing">Unknown</span>}</td>
                   <td>{v.document_hash ? <CopyHash value={v.document_hash} /> : (
                     <span className="rd-missing">{detail.viewer === 'public' && record.entity_type === 'BID' ? 'Not shown publicly' : 'Not recorded'}</span>
                   )}</td>
@@ -107,6 +106,43 @@ function VersionsTable({ detail, recordHref }) {
   )
 }
 
+/** What the server checked for this answer, and what stays unverified. Never green. */
+function CheckedPanel({ verification, completeness }) {
+  if (!verification) return null
+  return (
+    <section className="rf-card" aria-labelledby="rd-checked-h">
+      <div className="rf-card-head"><div>
+        <h3 id="rd-checked-h"><Search size={15} /> What was checked</h3>
+        <p>The server’s own account of this record. A transaction hash alone is not proof.</p>
+      </div></div>
+      <div className="rf-card-body">
+        <span className={`pr-chip ${outcomeChip(verification)}`}>{verification.headline}</span>
+        {completeness?.label && <p className="pr-muted pr-small">Five-document evidence recorded: {completeness.label}</p>}
+        {verification.historical && (
+          <dl className="rd-history">
+            <dt>Original fingerprint check</dt>
+            <dd>{verification.historical.original_detail}</dd>
+            <dt>Historical version evidence</dt>
+            <dd>{verification.historical.explanation}</dd>
+          </dl>
+        )}
+        <ul className="rd-checks">
+          {verification.checked.map((c) => (
+            <li key={c.key} className={`rd-check rd-check-${c.status}`}>
+              <strong>{c.label}</strong>
+              <span>{c.detail}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="pr-small rd-checked-note"><strong>Not verified by this answer</strong></p>
+        <ul className="rd-unverified">
+          {verification.unverified.map((text) => <li key={text}>{text}</li>)}
+        </ul>
+      </div>
+    </section>
+  )
+}
+
 function VerifyPanel({ detail, loadPacket }) {
   const [fileHash, setFileHash] = useState(null)
   const [fileName, setFileName] = useState('')
@@ -114,12 +150,26 @@ function VerifyPanel({ detail, loadPacket }) {
   const [error, setError] = useState('')
   const doc = detail.document
   const version = doc?.version
+  const input = useRef(null)
+  const latest = useRef(0)   // the newest selection: an earlier file still hashing must lose
 
+  // Any change forgets the previous file first, so its result can't outlive it: a
+  // cancelled dialog, a file that can't be read, or a new choice still being hashed.
+  const forget = () => { latest.current += 1; setFileHash(null); setFileName(''); setError(''); setHashing(false) }
+  const clear = () => { forget(); if (input.current) input.current.value = '' }
   const pick = async (file) => {
+    forget()
     if (!file) return
-    setHashing(true); setError(''); setFileName(file.name)
-    try { setFileHash(await sha256File(file)) } catch { setError('This browser could not read that file.') }
-    finally { setHashing(false) }
+    const mine = latest.current
+    setHashing(true); setFileName(file.name)
+    try {
+      const hash = await sha256File(file)
+      if (mine === latest.current) setFileHash(hash)
+    } catch {
+      if (mine === latest.current) { setFileName(''); setError('This browser could not read that file.') }
+    } finally {
+      if (mine === latest.current) setHashing(false)
+    }
   }
 
   return (
@@ -138,7 +188,7 @@ function VerifyPanel({ detail, loadPacket }) {
             <AlertCircle size={15} />
             <span>
               {detail.packet_unavailable_reason === 'missing_payload'
-                ? 'UNCONFIRMED — this record’s data (its payload) is not stored in this system, so nobody can recompute its fingerprint. The chain evidence above can be inspected, but the document cannot be proven to belong to it.'
+                ? 'MISSING EVIDENCE — this record’s data (its payload) is not stored in this system, so nobody can recompute its fingerprint. The chain evidence above can be inspected, but the document cannot be proven to belong to it.'
                 : detail.viewer === 'public'
                   ? 'This record cannot be verified independently by the public: its data includes confidential award or bid details, available only to the Admin, the Head and the winning supplier. The evidence above is what the server reports.'
                   : 'Your account cannot verify this record independently: its data includes details reserved for the Admin, the Head and the winning supplier. The evidence above is what the server reports.'}
@@ -149,9 +199,12 @@ function VerifyPanel({ detail, loadPacket }) {
             {doc && (
               <label className="rd-file">
                 <Upload size={14} />
-                <input type="file" onChange={(e) => pick(e.target.files?.[0])} aria-label="Document to verify against this record" />
+                <input ref={input} type="file" onChange={(e) => pick(e.target.files?.[0])} aria-label="Document to verify against this record" />
                 <span>{fileName || `Choose the ${doc.label} file to check…`}</span>
               </label>
+            )}
+            {fileName && (
+              <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={clear}>Clear selected file</button>
             )}
             <p className="pr-muted pr-small">
               {doc ? 'The file is hashed in your browser and never uploaded. ' : ''}
@@ -205,7 +258,7 @@ export function AnchorDetailView({ detail, loadPacket, recordHref, backTo, backL
             <span className="rf-code">{p.code}</span>
             {p.id != null && <span>Procurement ID {p.id}</span>}
             <span>Record #{rec.id} in this system</span>
-            <span>{fmtDateTime(rec.created_at)}</span>
+            <span>{recordTime(detail.viewer, rec.created_at)}</span>
           </div>
         </div>
       </section>
@@ -215,14 +268,14 @@ export function AnchorDetailView({ detail, loadPacket, recordHref, backTo, backL
         <div>
           <strong>{ev.title}</strong>
           <p>{detail.evidence_text}</p>
-          {integrity === 'mismatch' && (
+          {integrity === 'mismatch' && !legacyDocumentNote(detail.verification) && !payloadNotStored(detail.verification) && (
             <p className="rd-warn"><AlertTriangle size={13} /> The data stored for this record now differs from what was fingerprinted. {detail.integrity.detail}</p>
           )}
           {supersededBy && (
             <p>This document was issued again later. <Link className="pr-link" to={recordHref(supersededBy)}>View the newer record #{supersededBy}</Link></p>
           )}
           {detail.evidence === 'verified' && (
-            <p className="pr-small">This is the server’s check, not proof on its own. Only the independent check below — run in your browser against Sepolia — can show <strong>VERIFIED — MATCH</strong>.</p>
+            <p className="pr-small">This is the server’s check, not proof on its own. Only the independent check below, run in your browser against Sepolia, can show green, and only with complete evidence and a matching selected document.</p>
           )}
         </div>
       </div>
@@ -285,7 +338,8 @@ export function AnchorDetailView({ detail, loadPacket, recordHref, backTo, backL
         </section>
       </div>
 
-      <VerifyPanel detail={detail} loadPacket={loadPacket} />
+      <CheckedPanel verification={detail.verification} completeness={detail.integrity?.completeness} />
+      <VerifyPanel key={rec.id} detail={detail} loadPacket={loadPacket} />
       <VersionsTable detail={detail} recordHref={recordHref} />
     </div>
   )

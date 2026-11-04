@@ -42,8 +42,10 @@ from .blockchain import (
     inclusion_receipt,
     superseding_anchor,
 )
+from .canonical import NonCanonicalPayload
 from .models import Award, Bid, BlockchainAnchor
-from .record import PUBLIC_STATUSES
+from .payload_v3 import validate_project_stage
+from .record import PUBLIC_STATUSES, public_date
 
 PACKET_VERSION = 1
 
@@ -89,13 +91,21 @@ HASHING = {
 def is_public_packet(anchor, project):
     """May anyone, logged in or not, have this anchor's packet?"""
     payload = anchor.payload if isinstance(anchor.payload, dict) else {}
-    return (
-        project.status in PUBLIC_STATUSES
-        and anchor.entity_type == EntityType.PROJECT
-        and anchor.stage in PUBLIC_PROJECT_STAGES
-        and payload.get("entity") == EntityType.PROJECT
-        and set(payload) <= PUBLIC_PROJECT_KEYS
-    )
+    if not (project.status in PUBLIC_STATUSES
+            and anchor.entity_type == EntityType.PROJECT
+            and anchor.stage in PUBLIC_PROJECT_STAGES
+            and payload.get("entity") == EntityType.PROJECT):
+        return False
+    if payload.get("v") == 3:
+        # The whole payload must be exactly the schema, whose five document hashes
+        # are public by design (section 2, an accepted risk). Those keys stay off
+        # PUBLIC_PROJECT_KEYS, so a v2 payload holding them is still withheld.
+        try:
+            validate_project_stage(payload)
+        except NonCanonicalPayload:
+            return False
+        return True
+    return set(payload) <= PUBLIC_PROJECT_KEYS
 
 
 def _winning_award(project, supplier):
@@ -212,4 +222,9 @@ def packet_for(anchor, project, role, supplier=None):
     own_bid = None
     if role == "supplier" and anchor.stage == EVALUATION_STAGE:
         own_bid = Bid.objects.filter(project=project, supplier=supplier).exclude(commitment_salt="").first()
-    return build_packet(anchor, receipt_bid=own_bid)
+    packet = build_packet(anchor, receipt_bid=own_bid)
+    if role is None:
+        # recorded.chain_timestamp stays exact: the verifier compares it with the
+        # ledger, and public packets exist only for stages before any award.
+        packet["anchor"]["created_at"] = public_date(anchor.created_at)
+    return packet

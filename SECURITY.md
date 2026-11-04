@@ -133,7 +133,7 @@ only in Render's environment and never in git or `VITE_*` variables.
 | Winner's registered company name | Public | Yes | Not built |
 | Contract amount | Public (working policy) | **Not in the API**; printed on the public Notice of Award file | Not built; outside `AWARD_PRIVATE_FIELDS` |
 | Award date (Philippine date, no time) | Public | Yes | Not built |
-| Exact award time (`Project.awarded_at`) | Private; committed | **Not fully private yet**, see below | In `award-private/3` |
+| Exact award time (`Project.awarded_at`) | Private; committed | Dates only (see "Public times" below) | In `award-private/3` |
 | Award document key, version, issue date, hash | Public | Only the hash is in the public trail | Not built |
 | `award_id`, `bid_id`, `supplier_id`, award status | Private; committed | No | In `award-private/3` |
 | Losing bids, their amounts and outcomes; bid count after award | Never public | No | Only inside salted leaves |
@@ -142,8 +142,11 @@ only in Render's environment and never in git or `VITE_*` variables.
 **Open gaps.** No v3 anchor may be written until these are closed:
 
 - **Phase 6:** the contract amount is public by policy but absent from the public API. Its authoritative source, field name and response contract are resolved there; it is deliberately not added before then.
-- **Phase 4:** the public procurement detail no longer shows the exact award time, but three public fields still show a time at or moments after it: `recorded_at` in the anchor trail, and `record.created_at` and `issued_at` in the record details page. They are corrected there with the verification UI, with endpoint and browser tests. v3 can't be enabled until this is closed.
 - `award-document/3` is not built, so the policy's payload side is unproven.
+
+**Public times.** The public API gives dates only, as the Philippine date (`record.public_date`): `recorded_at`, `anchored_at`, `chain_checked_at` and `chain_timestamp` in the trail and record details, `document.version.issued_at` and `versions[].issued_at`, and `anchor.created_at` in a public packet. A public packet keeps `recorded.chain_timestamp` exact, because the verifier compares it with the ledger; public packets exist only for stages before any award, and a ledger time is public anyway. The database keeps every exact time, and signed-in viewers still get them.
+
+**Issued PDFs: an irreversible limitation, accepted.** It does not block v3 (decided at Phase 4 review). Notices of Award generated before Phase 4 state their creation time to the second in `/CreationDate` metadata, and anyone who downloads the public file can read it. Their bytes are anchored, so they can't be rewritten: that time is already disclosed, and these files have not been sanitized. New generated PDFs state only the date. An uploaded signed PDF carries whatever metadata its author's software wrote, and the app does not alter or inspect it. So the public API's date-only rule does not cover the contents of public files, and this document does not claim every historical metadata leak is gone.
 
 **Blockchain timing can't be hidden.** Every anchor's block timestamp is public on Sepolia and can't be removed. Anyone can read approximately when a step was recorded, including the award, whatever the API shows. Showing only a date limits what this system publishes; it does not make the timing secret.
 

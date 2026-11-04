@@ -12,6 +12,7 @@ import { apiPublicRecord } from '../api'
 import PublicVerifier from '../components/PublicVerifier'
 import { Skeleton } from '../components/Skeleton'
 import StatusBadge from '../components/ui/StatusBadge'
+import { publicDate } from '../blockchain/recordView'
 import { fmtDate, peso } from '../utils/format'
 import { normalizeProcurementCode } from '../utils/procurementCode'
 import '../style/PublicResultsPage.css'
@@ -89,7 +90,7 @@ export default function PublicProcurementPage() {
                   <div>
                     <div className="pr-result-label">Awarded to</div>
                     <div className="pr-result-winner">{r.winner}</div>
-                    <div className="pr-muted pr-small">Awarded {fmtDate(r.awarded_at)}. Bid amounts and the other bidders are not published.</div>
+                    <div className="pr-muted pr-small">Awarded {publicDate(r.awarded_at)}. Bid amounts and the other bidders are not published.</div>
                   </div>
                 </div>
               ) : r?.state === 'closed' ? (

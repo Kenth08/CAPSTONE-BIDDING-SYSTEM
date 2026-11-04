@@ -2,12 +2,9 @@ import { useEffect, useState } from 'react'
 import { AlertCircle, CheckCircle2, CircleDashed, Loader2, ShieldCheck, ShieldX, XCircle } from 'lucide-react'
 
 import { packetVerifyContext } from '../blockchain/anchor'
-import { verifyPacket } from '../blockchain/packetVerify'
+import { isCurrentCheck, verifyPacket } from '../blockchain/packetVerify'
 import '../style/packet-check.css'
 
-const TONE = {
-  verified: 'ok', hash_mismatch: 'bad', not_found: 'bad', invalid_tx: 'bad', unconfirmed: 'pending',
-}
 const STEP_ICON = { pass: CheckCircle2, fail: XCircle, skip: CircleDashed }
 
 /**
@@ -21,21 +18,25 @@ export default function PacketCheck({ loadPacket, fileHash = null, unavailableTe
 
   useEffect(() => {
     let live = true
+    const inputs = { loadPacket, fileHash }
+    setState({ phase: 'loading', ...inputs })
     ;(async () => {
       try {
         const packet = await loadPacket()
         if (!live) return
-        if (!packet) { setState({ phase: 'unavailable' }); return }
+        if (!packet) { setState({ phase: 'unavailable', ...inputs }); return }
         const result = await verifyPacket(packet, { fileHash, ...packetVerifyContext() })
-        if (live) setState({ phase: 'done', result })
+        if (live) setState({ phase: 'done', result, ...inputs })
       } catch (err) {
-        if (live) setState({ phase: 'error', message: err?.message || 'The check could not be run.' })
+        if (live) setState({ phase: 'error', message: err?.message || 'The check could not be run.', ...inputs })
       }
     })()
     return () => { live = false }
   }, [loadPacket, fileHash])
 
-  if (state.phase === 'loading') {
+  // Checked on every render: the effect above runs only after a render has already
+  // happened with the new inputs, and the old result must not be shown for that one.
+  if (!isCurrentCheck(state, loadPacket, fileHash)) {
     return <div className="pc pc-pending"><Loader2 size={15} className="pc-spin" /> Checking against the blockchain…</div>
   }
   if (state.phase === 'unavailable') {
@@ -50,21 +51,27 @@ export default function PacketCheck({ loadPacket, fileHash = null, unavailableTe
   }
 
   const { result } = state
-  const tone = TONE[result.outcome] || 'pending'
+  const { tone, label, note } = result.display
+  const passed = result.integrity === 'match'
+  const chosen = fileHash ? 'file' : 'no file'
   const Head = tone === 'ok' ? ShieldCheck : tone === 'bad' ? ShieldX : AlertCircle
   return (
-    <div className={`pc pc-${tone}`} role="status">
+    <div className={`pc pc-${tone}`} role="status" data-checked={chosen} data-outcome={result.outcome}>
       <div className="pc-head">
         <Head size={17} />
         <div>
-          <strong>{result.label}</strong>
+          <strong>{label}</strong>
           <p>
-            {result.outcome === 'verified'
+            {passed
               ? result.documentChecked
-                ? 'Independently verified in this browser: the file, the record and the blockchain all agree.'
-                : 'The record is independently verified on the blockchain. No document was checked.'
-              : 'Not verified. The first failed check is marked below.'}
+                ? 'Checked in this browser: the selected file, the record and the blockchain agree.'
+                : 'The record was checked against the blockchain in this browser. No document was checked.'
+              : `${result.category}. Not verified. The first failed check is marked below.`}
           </p>
+          {result.documentMatch && !result.green && (
+            <p>This file is the {result.documentMatch.label}, version {result.documentMatch.version}.</p>
+          )}
+          {note && <p>{note}</p>}
         </div>
       </div>
       <ol className="pc-steps">

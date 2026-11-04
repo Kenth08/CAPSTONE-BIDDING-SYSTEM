@@ -12,6 +12,9 @@
 .pc-bad     { color: #fecaca; background: rgba(239, 68, 68, 0.09);  border: 1px solid rgba(239, 68, 68, 0.28); }
 .pc-pending { color: #fde68a; background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.28);
               flex-direction: row; align-items: center; }
+/* A check that passed but may not show green (design 6.1): incomplete, and legacy. */
+.pc-amber  { color: #fde68a; background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.28); }
+.pc-legacy { color: #bfdbfe; background: rgba(59, 130, 246, 0.09); border: 1px solid rgba(59, 130, 246, 0.28); }
 .pc-head { display: flex; gap: 10px; align-items: flex-start; }
 .pc-head svg { flex-shrink: 0; margin-top: 1px; }
 .pc-head strong { font-size: 13.5px; letter-spacing: 0.02em; }
@@ -21,7 +24,8 @@
 .pc-step svg { flex-shrink: 0; margin-top: 2px; }
 .pc-step > div { display: flex; flex-direction: column; min-width: 0; }
 .pc-step small { font-family: var(--font-mono, monospace); font-size: 11px; overflow-wrap: anywhere; opacity: 0.85; }
-.pc-step-pass svg { color: #34d399; }
+.pc-step-pass svg { color: currentColor; }
+.pc-ok .pc-step-pass svg { color: #34d399; }
 .pc-step-fail { color: #fecaca; }
 .pc-step-fail svg { color: #ef4444; }
 .pc-step-skip svg { color: #64748b; }

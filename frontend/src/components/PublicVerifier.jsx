@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   AlertCircle, CheckCircle2, Download, ExternalLink, FileSearch, Loader2, Search,
@@ -8,6 +8,8 @@ import {
 import { apiPublicAnchors, apiPublicPacket } from '../api'
 import { readChainTrail, sha256File } from '../blockchain/anchor'
 import { documentVerdict } from '../blockchain/documentCheck'
+import { DOCUMENT_LABELS } from '../blockchain/payloadV3'
+import { legacyDocumentNote, payloadNotStored, publicDate, verifiedRowDisplay } from '../blockchain/recordView'
 import { contractUrl, isLedgerConfigured, txUrl, LEDGER_ADDRESS } from '../blockchain/contract'
 import { EXAMPLE_CODE, normalizeProcurementCode } from '../utils/procurementCode'
 import PacketCheck from './PacketCheck'
@@ -15,8 +17,15 @@ import './PublicVerifier.css'
 
 const shortHash = (h) => (h ? `${h.slice(0, 14)}…${h.slice(-8)}` : '—')
 const shortTx = (h) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : '')
-const fmtWhen = (v) =>
-  v ? new Date(v).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : '—'
+
+const OTHER_DOCUMENT_LABELS = {
+  quotation_document: 'Quotation document',
+  bid_quotations: 'Bid quotations',
+  award_resolution: 'BAC Resolution',
+  notice_of_award: 'Notice of Award',
+  notice_to_proceed: 'Notice to Proceed',
+}
+const documentLabel = (key) => DOCUMENT_LABELS[key] || OTHER_DOCUMENT_LABELS[key] || key
 
 const STAGE_LABEL = {
   SUBMITTED: 'Procurement submitted for approval',
@@ -58,6 +67,11 @@ function mergeTrail(dbAnchors, chainAnchors, { chainReadable = true } = {}) {
       label: a.stage_label || STAGE_LABEL[a.stage] || a.stage,
       dataHash: a.data_hash,
       documentHash: a.document_hash,
+      manifest: a.document_manifest || null,
+      completeness: a.integrity?.completeness || null,
+      onLedger: Boolean(onChain),
+      verification: a.verification || null,
+      documentEvidence: a.integrity?.document_evidence || null,
       txHash: a.tx_hash,
       blockNumber: a.block_number,
       recordedAt: a.recorded_at,
@@ -69,6 +83,9 @@ function mergeTrail(dbAnchors, chainAnchors, { chainReadable = true } = {}) {
       superseded: a.integrity?.status === 'superseded',
       // 'altered'   — the live record no longer hashes to what was published.
       //               Checked first: it outranks everything else.
+      // 'revised'   — a v1/v2 file differs from its fingerprint and the version
+      //               evidence doesn't indicate tampering (see verification.py).
+      // 'nopayload' — no payload was stored, so no hash could be compared.
       // 'verified'  — the hash is on the public ledger, matching exactly.
       // 'pending'   — recorded here, never anchored (no wallet/gas at the time).
       // 'unmatched' — anchored per our DB, but not found on the ledger.
@@ -78,7 +95,9 @@ function mergeTrail(dbAnchors, chainAnchors, { chainReadable = true } = {}) {
       // 'reported'  — this browser could not read the ledger and the server
       //               has not confirmed the transaction either.
       state:
-        a.integrity?.status === 'mismatch' ? 'altered'
+        legacyDocumentNote(a.verification) ? 'revised'
+        : payloadNotStored(a.verification) ? 'nopayload'
+        : a.integrity?.status === 'mismatch' ? 'altered'
         : onChain ? 'verified'
         : !a.anchored ? 'pending'
         : !chainReadable ? (a.verified_on_chain ? 'server' : 'reported')
@@ -104,7 +123,9 @@ function mergeTrail(dbAnchors, chainAnchors, { chainReadable = true } = {}) {
 }
 
 const STATE_UI = {
-  verified: { cls: 'pv-ok', icon: ShieldCheck, text: 'Verified on-chain' },
+  verified: { cls: 'pv-extra', icon: ShieldCheck, text: 'Found on the ledger' },
+  revised: { cls: 'pv-pending', icon: AlertCircle, text: 'Current file differs from the recorded version' },
+  nopayload: { cls: 'pv-pending', icon: AlertCircle, text: 'Missing evidence: payload not stored' },
   altered: { cls: 'pv-bad', icon: ShieldX, text: 'Record altered since it was recorded' },
   pending: { cls: 'pv-pending', icon: AlertCircle, text: 'Recorded, not yet anchored' },
   unmatched: { cls: 'pv-bad', icon: ShieldX, text: 'Not found on the ledger' },
@@ -132,6 +153,8 @@ export default function PublicVerifier({ initialCode = '' }) {
   const [fileName, setFileName] = useState('')
   const [fileHash, setFileHash] = useState('')
   const [hashing, setHashing] = useState(false)
+  const fileInput = useRef(null)
+  const latestFile = useRef(0)   // the newest selection: an earlier file still hashing must lose
 
   const lookup = async (e, { deep = false } = {}) => {
     e?.preventDefault()
@@ -168,15 +191,21 @@ export default function PublicVerifier({ initialCode = '' }) {
     }
   }
 
+  // Any change forgets the previous file first, so its result can't outlive it.
+  const forgetFile = () => { latestFile.current += 1; setFileHash(''); setFileName(''); setHashing(false) }
+  const clearFile = () => { forgetFile(); if (fileInput.current) fileInput.current.value = '' }
   const onPickFile = async (file) => {
+    forgetFile()
     if (!file) return
-    setHashing(true); setFileName(file.name); setFileHash('')
+    const mine = latestFile.current
+    setHashing(true); setFileName(file.name)
     try {
-      setFileHash(await sha256File(file))
+      const hash = await sha256File(file)
+      if (mine === latestFile.current) setFileHash(hash)
     } catch {
-      setError('Could not read that file in this browser.')
+      if (mine === latestFile.current) { setFileName(''); setError('Could not read that file in this browser.') }
     } finally {
-      setHashing(false)
+      if (mine === latestFile.current) setHashing(false)
     }
   }
 
@@ -190,8 +219,12 @@ export default function PublicVerifier({ initialCode = '' }) {
   const loadPacket = useCallback(
     () => apiPublicPacket(packetCode, matchedId), [packetCode, matchedId])
 
-  const verifiedCount = (result?.rows || []).filter((r) => r.state === 'verified').length
-  const alteredCount = result?.project?.altered_count || 0
+  // A revised v1/v2 file changes nothing about the fingerprint being on the ledger.
+  const verifiedRows = (result?.rows || []).filter((r) => r.state === 'verified' || (r.state === 'revised' && r.onLedger))
+  const verifiedCount = verifiedRows.length
+  // Not the API's altered_count, which also counts a v1/v2 file that a normal revision
+  // replaced. The banner below says "altered", so it counts only what supports that.
+  const alteredCount = (result?.rows || []).filter((r) => r.state === 'altered').length
 
   // Opened with a reference (from the landing-page search or a results row):
   // run the lookup straight away. Remounted via `key` when the code changes.
@@ -240,7 +273,7 @@ export default function PublicVerifier({ initialCode = '' }) {
         <div className="pv-idle">
           <ShieldCheck size={16} aria-hidden="true" />
           <span>
-            Results show every recorded step with its status: <strong className="pv-idle-ok">Verified</strong>,{' '}
+            Results show every recorded step with its status: <strong className="pv-idle-ok">Found on the ledger</strong>,{' '}
             <strong className="pv-idle-pending">Pending</strong> or <strong className="pv-idle-bad">Altered</strong>.
           </span>
         </div>
@@ -267,8 +300,8 @@ export default function PublicVerifier({ initialCode = '' }) {
               <span className="pv-muted">{result.project.category || '—'}</span>
             </div>
             <div className="pv-summary-stats">
-              <span className={verifiedCount > 0 ? 'pv-chip pv-ok' : 'pv-chip pv-pending'}>
-                {verifiedCount} of {result.rows.filter((r) => r.state !== 'extra').length} steps verified on-chain
+              <span className={verifiedCount > 0 ? 'pv-chip pv-extra' : 'pv-chip pv-pending'}>
+                {verifiedCount} of {result.rows.filter((r) => r.state !== 'extra').length} steps found on the ledger
               </span>
               {/* Re-reads every anchored file and re-hashes it, catching a
                   document swapped after the fact. On demand because it costs a
@@ -333,7 +366,9 @@ export default function PublicVerifier({ initialCode = '' }) {
           ) : (
             <ol className="pv-trail">
               {result.rows.map((r) => {
-                const ui = STATE_UI[r.state]
+                const ui = r.state === 'verified'
+                  ? { ...STATE_UI.verified, ...verifiedRowDisplay(r.completeness) }
+                  : STATE_UI[r.state]
                 const Icon = ui.icon
                 return (
                   <li className={`pv-step ${ui.cls}`} key={r.key}>
@@ -351,15 +386,33 @@ export default function PublicVerifier({ initialCode = '' }) {
                         </span>
                       </div>
                       <div className="pv-step-meta">
-                        {r.entityType} · {fmtWhen(r.chainTime || r.recordedAt)}
+                        {r.entityType} · {publicDate(r.chainTime || r.recordedAt)}
                         {r.blockNumber ? ` · block ${r.blockNumber}` : ''}
                         {r.actor ? ` · signed by ${r.actor.slice(0, 8)}…${r.actor.slice(-4)}` : ''}
                       </div>
-                      {r.integrity?.detail && (
+                      {r.state === 'revised' && (
+                        <div className="pv-step-detail">
+                          Original check: {r.integrity.detail} {r.verification.historical.explanation}
+                        </div>
+                      )}
+                      {r.integrity?.detail && r.state !== 'revised' && r.state !== 'nopayload' && (
                         <div className={`pv-step-detail ${r.state === 'altered' ? 'pv-bad' : ''}`}>
                           {r.integrity.detail}
                         </div>
                       )}
+                      {r.verification && (
+                        <div className="pv-step-detail" title={r.verification.unverified.join(' ')}>
+                          Server’s check: {r.verification.headline}
+                          {r.completeness?.status === 'incomplete' || r.completeness?.status === 'unreadable_when_recorded'
+                            ? ` — missing when recorded: ${[...r.completeness.absent, ...r.completeness.unreadable].join(', ')}` : ''}
+                        </div>
+                      )}
+                      {r.documentEvidence?.checked && r.documentEvidence.entries.map((e) => (
+                        <div className={`pv-step-detail ${e.state === 'mismatch' ? 'pv-bad' : ''}`} key={e.key}>
+                          {documentLabel(e.key)}{e.version ? `, version ${e.version}` : ''}: {e.detail}
+                          {e.current_file ? ' The file on record now is not in this document’s history.' : ''}
+                        </div>
+                      ))}
                       <div className="pv-step-hashes">
                         <span className="pv-hash" title={r.dataHash}>record {shortHash(r.dataHash)}</span>
                         {r.documentHash && (
@@ -403,12 +456,17 @@ export default function PublicVerifier({ initialCode = '' }) {
             </div>
             <label className="pv-file">
               <input
+                ref={fileInput}
                 type="file"
                 onChange={(e) => onPickFile(e.target.files?.[0])}
                 aria-label="Document to verify"
               />
               <span>{fileName || 'Choose a file…'}</span>
             </label>
+
+            {fileName && (
+              <button type="button" className="pv-deep-btn" onClick={clearFile}>Clear selected file</button>
+            )}
 
             {hashing && <div className="pv-note"><Loader2 size={14} className="pv-spin" /> Hashing locally…</div>}
 

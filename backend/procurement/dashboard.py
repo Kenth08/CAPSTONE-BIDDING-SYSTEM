@@ -26,7 +26,9 @@ from accounts.models import AuditLog
 from .blockchain import ETHERSCAN_TX_URL, anchor_summary
 from .document_requirements import approved_categories, expiring_documents, missing_documents
 from .models import Award, Bid, BlockchainAnchor, Project, Supplier
+from .payload_v3_reader import completeness
 from .permissions import IsAdminRole, IsHeadRole
+from .verification import INCOMPLETE_STATES
 from .views import close_expired_published_projects
 
 # Stages a Head decision is anchored under.
@@ -66,6 +68,13 @@ def _waiting_since(projects):
         if entity_id not in latest or at > latest[entity_id]:
             latest[entity_id] = at
     return {p.id: max(p.created_at, latest.get(str(p.id), p.created_at)) for p in projects}
+
+
+def incomplete_evidence_count():
+    """v3 anchors that recorded a missing or unreadable document. Counted apart from
+    every other figure: such a record can verify, and is still not complete."""
+    v3 = BlockchainAnchor.objects.filter(payload__v=3).only("payload")
+    return sum(1 for a in v3 if completeness(a.payload)["status"] in INCOMPLETE_STATES)
 
 
 class AdminSummaryView(APIView):
@@ -256,6 +265,7 @@ class AdminSummaryView(APIView):
                 "unchecked": unchecked_count,        # reported, not yet confirmed
                 "mismatch": mismatch_count,          # reported tx does not record the anchor
                 "pending": pending_anchor_count,     # need a signature (never signed, or mismatch)
+                "incomplete": incomplete_evidence_count(),  # v3: recorded with documents missing
                 # Full anchor shape, so "Anchor now" can reuse runAnchor().
                 "pending_items": [anchor_summary(a) for a in anchors_pending.order_by("-created_at", "-id")[:8]],
             },

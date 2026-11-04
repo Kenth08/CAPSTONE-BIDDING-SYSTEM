@@ -6,7 +6,7 @@
 //
 // The vocabulary is deliberate and consistent:
 //   "Database record"       — an application record (audit-logged), not on-chain
-//   "Verified on-chain"     — the server read the transaction and found this fingerprint
+//   "Confirmed on-chain"    — the server read the transaction and found this fingerprint
 //   "Transaction reported"  — a tx hash was submitted, not yet checked
 //   "Hash recorded, not yet on-chain" — nobody has signed it yet
 import { useCallback, useEffect, useState } from 'react'
@@ -17,7 +17,8 @@ import {
 } from 'lucide-react'
 
 import { apiProjectRecord } from '../api'
-import { ANCHOR_STATES, anchorState } from '../blockchain/anchorState'
+import { ANCHOR_STATES, anchorChip, anchorState } from '../blockchain/anchorState'
+import { legacyDocumentNote, payloadNotStored } from '../blockchain/recordView'
 import { contractUrl, txUrl } from '../blockchain/contract'
 import { verifyReceipt } from '../blockchain/receipt'
 import BlockchainTrail from './BlockchainTrail'
@@ -53,15 +54,20 @@ const DOC_STAGES = ['RESOLUTION_ISSUED', 'NOA_ISSUED', 'NTP_ISSUED']
 function AnchorChip({ anchor, href }) {
   if (!anchor) return null
   let chip
-  if (anchor.integrity?.status === 'mismatch') {
+  if (legacyDocumentNote(anchor.verification)) {
+    chip = <span className="pr-chip pr-chip-warn" title={anchor.verification.historical.explanation}><AlertTriangle size={11} /> Current file differs</span>
+  } else if (payloadNotStored(anchor.verification)) {
+    chip = <span className="pr-chip pr-chip-warn" title={anchor.verification.headline}><AlertTriangle size={11} /> Missing evidence</span>
+  } else if (anchor.integrity?.status === 'mismatch') {
     chip = <span className="pr-chip pr-chip-bad" title={anchor.integrity.detail}><ShieldX size={11} /> Altered</span>
   } else {
-    const st = anchorState(anchor)
-    const tone = { verified: 'ok', reported: 'info', mismatch: 'bad', pending: 'warn' }[st]
+    const shown = anchorChip(anchor)
+    const st = shown.state
+    const tone = { info: 'info', warning: 'warn', danger: 'bad' }[shown.tone]
     chip = (
-      <span className={`pr-chip pr-chip-${tone}`} title={`${anchor.stage_label}: ${ANCHOR_STATES[st].text}`}>
+      <span className={`pr-chip pr-chip-${tone}`} title={`${anchor.stage_label}: ${shown.title}`}>
         {st === 'verified' ? <ShieldCheck size={11} /> : st === 'mismatch' ? <AlertTriangle size={11} /> : <Link2 size={11} />}
-        {' '}{ANCHOR_STATES[st].text}
+        {' '}{shown.text}
         {anchor.integrity?.status === 'superseded' ? ' · superseded' : ''}
       </span>
     )
@@ -140,7 +146,7 @@ function ReceiptCheck({ receipt }) {
       </button>
       {state && state !== 'checking' && (
         state.error ? <div className="pr-verdict pr-verdict-bad"><XCircle size={15} /> This browser could not compute the hashes.</div> : (
-          <div className={`pr-verdict ${ok ? 'pr-verdict-ok' : 'pr-verdict-bad'}`}>
+          <div className={`pr-verdict ${ok ? 'pr-verdict-info' : 'pr-verdict-bad'}`}>
             {ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
             <div>
               <strong>{ok ? 'Your bid is inside the anchored commitment.' : 'The receipt does not check out.'}</strong>
@@ -169,6 +175,9 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
   const anchors = blockchain.anchors || []
   const anchorsById = Object.fromEntries(anchors.map((a) => [a.id, a]))
   const counts = blockchain.counts || {}
+  // A v1/v2 file a revision may have replaced, and a record with no payload to compare,
+  // are shown apart: neither is evidence that anything was altered.
+  const tampered = Math.max((counts.altered || 0) - (counts.document_differs || 0) - (counts.payload_missing || 0), 0)
   const canCheck = viewer === 'admin' || viewer === 'head'
 
   // The stepper reads the project's anchors and the award documents' issue
@@ -196,12 +205,12 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
 
   return (
     <div className="pr">
-      {counts.altered > 0 && (
+      {tampered > 0 && (
         <div className="pr-alert" role="alert">
           <ShieldX size={18} />
           <div>
-            <strong>{counts.altered} step{counts.altered === 1 ? ' no longer matches' : 's no longer match'} the fingerprint recorded on-chain.</strong>
-            <p>The data now stored for the marked step{counts.altered === 1 ? '' : 's'} was changed after it was recorded. The blockchain entry cannot change, so the change happened afterwards.</p>
+            <strong>{tampered} step{tampered === 1 ? ' no longer matches' : 's no longer match'} the fingerprint recorded on-chain.</strong>
+            <p>The data now stored for the marked step{tampered === 1 ? '' : 's'} was changed after it was recorded. The blockchain entry cannot change, so the change happened afterwards.</p>
           </div>
         </div>
       )}
@@ -244,14 +253,15 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
       </section>
 
       <KpiRow cols={4}>
-        <KpiCard label="Verified on-chain" icon={ShieldCheck} tone={counts.verified ? 'success' : 'neutral'}
+        <KpiCard label="Confirmed on-chain" icon={ShieldCheck} tone={counts.verified ? 'info' : 'neutral'}
           value={`${counts.verified || 0}/${counts.total || 0}`} context="Server read the transaction and found this fingerprint" />
         <KpiCard label="Transaction reported" icon={Link2} tone="info" value={counts.reported || 0}
           context="Submitted, not yet checked against Sepolia" />
         <KpiCard label="Awaiting signature" icon={Clock} tone={counts.pending ? 'warning' : 'neutral'} value={counts.pending || 0}
           context="Fingerprint recorded here, not yet on-chain" />
-        <KpiCard label="Altered" icon={ShieldX} tone={counts.altered ? 'danger' : 'success'} value={counts.altered || 0}
-          context={counts.superseded ? `${counts.superseded} superseded (re-issued) — not tampering` : 'Records still match their fingerprints'} />
+        <KpiCard label="Altered" icon={ShieldX} tone={tampered ? 'danger' : 'neutral'} value={tampered}
+          context={counts.document_differs ? `${counts.document_differs} current file${counts.document_differs === 1 ? '' : 's'} differ — see each step`
+            : counts.superseded ? `${counts.superseded} superseded (re-issued) — not tampering` : 'Records still match their fingerprints'} />
       </KpiRow>
 
       <div className="pr-grid">

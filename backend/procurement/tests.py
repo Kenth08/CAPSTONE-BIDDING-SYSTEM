@@ -3781,13 +3781,12 @@ class PayloadV3GateTests(ProjectDocumentCase):
         self.assertEqual(anchor.payload["v"], 3)
         self.assertEqual(anchor.tx_hash, "")
 
-    def test_until_its_verification_ships_a_v3_anchor_is_unavailable_never_altered(self):
+    def test_a_v3_anchor_verifies_now_that_its_reader_has_shipped(self):
+        # Until Phase 4 this read "unavailable". The other guards above are unchanged.
         with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
             project = self.file_project()
         anchor = BlockchainAnchor.objects.get(entity_ref=project.code, stage="SUBMITTED")
-        result = verify_anchor(anchor, deep=True)
-        self.assertEqual(result["status"], "unavailable")
-        self.assertIn("payload version 3", result["detail"])
+        self.assertEqual(verify_anchor(anchor, deep=True)["status"], "match")
 
 
 # ── Stage 5 Phase 3: commitments and encrypted openings ──────────────────────
@@ -4642,3 +4641,727 @@ class CommitmentDocumentationTests(APITestCase):
         for requirement in ("Persist before signing", "Failure indicator", "Recovery", "Duplicate prevention"):
             self.assertIn(requirement, security)
         self.assertNotIn("(knowledge.md)", security)
+
+
+# ── Stage 5 Phase 4: the v3 reader, outcomes and historical documents ────────
+# Every v3 anchor here is synthetic: the writer is switched on in-process only, or
+# the row is built by hand. Nothing is signed or sent.
+
+CONFIRMED_TX = "0x" + "ab" * 32
+
+
+class V3ReaderCase(ProjectDocumentCase):
+    def v3_project(self, purchase_request=b"pr one"):
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            return self.file_project(purchase_request)
+
+    def anchor_of(self, project, stage="SUBMITTED"):
+        return BlockchainAnchor.objects.get(entity_ref=project.code, stage=stage)
+
+    def rewrite(self, anchor, change):
+        """The same anchor with its payload changed AND its hash recomputed, as if
+        the row and the chain both held it: the schema is then the only defence."""
+        payload = json.loads(json.dumps(anchor.payload))
+        change(payload)
+        anchor.payload = payload
+        anchor.data_hash = hash_payload(payload)
+        return anchor
+
+    def confirmed(self, anchor):
+        anchor.tx_hash = CONFIRMED_TX
+        anchor.chain_status = BlockchainAnchor.ChainStatus.CONFIRMED
+        return anchor
+
+    @staticmethod
+    def overwrite(row, body):
+        with open(row.file.path, "wb") as handle:
+            handle.write(body)
+
+
+class V3ProjectStageReaderTests(V3ReaderCase):
+    def test_a_genuine_project_stage_matches_with_its_flag_off(self):
+        anchor = self.anchor_of(self.v3_project())
+        self.assertIs(blockchain.PAYLOAD_V3_ENABLED, False)
+        result = verify_anchor(anchor, deep=True)
+        self.assertEqual((result["status"], result["record"], result["document"]), ("match", "match", "match"))
+        self.assertEqual(result["completeness"]["status"], "complete")
+        self.assertEqual(result["document_evidence"]["state"], "match")
+        self.assertEqual(len(result["document_evidence"]["entries"]), 5)
+
+    def test_an_edited_stored_payload_is_a_mismatch(self):
+        anchor = self.anchor_of(self.v3_project())
+        anchor.payload["budget"] = "1.00"
+        self.assertEqual(verify_anchor(anchor)["status"], "mismatch")
+
+    def test_a_v2_anchor_relabelled_as_v3_is_a_mismatch(self):
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        anchor = blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+        anchor.payload["v"] = 3
+        self.assertEqual(verify_anchor(anchor)["status"], "mismatch")
+
+    def test_an_edited_live_record_is_a_mismatch(self):
+        project = self.v3_project()
+        anchor = self.anchor_of(project)
+        Project.objects.filter(pk=project.pk).update(budget=1)
+        result = verify_anchor(anchor)
+        self.assertEqual((result["status"], result["record"]), ("mismatch", "mismatch"))
+
+    def test_a_live_record_outside_the_schema_is_a_mismatch_not_a_crash(self):
+        project = self.v3_project()
+        anchor = self.anchor_of(project)
+        Project.objects.filter(pk=project.pk).update(budget=-1)
+        self.assertEqual(verify_anchor(anchor)["status"], "mismatch")
+
+    def test_a_payload_filed_under_another_stage_is_a_mismatch(self):
+        anchor = self.anchor_of(self.v3_project())
+        anchor.stage = "BIDDING_OPEN"
+        self.assertEqual(verify_anchor(anchor)["status"], "mismatch")
+
+    def test_a_payload_outside_the_schema_is_unavailable_never_altered(self):
+        changes = {
+            "an extra key": lambda p: p.update(extra="x"),
+            "a missing key": lambda p: p.pop("category"),
+            "a null": lambda p: p.update(category=None),
+            "a boolean": lambda p: p.update(bidding_period_days=True),
+            "a float": lambda p: p.update(bidding_period_days=1.5),
+            "uppercase in a hash": lambda p: p["documents"]["purchase_request"].update(sha256="0x" + "AB" * 32),
+            "a sixth document": lambda p: p["documents"].update(sixth={"state": "absent", "sha256": "", "version": 0}),
+            "a missing document": lambda p: p["documents"].pop("terms_of_reference"),
+            "an unknown state": lambda p: p["documents"]["purchase_request"].update(state="lost"),
+            "a hash on an absent file": lambda p: p["documents"]["terms_of_reference"].update(
+                state="absent", version=0),
+            "the wrong evidence key": lambda p: p.update(document_key="terms_of_reference"),
+            "a time zone other than UTC": lambda p: p.update(created_at="2026-11-04T08:00:00+08:00"),
+        }
+        for name, change in changes.items():
+            with self.subTest(name):
+                anchor = self.rewrite(self.anchor_of(self.project_once()), change)
+                result = verify_anchor(anchor, deep=True)
+                self.assertEqual((result["status"], result.get("reason")), ("unavailable", "schema_invalid"))
+                self.assertEqual(result["completeness"]["status"], "unknown")
+
+    def project_once(self):
+        if not hasattr(self, "_project"):
+            self._project = self.v3_project()
+        return self._project
+
+    def test_kinds_this_server_cannot_read_are_unavailable_never_altered(self):
+        for kind in ("award-document/3", "bid-leaf/3", "award-private/3", "project-stage/4", "", None):
+            with self.subTest(kind):
+                anchor = self.rewrite(self.anchor_of(self.project_once()), lambda p, k=kind: p.update(kind=k))
+                result = verify_anchor(anchor)
+                self.assertEqual((result["status"], result.get("reason")), ("unavailable", "unsupported_kind"))
+
+    def test_a_future_version_is_still_unsupported(self):
+        anchor = self.rewrite(self.anchor_of(self.project_once()), lambda p: p.update(v=4))
+        result = verify_anchor(anchor)
+        self.assertEqual((result["status"], result.get("reason")), ("unavailable", "unsupported_version"))
+
+
+class V3CompletenessTests(V3ReaderCase):
+    def manifest_anchor(self, **files):
+        project = self.legacy_project(**files)
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            return project, blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+
+    ALL = {"purchase_request": b"a", "technical_specifications": b"b", "approved_budget_document": b"c",
+           "bid_evaluation_criteria": b"d"}
+
+    def test_one_absent_document_reads_four_of_five_and_names_it(self):
+        _, anchor = self.manifest_anchor(**self.ALL)
+        result = verify_anchor(anchor)
+        self.assertEqual(result["status"], "match")
+        self.assertEqual(result["completeness"]["label"], "INCOMPLETE: 4 of 5 present")
+        self.assertEqual(result["completeness"]["absent"], ["terms_of_reference"])
+
+    def test_unreadable_takes_precedence_over_absent(self):
+        project = self.legacy_project(purchase_request=b"a")
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True), \
+                patch("django.db.models.fields.files.FieldFile.open", side_effect=OSError("storage down")):
+            anchor = blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+        result = verify_anchor(anchor)
+        self.assertEqual(result["completeness"]["status"], "unreadable_when_recorded")
+        self.assertEqual(result["completeness"]["label"], "INCOMPLETE: UNREADABLE WHEN RECORDED")
+        self.assertEqual(result["completeness"]["unreadable"], ["purchase_request"])
+
+    def test_a_file_gone_from_storage_today_never_changes_recorded_completeness(self):
+        project = self.v3_project()
+        anchor = self.anchor_of(project)
+        default_storage.delete(self.versions(project, "terms_of_reference")[0].file.name)
+        result = verify_anchor(anchor, deep=True)
+        self.assertEqual(result["completeness"]["status"], "complete")
+        by_key = {e["key"]: e["state"] for e in result["document_evidence"]["entries"]}
+        self.assertEqual(by_key["terms_of_reference"], "file_missing")
+        self.assertEqual(result["document"], "unavailable")
+
+    def test_v1_and_v2_are_not_recorded_and_evaluation_is_not_applicable(self):
+        from .payload_v3_reader import completeness
+        self.assertEqual(completeness({"v": 2, "stage": "SUBMITTED"})["status"], "not_recorded")
+        self.assertEqual(completeness({"stage": "SUBMITTED"})["status"], "not_recorded")
+        self.assertEqual(completeness({"v": 3, "kind": "evaluation/3"})["status"], "not_applicable")
+        self.assertEqual(completeness({})["status"], "unknown")
+        self.assertEqual(completeness(["not", "an", "object"])["status"], "unknown")
+        self.assertEqual(completeness({"v": True})["status"], "unknown")
+
+    def test_the_admin_dashboard_counts_incomplete_records_separately(self):
+        self.manifest_anchor(**self.ALL)
+        self.v3_project()
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get("/api/dashboard/admin-summary/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["chain"]["incomplete"], 1)
+
+
+class V3EvaluationReaderTests(CommitmentOpeningCase):
+    def _result(self, anchor, **kwargs):
+        return verify_anchor(anchor, **kwargs)
+
+    def test_a_genuine_evaluation_matches_and_its_openings_check_out(self):
+        anchor, _, _ = self.evaluation()
+        result = self._result(anchor)
+        self.assertEqual((result["status"], result["openings"]), ("match", "match"))
+        self.assertEqual(result["completeness"]["status"], "not_applicable")
+
+    def test_a_re_priced_bid_is_a_mismatch(self):
+        anchor, _, _ = self.evaluation()
+        Bid.objects.filter(pk=self.bid.pk).update(amount=1)
+        self.assertEqual(self._result(anchor)["status"], "mismatch")
+
+    def test_a_re_graded_bid_is_a_mismatch(self):
+        anchor, _, _ = self.evaluation()
+        Bid.objects.filter(pk=self.bid.pk).update(status=Bid.Status.WINNER)
+        self.assertEqual(self._result(anchor)["status"], "mismatch")
+
+    def test_an_added_bid_is_a_mismatch_even_with_no_key(self):
+        anchor, _, _ = self.evaluation()
+        Bid.objects.create(project=self.project, supplier=make_supplier(), amount=1)
+        self.assertEqual(self._result(anchor)["status"], "mismatch")
+        with override_settings(COMMITMENT_KEY=throwaway_key()):
+            self.assertEqual(self._result(anchor)["status"], "mismatch")
+
+    def test_a_lost_key_is_opening_unavailable_and_public_integrity_stands(self):
+        anchor, _, _ = self.evaluation()
+        with override_settings(COMMITMENT_KEY=throwaway_key()):
+            result = self._result(anchor)
+        self.assertEqual((result["status"], result["openings"]), ("match", "unavailable"))
+
+    def test_a_ciphertext_swapped_between_leaves_is_an_opening_mismatch(self):
+        anchor, rows, _ = self.evaluation()
+        CommitmentOpening.rewrap(rows[0].pk, rows[0].ciphertext, rows[1].ciphertext, rows[0].key_fingerprint)
+        self.assertEqual(self._result(anchor)["openings"], "mismatch")
+
+    def test_a_leaf_with_no_stored_opening_is_incomplete(self):
+        first, second = self.leaf(self.bid), self.leaf(self.other_bid)
+        anchor = self.anchor_for(payload_v3.evaluation_payload(
+            self.project, [hash_payload(first), hash_payload(second)]))
+        openings.store_opening(anchor, self.bid.id, first, self.supplier)
+        self.assertEqual(self._result(anchor)["openings"], "incomplete")
+
+    def test_an_evaluation_outside_the_schema_is_unavailable(self):
+        anchor, _, _ = self.evaluation()
+        for name, change in {
+            "wrong count": lambda p: p.update(bid_count=9),
+            "unsorted": lambda p: p["leaves"].reverse(),
+            "duplicate": lambda p: p["leaves"].__setitem__(1, p["leaves"][0]),
+            "bad leaf": lambda p: p["leaves"].__setitem__(0, "not a hash"),
+            "extra key": lambda p: p.update(extra=1),
+            "other stage": lambda p: p.update(stage="AWARDED"),
+        }.items():
+            with self.subTest(name):
+                payload = json.loads(json.dumps(anchor.payload))
+                change(payload)
+                forged = BlockchainAnchor(entity_type=anchor.entity_type, entity_ref=anchor.entity_ref,
+                                          entity_id=anchor.entity_id, stage=anchor.stage,
+                                          data_hash=hash_payload(payload), payload=payload)
+                result = self._result(forged)
+                self.assertEqual((result["status"], result.get("reason")), ("unavailable", "schema_invalid"))
+
+    def test_the_result_never_holds_a_private_value_or_the_bid_count(self):
+        anchor, _, (first, second) = self.evaluation()
+        body = json.dumps(self._result(anchor, deep=True), default=str)
+        for secret in (first["salt"], second["salt"], "900.00", "950.00", "bid_count", "supplier_id"):
+            self.assertNotIn(secret, body)
+        self.assertNotIn("leaves", body)
+
+    def test_a_deep_check_reports_one_entry_however_many_bids_there_are(self):
+        doc = document_pdf(b"quote")
+        self.bid.quotation_document = doc
+        self.bid.save()
+        anchor_hash = hash_file(self.bid.quotation_document)
+        first = payload_v3.bid_leaf_opening(self.bid, anchor_hash, openings.new_salt())
+        second = self.leaf(self.other_bid)
+        anchor = self.anchor_for(payload_v3.evaluation_payload(
+            self.project, [hash_payload(first), hash_payload(second)]))
+        openings.store_opening(anchor, self.bid.id, first, self.supplier)
+        openings.store_opening(anchor, self.other_bid.id, second, self.other)
+        evidence = self._result(anchor, deep=True)["document_evidence"]
+        self.assertEqual((evidence["state"], len(evidence["entries"])), ("match", 1))
+        self.assertEqual(evidence["entries"][0]["key"], "bid_quotations")
+
+
+class HistoricalDocumentEvidenceTests(V3ReaderCase):
+    def _evidence(self, anchor, key="purchase_request"):
+        result = verify_anchor(anchor, deep=True)
+        entry = next(e for e in result["document_evidence"]["entries"] if e["key"] == key)
+        return result, entry
+
+    def test_each_stage_checks_the_version_it_recorded_not_the_latest(self):
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            project = self.file_project(b"first")
+            self.revise(project, b"second")
+        submitted = self.anchor_of(project)
+        revision = self.anchor_of(project, "REVISION_REQUESTED")
+        result, entry = self._evidence(submitted)
+        self.assertEqual(result["status"], "match")
+        self.assertEqual((entry["version"], entry["state"]), (1, "match"))
+        self.assertEqual(self._evidence(revision)[1]["version"], 1)
+        self.assertEqual(project.purchase_request.name, self.versions(project)[1].file.name)
+
+    def test_altered_kept_bytes_are_a_document_mismatch_naming_the_key_and_version(self):
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            project = self.file_project(b"first")
+            self.revise(project, b"second")
+        self.overwrite(self.versions(project)[0], b"forged")
+        result, entry = self._evidence(self.anchor_of(project))
+        self.assertEqual((result["status"], result["document"]), ("mismatch", "mismatch"))
+        self.assertEqual((entry["key"], entry["version"], entry["state"]), ("purchase_request", 1, "mismatch"))
+
+    def test_a_version_never_kept_is_absent_not_a_mismatch(self):
+        anchor = self.rewrite(self.anchor_of(self.v3_project()),
+                              lambda p: p["documents"]["terms_of_reference"].update(version=9))
+        result, entry = self._evidence(anchor, "terms_of_reference")
+        self.assertEqual(entry["state"], "version_absent")
+        self.assertEqual((result["status"], result["document"]), ("unavailable", "unavailable"))
+
+    def test_a_file_gone_from_storage_is_missing_not_a_mismatch(self):
+        project = self.v3_project()
+        default_storage.delete(self.versions(project)[0].file.name)
+        result, entry = self._evidence(self.anchor_of(project))
+        self.assertEqual(entry["state"], "file_missing")
+        self.assertEqual(result["status"], "unavailable")
+
+    def test_an_unreadable_file_is_unreadable_not_a_mismatch(self):
+        anchor = self.anchor_of(self.v3_project())
+        with patch("django.db.models.fields.files.FieldFile.chunks", side_effect=ValueError("corrupt")):
+            result, entry = self._evidence(anchor)
+        self.assertEqual(entry["state"], "file_unreadable")
+        self.assertEqual(result["status"], "unavailable")
+
+    def test_inaccessible_storage_is_its_own_state_when_opening_or_reading(self):
+        anchor = self.anchor_of(self.v3_project())
+        with patch("django.db.models.fields.files.FieldFile.open", side_effect=OSError("storage down")):
+            self.assertEqual(self._evidence(anchor)[1]["state"], "storage_inaccessible")
+        with patch("django.db.models.fields.files.FieldFile.chunks", side_effect=PermissionError("403")):
+            self.assertEqual(self._evidence(anchor)[1]["state"], "storage_inaccessible")
+
+    def test_a_current_file_in_no_recorded_version_is_called_out(self):
+        project = self.v3_project()
+        anchor = self.anchor_of(project)
+        project.purchase_request = document_pdf(b"swapped in")
+        project.save()
+        result, entry = self._evidence(anchor)
+        self.assertEqual((entry["state"], entry["current_file"]), ("match", "current_file_untracked"))
+        self.assertEqual(result["document_evidence"]["state"], "current_file_untracked")
+        self.assertEqual(result["document"], "unavailable")
+
+    def test_documents_absent_when_recorded_are_facts_not_failures(self):
+        project = self.legacy_project(purchase_request=b"a")
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            anchor = blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+        result, entry = self._evidence(anchor, "terms_of_reference")
+        self.assertEqual(entry["state"], "absent_when_recorded")
+        self.assertEqual((result["status"], result["document_evidence"]["state"]), ("match", "match"))
+
+    def test_without_deep_nothing_is_read_from_storage(self):
+        anchor = self.anchor_of(self.v3_project())
+        with patch("django.db.models.fields.files.FieldFile.open", side_effect=AssertionError("read")):
+            result = verify_anchor(anchor)
+        self.assertEqual(result["document_evidence"], {"checked": False, "state": "not_checked", "entries": []})
+
+    def test_results_hold_no_stored_file_name(self):
+        project = self.v3_project()
+        result = verify_anchor(self.anchor_of(project), deep=True)
+        self.assertNotIn(self.versions(project)[0].file.name, json.dumps(result, default=str))
+
+    # v1 and v2: `document` keeps its meaning, evidence adds the version
+
+    def test_a_v2_anchor_keeps_its_mismatch_and_evidence_finds_the_kept_version(self):
+        project = self.file_project(b"first")
+        self.revise(project, b"second")
+        result, entry = self._evidence(self.anchor_of(project))
+        self.assertEqual((result["status"], result["document"]), ("mismatch", "mismatch"))
+        self.assertEqual((entry["version"], entry["state"]), (1, "match"))
+
+    def test_a_v2_file_replaced_with_no_history_is_an_absent_version(self):
+        project = self.legacy_project(purchase_request=b"first")
+        anchor = blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+        project.purchase_request = document_pdf(b"second")
+        project.save()
+        result, entry = self._evidence(anchor)
+        self.assertEqual(result["document"], "mismatch")
+        self.assertEqual(entry["state"], "version_absent")
+
+
+class AwardDocumentEvidenceTests(ProjectDocumentCase):
+    """Award documents already keep versions: a superseded issue is read by ITS row."""
+
+    def setUp(self):
+        super().setUp()
+        project = make_project(status=Project.Status.PUBLISHED)
+        win = Bid.objects.create(project=project, supplier=make_supplier(), amount=900, status=Bid.Status.QUALIFIED)
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/bids/{win.pk}/select-winner/").status_code, 200)
+        self.award = Award.objects.get()
+        for body in (b"%PDF-1.4 first", b"%PDF-1.4 second"):
+            res = self.client.post(f"/api/awards/{self.award.pk}/documents/", {
+                "key": "notice_of_award",
+                "file": SimpleUploadedFile("noa.pdf", body, content_type="application/pdf"),
+            }, format="multipart")
+            self.assertEqual(res.status_code, 200, res.data)
+        self.first, self.second = BlockchainAnchor.objects.filter(stage="NOA_ISSUED").order_by("id")
+
+    def _version(self, anchor):
+        return AwardDocumentVersion.objects.get(anchor=anchor)
+
+    def test_a_superseded_issue_stays_superseded_and_is_checked_against_its_own_file(self):
+        result = verify_anchor(self.first, deep=True)
+        self.assertEqual((result["status"], result["document"]), ("superseded", "skipped"))
+        self.assertEqual(result["document_evidence"]["state"], "match")
+        self.assertEqual(result["document_evidence"]["entries"][0]["version"], 1)
+
+    def test_altered_bytes_of_a_superseded_issue_are_found(self):
+        version = self._version(self.first)
+        with open(version.file.path, "wb") as handle:
+            handle.write(b"forged")
+        self.assertEqual(verify_anchor(self.first, deep=True)["document_evidence"]["state"], "mismatch")
+
+    def test_a_superseded_issue_from_before_history_is_an_absent_version(self):
+        AwardDocumentVersion.objects.filter(anchor=self.first).delete()
+        self.assertEqual(verify_anchor(self.first, deep=True)["document_evidence"]["state"], "version_absent")
+
+
+class VerificationOutcomeTests(V3ReaderCase):
+    """Five outcomes, kept apart, in both the result and the API."""
+
+    def _v2(self):
+        project = self.file_project()
+        return project, self.anchor_of(project)
+
+    def _summary(self, anchor, *, deep=False):
+        from .verification import summarize
+        return summarize(anchor, verify_anchor(anchor, deep=deep))
+
+    def _check(self, summary, key):
+        return next(c for c in summary["checked"] if c["key"] == key)
+
+    def test_verified_needs_every_check_and_a_confirmed_transaction(self):
+        _, anchor = self._v2()
+        summary = self._summary(self.confirmed(anchor), deep=True)
+        self.assertEqual((summary["outcome"], summary["label"]), ("verified", "Verified"))
+        self.assertEqual(self._check(summary, "transaction")["status"], "pass")
+        self.assertEqual(self._check(summary, "document")["status"], "pass")
+
+    def test_a_transaction_hash_alone_is_never_verified(self):
+        _, anchor = self._v2()
+        anchor.tx_hash = CONFIRMED_TX
+        summary = self._summary(anchor)
+        self.assertEqual((summary["outcome"], summary["label"]),
+                         ("unconfirmed", "Unavailable or incomplete evidence"))
+        self.assertIn("A hash alone proves nothing", self._check(summary, "transaction")["detail"])
+
+    def test_mismatch(self):
+        project, anchor = self._v2()
+        Project.objects.filter(pk=project.pk).update(budget=1)
+        self.assertEqual(self._summary(self.confirmed(anchor))["outcome"], "hash_mismatch")
+
+    def test_missing_evidence(self):
+        project, anchor = self._v2()
+        cases = {
+            "no transaction": anchor,
+            "no payload": BlockchainAnchor(entity_type=anchor.entity_type, entity_ref=anchor.entity_ref,
+                                           entity_id=anchor.entity_id, stage=anchor.stage,
+                                           data_hash=anchor.data_hash, payload={},
+                                           tx_hash=CONFIRMED_TX, chain_status="confirmed"),
+            "record gone": BlockchainAnchor(entity_type=anchor.entity_type, entity_ref=anchor.entity_ref,
+                                            entity_id="999999", stage=anchor.stage, data_hash=anchor.data_hash,
+                                            payload=anchor.payload, tx_hash=CONFIRMED_TX, chain_status="confirmed"),
+        }
+        for name, case in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self._summary(case)["label"], "Missing evidence")
+
+    def test_a_version_or_file_gone_is_missing_and_unreadable_storage_is_unavailable(self):
+        project = self.v3_project()
+        anchor = self.confirmed(self.anchor_of(project))
+        with patch("django.db.models.fields.files.FieldFile.open", side_effect=OSError("down")):
+            self.assertEqual(self._summary(anchor, deep=True)["outcome"], "unconfirmed")
+        default_storage.delete(self.versions(project)[0].file.name)
+        self.assertEqual(self._summary(anchor, deep=True)["outcome"], "not_found")
+
+    def test_unavailable_for_an_unsupported_version(self):
+        _, anchor = self._v2()
+        anchor = self.confirmed(self.rewrite(anchor, lambda p: p.update(v=4)))
+        self.assertEqual(self._summary(anchor)["outcome"], "unconfirmed")
+
+    def test_invalid_transaction_is_never_collapsed_into_a_mismatch(self):
+        for chain_status in ("mismatch", "reverted", "dropped"):
+            with self.subTest(chain_status):
+                _, anchor = self._v2()
+                anchor.tx_hash, anchor.chain_status = CONFIRMED_TX, chain_status
+                summary = self._summary(anchor)
+                self.assertEqual((summary["outcome"], summary["label"]), ("invalid_tx", "Invalid transaction"))
+                self.assertEqual(self._check(summary, "fingerprint")["status"], "pass")
+        _, anchor = self._v2()
+        anchor.tx_hash = "0xnot-a-hash"
+        self.assertEqual(self._summary(anchor)["outcome"], "invalid_tx")
+
+    def test_both_failures_are_shown_when_a_record_is_altered_and_its_transaction_invalid(self):
+        project, anchor = self._v2()
+        anchor.tx_hash, anchor.chain_status = CONFIRMED_TX, "mismatch"
+        Project.objects.filter(pk=project.pk).update(budget=1)
+        summary = self._summary(anchor)
+        self.assertEqual(summary["outcome"], "hash_mismatch")
+        self.assertEqual(self._check(summary, "transaction")["status"], "fail")
+
+    def test_a_legacy_record_says_what_was_not_checked(self):
+        _, anchor = self._v2()
+        summary = self._summary(self.confirmed(anchor))
+        self.assertEqual(summary["headline"], "VERIFIED — LEGACY RECORD (v1 or v2)")
+        self.assertTrue(any("five-document completeness was not checked" in u for u in summary["unverified"]))
+
+    def test_a_complete_v3_record_has_no_legacy_note_and_says_files_were_not_read(self):
+        summary = self._summary(self.confirmed(self.anchor_of(self.v3_project())))
+        self.assertEqual((summary["outcome"], summary["headline"]),
+                         ("verified", "RECORD MATCH — DOCUMENT NOT CHECKED BY THE SERVER"))
+        self.assertIs(summary["green"], False)
+        self.assertTrue(any("not re-read" in u for u in summary["unverified"]))
+
+    def test_the_server_re_reading_its_own_copies_is_still_not_a_selected_document(self):
+        summary = self._summary(self.confirmed(self.anchor_of(self.v3_project())), deep=True)
+        self.assertEqual((summary["outcome"], summary["headline"]),
+                         ("verified", "RECORD MATCH — KEPT DOCUMENTS RE-READ BY THE SERVER"))
+        self.assertIs(summary["green"], False)
+        self.assertEqual(summary["tone"], "info")
+
+    def test_no_server_outcome_is_ever_green(self):
+        project, anchor = self._v2()
+        self.assertIs(self._summary(self.confirmed(anchor), deep=True)["green"], False)
+        Project.objects.filter(pk=project.pk).update(budget=1)
+        self.assertIs(self._summary(anchor)["green"], False)
+
+    def test_an_incomplete_manifest_keeps_its_genuine_fingerprint_under_the_amber_outcome(self):
+        project = self.legacy_project(
+            purchase_request=b"a", technical_specifications=b"b", approved_budget_document=b"c",
+            bid_evaluation_criteria=b"d")
+        with patch.object(blockchain, "PAYLOAD_V3_ENABLED", True):
+            anchor = blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+        summary = self._summary(self.confirmed(anchor))
+        self.assertEqual(summary["outcome"], "unconfirmed")
+        self.assertEqual(summary["headline"],
+                         "MATCH — INCOMPLETE EVIDENCE (4 of 5 present; missing: Terms of Reference (TOR))")
+        self.assertNotIn("VERIFIED", summary["headline"].upper())
+        self.assertEqual(summary["tone"], "warn")
+        self.assertTrue(any("Terms of Reference" in u and "fingerprint is genuine" in u for u in summary["unverified"]))
+
+    def test_an_unreadable_document_is_counted_and_named_without_the_word_verified(self):
+        from .verification import incomplete_headline
+        self.assertEqual(
+            incomplete_headline({"present": 3, "total": 5, "absent": ["terms_of_reference"],
+                                 "unreadable": ["purchase_request"]}),
+            "MATCH — INCOMPLETE EVIDENCE (3 of 5 present; unreadable when recorded: Purchase Request (PR); "
+            "missing: Terms of Reference (TOR))")
+
+    def test_the_server_never_claims_the_browser_s_green(self):
+        _, anchor = self._v2()
+        summary = self._summary(self.confirmed(anchor))
+        self.assertEqual((summary["tone"], summary["source"]), ("info", "server"))
+        self.assertIn("independent check", summary["unverified"][0])
+
+
+class LegacyRevisionHistoryTests(V3ReaderCase):
+    """verify_anchor stays frozen for v1/v2. The version evidence stands beside it, and
+    only supports a claim of tampering when the kept bytes themselves changed."""
+
+    def _summary(self, anchor):
+        from .verification import summarize
+        return verify_anchor(anchor, deep=True), summarize(anchor, verify_anchor(anchor, deep=True))
+
+    def test_a_normal_revision_keeps_its_mismatch_and_is_not_called_tampering(self):
+        project = self.file_project(b"first")
+        self.revise(project, b"second")
+        integrity, summary = self._summary(self.confirmed(self.anchor_of(project)))
+        self.assertEqual((integrity["status"], integrity["document"]), ("mismatch", "mismatch"))
+        self.assertEqual(integrity["detail"], "The attached document has been replaced since it was recorded.")
+        self.assertEqual(summary["outcome"], "hash_mismatch")
+        history = summary["historical"]
+        self.assertEqual((history["kind"], history["version"], history["tamper_indicated"]),
+                         ("later_revision", 1, False))
+        self.assertEqual(history["original_result"], "mismatch")
+        self.assertEqual(history["original_detail"], integrity["detail"])
+        self.assertIn("not evidence of tampering", history["explanation"])
+        self.assertEqual(summary["tone"], "warn")
+        self.assertIn("later revision", summary["headline"])
+
+    def test_kept_bytes_that_changed_do_indicate_tampering(self):
+        project = self.file_project(b"first")
+        self.revise(project, b"second")
+        self.overwrite(self.versions(project)[0], b"forged")
+        _, summary = self._summary(self.confirmed(self.anchor_of(project)))
+        self.assertEqual(summary["historical"]["kind"], "kept_version_differs")
+        self.assertIs(summary["historical"]["tamper_indicated"], True)
+        self.assertEqual(summary["tone"], "bad")
+
+    def test_a_version_never_kept_accuses_nobody(self):
+        project = self.legacy_project(purchase_request=b"first")
+        anchor = blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+        project.purchase_request = document_pdf(b"second")
+        project.save()
+        _, summary = self._summary(self.confirmed(anchor))
+        self.assertEqual(summary["outcome"], "hash_mismatch")
+        self.assertEqual(summary["historical"]["kind"], "version_not_kept")
+        self.assertIs(summary["historical"]["tamper_indicated"], False)
+        self.assertIn("can't show", summary["historical"]["explanation"])
+
+    def test_an_edited_record_gets_no_softer_explanation(self):
+        project = self.file_project(b"first")
+        self.revise(project, b"second")
+        Project.objects.filter(pk=project.pk).update(budget=1)
+        _, summary = self._summary(self.confirmed(self.anchor_of(project)))
+        self.assertIsNone(summary["historical"])
+        self.assertEqual(summary["tone"], "bad")
+
+    def test_without_the_deep_check_there_is_nothing_to_explain(self):
+        from .verification import summarize
+        project = self.file_project(b"first")
+        self.revise(project, b"second")
+        anchor = self.confirmed(self.anchor_of(project))
+        self.assertIsNone(summarize(anchor, verify_anchor(anchor))["historical"])
+
+    def test_a_v3_current_file_outside_history_stays_unconfirmed(self):
+        from .verification import summarize
+        project = self.v3_project()
+        anchor = self.confirmed(self.anchor_of(project))
+        project.purchase_request = document_pdf(b"swapped in")
+        project.save()
+        summary = summarize(anchor, verify_anchor(anchor, deep=True))
+        self.assertEqual(summary["outcome"], "unconfirmed")
+        self.assertIsNone(summary["historical"])
+
+    def test_no_stored_payload_stays_a_frozen_mismatch_and_is_missing_evidence(self):
+        from .record import _counts
+        from .verification import summarize
+        project = self.file_project(b"first")
+        anchor = self.confirmed(self.anchor_of(project))
+        anchor.payload = {}
+        integrity = verify_anchor(anchor)
+        self.assertEqual(integrity["status"], "mismatch")     # as at the baseline
+        summary = summarize(anchor, integrity)
+        self.assertEqual((summary["outcome"], summary["label"]), ("not_found", "Missing evidence"))
+        row = {"integrity": integrity, "verification": summary, "verified_on_chain": True, "tx_hash": "x",
+               "chain_status": "confirmed"}
+        counts = _counts([row])
+        self.assertEqual((counts["altered"], counts["payload_missing"], counts["document_differs"]), (1, 1, 0))
+
+    def test_the_api_altered_count_is_unchanged_and_the_revision_is_counted_apart(self):
+        project = self.file_project(b"first")
+        self.revise(project, b"second")
+        Project.objects.filter(pk=project.pk).update(status=Project.Status.PUBLISHED)
+        self.client.force_authenticate(user=None)
+        data = self.client.get(f"/api/public/procurement/{project.code}/anchors/", {"deep": 1}).data
+        self.assertGreaterEqual(data["altered_count"], 1)
+        self.client.force_authenticate(user=self.admin)
+        counts = self.client.get(f"/api/projects/{project.pk}/record/", {"deep": 1}).data["blockchain"]["counts"]
+        self.assertEqual(counts["altered"], data["altered_count"])
+        self.assertEqual(counts["document_differs"], counts["altered"])
+
+
+class V3ReaderIsReadOnlyTests(V3ReaderCase):
+    def _snapshot(self):
+        return (list(BlockchainAnchor.objects.order_by("id").values()),
+                list(ProjectDocumentVersion.objects.order_by("id").values()),
+                AuditLog.objects.count())
+
+    def test_verifying_writes_nothing_and_sends_nothing(self):
+        project = self.v3_project()
+        anchor = self.anchor_of(project)
+        before = self._snapshot()
+        with patch.object(blockchain, "submit_anchor_server_side") as submit, \
+                patch.object(blockchain, "record_anchor") as record, \
+                patch.object(blockchain, "attach_transaction") as attach:
+            verify_anchor(anchor, deep=True)
+        for call in (submit, record, attach):
+            call.assert_not_called()
+        self.assertEqual(self._snapshot(), before)
+
+    def test_the_new_modules_have_no_way_to_sign_or_submit(self):
+        from pathlib import Path
+        here = Path(blockchain.__file__).parent
+        for name in ("payload_v3_reader.py", "document_evidence.py", "verification.py"):
+            text = (here / name).read_text(encoding="utf-8")
+            for word in ("web3", "submit_anchor", "sign_transaction", "send_raw", "attach_transaction",
+                         "record_anchor", "store_opening", ".save(", ".create("):
+                self.assertNotIn(word, text, f"{name}: {word}")
+
+    def test_reading_v3_opens_no_path_to_writing_it(self):
+        self.assertIs(blockchain.PAYLOAD_V3_ENABLED, False)
+        self.assertEqual(blockchain.PAYLOAD_VERSION, 2)
+        self.assertNotIn(3, blockchain.PAYLOAD_RULES)
+        self.assertIn(3, blockchain.READ_ONLY_RULES)
+        with self.assertRaisesMessage(ImproperlyConfigured, "no entry in PAYLOAD_RULES"):
+            blockchain.check_writer_version(3, blockchain.PAYLOAD_RULES)
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        anchor = blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+        self.assertEqual(anchor.payload["v"], 2)
+
+    def test_a_v3_evaluation_anchor_gives_no_receipt_until_openings_are_served(self):
+        project = make_project()
+        supplier = make_supplier()
+        bid = Bid.objects.create(project=project, supplier=supplier, amount=900, commitment_salt="ab" * 32)
+        payload = payload_v3.evaluation_payload(project, ["0x" + "11" * 32])
+        BlockchainAnchor.objects.create(
+            entity_type=BlockchainAnchor.EntityType.PROJECT, entity_ref=project.code, entity_id=str(project.id),
+            stage="EVALUATION_COMPLETED", data_hash=hash_payload(payload), payload=payload)
+        self.assertIsNone(inclusion_receipt(bid))
+
+
+class V3PublicPacketTests(V3ReaderCase):
+    def _packet(self, project, anchor):
+        return self.client.get(f"/api/public/procurement/{project.code}/anchors/{anchor.pk}/packet/")
+
+    def _published(self):
+        project = self.v3_project()
+        Project.objects.filter(pk=project.pk).update(status=Project.Status.PUBLISHED)
+        return project, self.anchor_of(project)
+
+    def test_a_valid_project_stage_packet_is_public_with_its_manifest(self):
+        project, anchor = self._published()
+        self.client.force_authenticate(user=None)
+        res = self._packet(project, anchor)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["payload_version"], 3)
+        self.assertEqual(len(res.data["payload"]["documents"]), 5)
+
+    def test_a_v3_payload_outside_the_schema_is_withheld(self):
+        project, anchor = self._published()
+        self.rewrite(anchor, lambda p: p.update(private_note="x"))
+        anchor.save()
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self._packet(project, anchor).status_code, 404)
+
+    def test_a_v2_payload_holding_v3_keys_is_still_withheld(self):
+        project = make_project(status=Project.Status.PUBLISHED)
+        anchor = blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+        self.rewrite(anchor, lambda p: p.update(documents={}))
+        anchor.save()
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self._packet(project, anchor).status_code, 404)
+
+    def test_the_public_trail_shows_a_manifest_only_for_a_public_v3_stage(self):
+        project, _ = self._published()
+        self.client.force_authenticate(user=None)
+        row = self.client.get(f"/api/public/procurement/{project.code}/anchors/").data["anchors"][0]
+        self.assertEqual(set(row["document_manifest"]), set(PROCUREMENT_DOCUMENT_KEYS))
+        v2 = make_project(status=Project.Status.PUBLISHED)
+        blockchain.anchor_project(v2, BlockchainAnchor.Stage.SUBMITTED)
+        row = self.client.get(f"/api/public/procurement/{v2.code}/anchors/").data["anchors"][0]
+        self.assertIsNone(row["document_manifest"])

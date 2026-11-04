@@ -6,12 +6,17 @@ typo can't put a different amount on the notice than the one that was awarded.
 
 CRITICAL RULE: generate ONCE, store the file, and hash the STORED file.
 
-A PDF embeds a creation timestamp, so regenerating the "same" document produces
-different bytes and therefore a different SHA-256 every time. If the system
+A PDF embeds a creation date, so regenerating the "same" document on another day
+produces different bytes and therefore a different SHA-256. If the system
 regenerated on each download, the hash anchored on-chain could never be
 reproduced and verification would be meaningless — worse than not anchoring at
 all, because it would *look* verified. So the generate endpoint writes the file
 to storage once and every later download serves those exact bytes.
+
+That date is today's Manila date with a zero time, not the current time. The
+Notice of Award is a public download, and by default the PDF would state to the
+second when it was generated, which can be moments after the award (SECURITY.md,
+"Award disclosure policy").
 
 Currency is written as "PHP" rather than "₱": the peso sign is absent from the
 PDF standard fonts, and spelling it out is what Philippine government issuances
@@ -73,6 +78,7 @@ class _OfficialDocument(FPDF):
 
     def __init__(self, title):
         super().__init__(format="A4")
+        self.set_creation_date(timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0))
         self.doc_title = title
         self.set_auto_page_break(auto=True, margin=20)
         self.set_margins(20, 18, 20)

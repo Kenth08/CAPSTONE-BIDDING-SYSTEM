@@ -25,7 +25,10 @@ Every timeline event says where its evidence lives: "database" (an
 application record, audit-logged) or "blockchain" (one or more anchors, whose
 own state says whether a transaction is verified, reported or pending).
 """
+from datetime import date, datetime
+
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from .blockchain import (
     ETHERSCAN_TX_URL,
@@ -39,6 +42,7 @@ from .blockchain import (
 )
 from .files import protected_file_url
 from .models import AWARD_DOCUMENT_FIELDS, Award, Bid, BlockchainAnchor, Project, Supplier
+from .verification import summarize
 
 Stage = BlockchainAnchor.Stage
 HEAD_STAGES = {Stage.HEAD_APPROVED, Stage.HEAD_REJECTED, Stage.REVISION_REQUESTED}
@@ -97,6 +101,7 @@ def _visible_anchors(anchors, role, own_bid_ids):
 def _anchor_row(anchor, *, include_payload, deep):
     data = anchor_summary(anchor, include_payload=include_payload)
     data["integrity"] = verify_anchor(anchor, deep=deep)
+    data["verification"] = summarize(anchor, data["integrity"])
     newer = superseding_anchor(anchor)
     data["superseded_by"] = newer.id if newer else None
     return data
@@ -216,7 +221,13 @@ def _counts(anchors):
         "mismatch": n(lambda a: a["chain_status"] == BlockchainAnchor.ChainStatus.MISMATCH),
         "pending": n(lambda a: not a["tx_hash"]),
         "altered": n(lambda a: a["integrity"]["status"] == "mismatch"),
+        # Of those, the v1/v2 documents the version evidence doesn't call tampering.
+        "document_differs": n(lambda a: bool(a["verification"]["historical"])
+                              and not a["verification"]["historical"]["tamper_indicated"]),
         "superseded": n(lambda a: a["integrity"]["status"] == "superseded"),
+        # Also within `altered`, as it always was: no payload, so no hash was compared.
+        "payload_missing": n(lambda a: a["integrity"]["status"] == "mismatch"
+                             and a["verification"]["outcome"] == "not_found"),
     }
 
 
@@ -306,6 +317,21 @@ def build_record(project, role, supplier, request, *, deep=False):
 # ── The public record (no login) ─────────────────────────────────────────────
 
 PUBLIC_STATUSES = (Project.Status.PUBLISHED, Project.Status.CLOSED, Project.Status.AWARDED)
+
+
+def public_date(value):
+    """A moment as the Philippine date alone ("2026-11-04"), or None.
+
+    Every time the public API shows for a record goes through here. They were
+    written at, or moments after, the steps they belong to, so for the award they
+    would publish its exact time to the second (SECURITY.md, "Award disclosure
+    policy"). The exact values stay in the database, and signed-in viewers still get
+    them. Text that isn't a date or a datetime is dropped rather than passed on."""
+    if isinstance(value, str):
+        value = parse_datetime(value)
+    if isinstance(value, datetime):
+        return (timezone.localdate(value) if timezone.is_aware(value) else value.date()).isoformat()
+    return value.isoformat() if isinstance(value, date) else None
 
 
 def public_award_date(project, award):

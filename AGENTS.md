@@ -50,6 +50,9 @@ npm run dev
 - `backend/procurement/canonical.py` — `hash_payload` (never change it) and the strict v3 validator
 - `backend/procurement/payload_v2.py` — frozen v2 builders; never edit
 - `backend/procurement/payload_v3.py` — v3 kinds and schemas. Off behind `PAYLOAD_V3_ENABLED`; `AWARD_PRIVATE_FIELDS` is provisional (Decision A)
+- `backend/procurement/payload_v3_reader.py` — read-only v3 verification and evidence completeness (`blockchain.READ_ONLY_RULES`); can't write
+- `backend/procurement/document_evidence.py` — checks an anchor's document against the exact version it fingerprinted
+- `backend/procurement/verification.py` — the five verification outcomes, with what was and wasn't checked
 - `backend/procurement/project_documents.py` — `ProjectDocumentVersion` history and the five-document manifest
 - `backend/procurement/openings.py` — encrypted `CommitmentOpening` rows, `COMMITMENT_KEY` handling, access and audit. Commands: `rotate_commitment_openings`, `check_commitment_openings`
 - `backend/procurement/permissions.py` — role permissions (admin / head / supplier)

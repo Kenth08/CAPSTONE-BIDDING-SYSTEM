@@ -91,11 +91,11 @@ function ChainHealth({ chain, loading, onAnchored }) {
     setBusy(a.id)
     const ok = await runAnchor(a, { label: `${a.entity_ref} · ${a.stage_label}` })
     setBusy(null)
-    if (ok) { toast.success(`${a.entity_ref} · ${a.stage_label}: transaction submitted. It is verified once the server has checked it.`); onAnchored() }
+    if (ok) { toast.success(`${a.entity_ref} · ${a.stage_label}: transaction submitted. It is confirmed once the server has checked it.`); onAnchored() }
     else toast.error(`${a.entity_ref} · ${a.stage_label} was not anchored. The record is saved — you can retry.`)
   }
   if (loading) return <div className="rf-card-body"><Skeleton width={132} height={132} radius={66} /></div>
-  const { anchored = 0, pending = 0, verified = 0, unchecked = 0, mismatch = 0 } = chain || {}
+  const { anchored = 0, pending = 0, verified = 0, unchecked = 0, mismatch = 0, incomplete = 0 } = chain || {}
   const items = (chain?.pending_items || []).slice(0, 5)
   const blockedNote = items.map(signingBlocked).find(Boolean) || ''
   if (anchored + pending === 0) {
@@ -105,12 +105,17 @@ function ChainHealth({ chain, loading, onAnchored }) {
     <>
       <Donut title="Blockchain anchoring" centerLabel="STEPS"
         segments={[
-          { label: 'Verified on Sepolia', value: verified, tone: 'success' },
-          { label: 'Transaction reported, not yet checked', value: unchecked, tone: 'info' },
+          { label: 'Confirmed on Sepolia by the server', value: verified, tone: 'info' },
+          { label: 'Transaction reported, not yet checked', value: unchecked, tone: 'neutral' },
           { label: 'Reported tx does not match', value: mismatch, tone: 'danger' },
           // `pending` includes mismatches (they need signing again) — count them once.
           { label: 'Waiting for signature', value: Math.max(pending - mismatch, 0), tone: 'warning' },
-        ].filter((s) => s.value > 0 || s.tone === 'success' || s.tone === 'warning')} />
+        ].filter((s) => s.value > 0 || s.tone === 'info' || s.tone === 'warning')} />
+      {incomplete > 0 && (
+        <p className="rf-muted" role="note" style={{ fontSize: 'var(--fs-caption)' }}>
+          {incomplete} recorded step{incomplete === 1 ? '' : 's'} with incomplete five-document evidence.
+        </p>
+      )}
       {items.length > 0 && (
         <ul className="rf-anchor-list">
           {items.map((a) => (
@@ -219,7 +224,7 @@ export default function AdminHome() {
           value={k.suppliers_incomplete_documents ?? 0} to="/admin/suppliers"
           context="Suppliers missing, expired or expiring ≤30 days" />
         <KpiCard label="Not yet on-chain" icon={Link2} loading={loading}
-          tone={k.anchors_pending ? 'warning' : 'success'}
+          tone={k.anchors_pending ? 'warning' : 'neutral'}
           value={k.anchors_pending ?? 0} to="/admin#chain"
           context={k.anchors_pending ? 'Steps waiting for a signature' : data?.chain?.anchored ? 'Every step has a reported transaction' : 'Nothing recorded yet'} />
         <KpiCard label="ABC of open biddings" icon={Wallet} loading={loading}

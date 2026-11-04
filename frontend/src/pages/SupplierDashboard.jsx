@@ -1037,8 +1037,8 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
                         </span>
                       </span>
                       {isVerified(d.anchor) ? (
-                        <span className="sd-award-doc-chain" title={`Verified on-chain (tx ${d.tx_hash})`}>
-                          <Shield size={11} /> Verified on-chain
+                        <span className="sd-award-doc-chain" title={`Confirmed on-chain by the server (tx ${d.tx_hash})`}>
+                          <Shield size={11} /> Confirmed on-chain
                         </span>
                       ) : d.anchored ? (
                         <span className="sd-muted sd-small" title={`Transaction reported (tx ${d.tx_hash}), not yet verified`}>

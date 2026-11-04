@@ -3292,7 +3292,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
               title={`${ANCHOR_STATES[chainState].text} (tx ${doc.tx_hash})`}
               aria-label={`${shortLabel}: ${ANCHOR_STATES[chainState].text} — view transaction`}
             >
-              {chainState === 'verified' ? <><ShieldCheck size={11} /> Verified</> : <><Link2 size={11} /> Tx reported</>}
+              {chainState === 'verified' ? <><ShieldCheck size={11} /> Confirmed</> : <><Link2 size={11} /> Tx reported</>}
             </a>
           ) : (
             // The document is saved either way — this only completes the

@@ -314,6 +314,8 @@
 .pv-verdict.pv-ok svg  { color: var(--primary); flex-shrink: 0; }
 .pv-verdict.pv-bad svg { color: #ef4444; flex-shrink: 0; }
 .pv-verdict.pv-pending svg { color: #fbbf24; flex-shrink: 0; }
+.pv-verdict.pv-legacy { color: #bfdbfe; background: rgba(59, 130, 246, 0.09); border: 1px solid rgba(59, 130, 246, 0.28); }
+.pv-verdict.pv-legacy svg { color: #3b82f6; flex-shrink: 0; }
 
 @media (max-width: 640px) {
   .pv-btn { width: 100%; justify-content: center; }

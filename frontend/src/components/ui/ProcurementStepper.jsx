@@ -106,8 +106,8 @@ export default function ProcurementStepper({ project, award, label = 'Procuremen
           <span className="rf-pstep-label">
             {s.label}
             {s.anchored && (
-              <span className="rf-pstep-chain" title="Verified on the Sepolia blockchain">
-                <Link2 size={11} aria-hidden="true" /><span className="sr-only"> (verified on-chain)</span>
+              <span className="rf-pstep-chain" title="Confirmed on the Sepolia blockchain by the server">
+                <Link2 size={11} aria-hidden="true" /><span className="sr-only"> (confirmed on-chain)</span>
               </span>
             )}
           </span>

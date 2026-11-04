@@ -28,12 +28,13 @@ from .document_versions import document_slot, versions_for
 from .files import _can_read, _is_public, display_name, protected_file_url
 from .models import Bid, BlockchainAnchor
 from .packets import may_see_packet
-from .record import PUBLIC_STATUSES
+from .record import PUBLIC_STATUSES, public_date
+from .verification import summarize
 
 EntityType = BlockchainAnchor.EntityType
 
 EVIDENCE_TEXT = {
-    "verified": "Verified on-chain: the server read this transaction from Sepolia and found this exact record "
+    "verified": "Confirmed on-chain: the server read this transaction from Sepolia and found this exact record "
                 "in an event emitted by the ledger contract, and the contract's stored record agrees.",
     "reported": "Transaction reported: a transaction hash was submitted for this record but the server has not "
                 "confirmed it on Sepolia yet. Treat it as a claim.",
@@ -102,6 +103,8 @@ def build_anchor_detail(anchor, project, role, supplier, request):
     field, label = document_slot(anchor)
     versions = versions_for(anchor, file_for=_file_finder(request, project, role)) if field else []
     for v in versions:
+        if public:
+            v["issued_at"] = public_date(v["issued_at"])
         if hide_doc_hash:
             v["document_hash"] = ""
         if public and v["file_note"] == "You do not have access to this file.":
@@ -126,6 +129,11 @@ def build_anchor_detail(anchor, project, role, supplier, request):
     for r in records:
         r["issues"] = slot_counts[r.pop("_slot")]
 
+    integrity = verify_anchor(anchor)
+    chain = chain_identity(anchor)
+    if public:
+        chain["chain_timestamp"] = public_date(chain["chain_timestamp"])
+
     return {
         "viewer": role or "public",
         "procurement": {
@@ -140,7 +148,7 @@ def build_anchor_detail(anchor, project, role, supplier, request):
             "entity_type": anchor.entity_type,
             "stage": anchor.stage,
             "stage_label": anchor.get_stage_display(),
-            "created_at": anchor.created_at,
+            "created_at": public_date(anchor.created_at) if public else anchor.created_at,
             "data_hash": anchor.data_hash,
             "document_hash": "" if hide_doc_hash else anchor.document_hash,
             "tx_hash": anchor.tx_hash,
@@ -149,14 +157,15 @@ def build_anchor_detail(anchor, project, role, supplier, request):
             "block_number": anchor.block_number,
             "actor_address": anchor.actor_address,
             "chain_status": anchor.chain_status,
-            "chain_checked_at": anchor.chain_checked_at,
+            "chain_checked_at": public_date(anchor.chain_checked_at) if public else anchor.chain_checked_at,
             "verified_on_chain": anchor.verified_on_chain,
             "superseded_by": newer.id if newer else None,
-            **chain_identity(anchor),
+            **chain,
         },
         "evidence": _evidence(anchor),
         "evidence_text": EVIDENCE_TEXT[_evidence(anchor)],
-        "integrity": verify_anchor(anchor),
+        "integrity": integrity,
+        "verification": summarize(anchor, integrity),
         "network": {
             "name": "Sepolia",
             "chain_id": SEPOLIA_CHAIN_ID,

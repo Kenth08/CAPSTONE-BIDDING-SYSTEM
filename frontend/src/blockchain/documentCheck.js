@@ -9,11 +9,21 @@
 // (file hash -> payload -> on-chain fingerprint) is still BidBridge's word
 // until the payload can be checked too. Never word a match as proof beyond that.
 
-/** The trail row whose reported document hash equals `fileHash`, or null. */
+import { matchManifest } from './payloadV3.js'
+
+/** The trail row whose reported document hash, or v3 manifest, holds `fileHash`, or null. */
 export function findDocumentMatch(fileHash, rows) {
   if (!fileHash) return null
   const h = fileHash.toLowerCase()
-  return (rows || []).find((r) => r.documentHash && r.documentHash.toLowerCase() === h) || null
+  return (rows || []).find((r) => (r.documentHash && r.documentHash.toLowerCase() === h)
+    || matchManifest({ documents: r.manifest }, h)) || null
+}
+
+// Never green here: this box matches a file to a hash the server reported. Green takes
+// the full check, which runs below it when the record's packet is public.
+function verifiedTone(completeness) {
+  return completeness?.status === 'incomplete' || completeness?.status === 'unreadable_when_recorded'
+    ? 'pending' : 'legacy'
 }
 
 const LINK_CAVEAT =
@@ -22,7 +32,7 @@ const LINK_CAVEAT =
 
 // Per row state (see mergeTrail in PublicVerifier.jsx): verdict tone + detail.
 const BY_STATE = {
-  verified: ['ok', `This step’s record fingerprint is on the Sepolia ledger. ${LINK_CAVEAT}`],
+  verified: ['legacy', `This step’s record fingerprint is on the Sepolia ledger. ${LINK_CAVEAT}`],
   server: ['pending',
     'This browser could not read the ledger; the server reports the step as confirmed on-chain. '
     + 'Not independently verified here.'],
@@ -32,6 +42,8 @@ const BY_STATE = {
     'This step is recorded in this system but not yet on the blockchain, so the match is not verified.'],
   unmatched: ['bad',
     'This step is marked as anchored, but its fingerprint was not found on the ledger. Treat the match as unverified.'],
+  revised: ['pending',
+    'The file on record for this step has changed since it was recorded. See the step’s version evidence above.'],
   altered: ['bad',
     'This step’s record no longer matches the fingerprint published for it. Treat the match as unverified.'],
 }
@@ -45,9 +57,13 @@ const NO_MATCH_DETAIL =
 export function documentVerdict(fileHash, rows) {
   const m = findDocumentMatch(fileHash, rows)
   if (!m) return { tone: 'bad', title: 'No match in this procurement’s trail.', detail: NO_MATCH_DETAIL, match: null }
-  const [tone, detail] = BY_STATE[m.state] || ['pending', 'The on-chain status of this step is unknown, so the match is not verified.']
+  const [stateTone, detail] = BY_STATE[m.state] || ['pending', 'The on-chain status of this step is unknown, so the match is not verified.']
+  const tone = m.state === 'verified' ? verifiedTone(m.completeness) : stateTone
+  const bound = matchManifest({ documents: m.manifest }, fileHash)
   const title = m.superseded
     ? `Matches an earlier version recorded at "${m.label}". It was later re-issued.`
-    : `Matches the document this system recorded at "${m.label}".`
-  return { tone, title, detail, match: m }
+    : bound
+      ? `Matches ${bound.label}, version ${bound.version}, as recorded at "${m.label}".`
+      : `Matches the document this system recorded at "${m.label}".`
+  return { tone, title, detail, match: m, bound }
 }

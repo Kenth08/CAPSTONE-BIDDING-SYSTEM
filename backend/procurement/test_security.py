@@ -5,12 +5,14 @@ public bidding IDs, the public blockchain trail, file access, uploads, storage,
 authentication and audit logging. Shared fixtures come from tests.py.
 """
 import io
+import json
 import os
 import re
 import shutil
 import tempfile
 import zipfile
-from datetime import timedelta
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from unittest import mock
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -33,6 +35,7 @@ from accounts.models import AuditLog
 from .blockchain import anchor_project, verify_anchor
 from .checks import check_storage_safety, encryption_problems, storage_problems
 from .models import (
+    AwardDocumentVersion,
     Award,
     Bid,
     BidAttachment,
@@ -1331,3 +1334,185 @@ class CommitmentOpeningPrivacyTests(APITestCase):
         self.client.force_authenticate(user=make_admin())
         for kind in ("opening", "commitmentopening", "commitment"):
             self.assertEqual(self.client.get(f"/api/files/{kind}/1/ciphertext/").status_code, status.HTTP_404_NOT_FOUND)
+
+
+class PublicTimeDisclosureTests(AwardedProcurementFixture, APITestCase):
+    """Stage 5 Phase 4. The public sees dates; the exact award time, and any time
+    written moments after it, stay inside the system (SECURITY.md, "Award
+    disclosure policy"). Checked at the response, not the UI: hiding a value on a
+    page leaves it in the API."""
+
+    # 00:30:45 on Nov 4 in Manila: the UTC date is the day before, which a plain
+    # slice of the stored value would publish.
+    EXACT = datetime(2026, 11, 3, 16, 30, 45, 123456, tzinfo=dt_timezone.utc)
+    MANILA_DATE = "2026-11-04"
+    TIME_OF_DAY = re.compile(r"\d{2}:\d{2}")
+
+    def setUp(self):
+        super().setUp()
+        Project.objects.filter(pk=self.project.pk).update(awarded_at=self.EXACT)
+        BlockchainAnchor.objects.filter(entity_ref=self.project.code).update(
+            created_at=self.EXACT, anchored_at=self.EXACT, chain_checked_at=self.EXACT,
+            chain_timestamp=self.EXACT)
+        AwardDocumentVersion.objects.filter(award__project=self.project).update(issued_at=self.EXACT)
+        self.client.force_authenticate(user=None)
+
+    def _strings(self, value, path="$"):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                yield from self._strings(item, f"{path}.{key}")
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                yield from self._strings(item, f"{path}[{i}]")
+        elif isinstance(value, str):
+            yield path, value
+
+    def _assert_no_time_of_day(self, res):
+        self.assertEqual(res.status_code, 200)
+        for path, text in self._strings(res.json()):
+            self.assertIsNone(self.TIME_OF_DAY.search(text), f"{path} = {text}")
+
+    def _trail(self, **params):
+        return self.client.get(f"/api/public/procurement/{self.project.code}/anchors/", params)
+
+    def _detail(self, anchor):
+        return self.client.get(f"/api/public/procurement/{self.project.code}/anchors/{anchor.pk}/")
+
+    def test_the_public_trail_holds_no_time_of_day(self):
+        self._assert_no_time_of_day(self._trail())
+        self._assert_no_time_of_day(self._trail(deep=1))
+
+    def test_every_public_time_field_of_the_trail_is_the_manila_date(self):
+        for row in self._trail().json()["anchors"]:
+            for field in ("recorded_at", "anchored_at", "chain_checked_at", "chain_timestamp"):
+                self.assertEqual(row[field], self.MANILA_DATE, f"{row['stage']}.{field}")
+
+    def test_the_record_details_hold_no_time_of_day(self):
+        for anchor in [self.submitted, self.published, *self.private]:
+            with self.subTest(anchor.stage):
+                self._assert_no_time_of_day(self._detail(anchor))
+
+    def test_the_time_fields_of_the_awarded_and_notice_records_are_the_manila_date(self):
+        for anchor in (self.awarded, self.noa):
+            record = self._detail(anchor).json()["record"]
+            for field in ("created_at", "chain_checked_at", "chain_timestamp"):
+                self.assertEqual(record[field], self.MANILA_DATE, f"{anchor.stage}.{field}")
+
+    def test_document_version_issue_dates_are_the_manila_date(self):
+        data = self._detail(self.noa).json()
+        self.assertEqual(data["document"]["version"]["issued_at"], self.MANILA_DATE)
+        self.assertTrue(data["versions"])
+        for version in data["versions"]:
+            self.assertEqual(version["issued_at"], self.MANILA_DATE)
+
+    def test_an_issue_date_read_from_a_stored_payload_is_converted_too(self):
+        AwardDocumentVersion.objects.filter(award__project=self.project).delete()
+        data = self._detail(self.noa).json()
+        self.assertTrue(data["versions"])
+        for version in data["versions"]:
+            self.assertIsNone(self.TIME_OF_DAY.search(version["issued_at"]))
+
+    def test_no_public_response_holds_the_exact_time_in_any_spelling(self):
+        spellings = [self.EXACT.isoformat(), self.EXACT.strftime("%Y-%m-%dT%H:%M"),
+                     self.EXACT.astimezone(timezone.get_default_timezone()).strftime("%Y-%m-%dT%H:%M")]
+        base = f"/api/public/procurement/{self.project.code}"
+        for url in (f"{base}/", f"{base}/anchors/", f"{base}/anchors/?deep=1", f"{base}/anchors/{self.awarded.pk}/",
+                    f"{base}/anchors/{self.noa.pk}/", "/api/public/procurement/", "/api/public/summary/"):
+            body = self.client.get(url).content.decode()
+            for spelling in spellings:
+                self.assertNotIn(spelling, body, url)
+
+    def test_the_public_result_gives_the_manila_award_date(self):
+        res = self.client.get(f"/api/public/procurement/{self.project.code}/")
+        self.assertEqual(res.json()["result"]["awarded_at"], self.MANILA_DATE)
+
+    def test_award_stage_packets_stay_closed_to_the_public(self):
+        for anchor in self.private:
+            res = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/{anchor.pk}/packet/")
+            self.assertEqual(res.status_code, 404, anchor.stage)
+
+    def test_a_public_packet_gives_a_date_but_keeps_the_chain_time_its_verifier_compares(self):
+        res = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/{self.published.pk}/packet/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["anchor"]["created_at"], self.MANILA_DATE)
+        self.assertRegex(res.json()["recorded"]["chain_timestamp"], self.TIME_OF_DAY)
+
+    def test_source_records_keep_their_exact_times(self):
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.awarded_at, self.EXACT)
+        self.awarded.refresh_from_db()
+        self.assertEqual(self.awarded.created_at, self.EXACT)
+        self.assertEqual(self.awarded.chain_timestamp, self.EXACT)
+        self.assertEqual(AwardDocumentVersion.objects.filter(award__project=self.project).first().issued_at, self.EXACT)
+
+    def test_the_stored_payload_and_its_hash_are_untouched(self):
+        before = (self.noa.payload, self.noa.data_hash)
+        self._detail(self.noa)
+        self._trail()
+        self.noa.refresh_from_db()
+        self.assertEqual((self.noa.payload, self.noa.data_hash), before)
+
+    def test_signed_in_viewers_keep_exact_times(self):
+        self.client.force_authenticate(user=self.admin)
+        data = self.client.get(f"/api/projects/{self.project.pk}/anchors/{self.awarded.pk}/").json()
+        self.assertRegex(data["record"]["created_at"], self.TIME_OF_DAY)
+        self.assertRegex(data["record"]["chain_timestamp"], self.TIME_OF_DAY)
+        self.client.force_authenticate(user=None)
+
+    def test_a_generated_public_notice_of_award_states_no_time_of_day(self):
+        res = self.client.get(f"/api/public/procurement/{self.project.code}/notice-of-award/")
+        self.assertEqual(res.status_code, 200)
+        pdf = b"".join(res.streaming_content)
+        stamps = re.findall(rb"/CreationDate *\(D:(\d{14})", pdf)
+        self.assertEqual(len(stamps), 1, "the PDF should state one creation date")
+        self.assertEqual(stamps[0].decode(), timezone.localdate().strftime("%Y%m%d") + "000000")
+
+    def test_public_date_handles_every_stored_shape(self):
+        from .record import public_date
+        self.assertEqual(public_date(self.EXACT), self.MANILA_DATE)
+        self.assertEqual(public_date(self.EXACT.isoformat()), self.MANILA_DATE)
+        self.assertEqual(public_date(self.EXACT.date()), "2026-11-03")
+        self.assertIsNone(public_date(None))
+        self.assertIsNone(public_date(""))
+        self.assertIsNone(public_date("not a date"))
+
+
+class VerificationPrivacyTests(AwardedProcurementFixture, APITestCase):
+    """The outcome added to the public and supplier responses says what was checked,
+    and nothing about what is behind it."""
+
+    def _trail(self, deep=False):
+        return self.client.get(f"/api/public/procurement/{self.project.code}/anchors/",
+                               {"deep": 1} if deep else {}).json()["anchors"]
+
+    def test_the_public_trail_and_details_give_outcomes_without_private_data(self):
+        self.client.force_authenticate(user=None)
+        bodies = [json.dumps(self._trail()), json.dumps(self._trail(deep=True))]
+        for anchor in self.private:
+            res = self.client.get(f"/api/public/procurement/{self.project.code}/anchors/{anchor.pk}/")
+            self.assertIn(res.json()["verification"]["outcome"],
+                          {"verified", "hash_mismatch", "not_found", "unconfirmed", "invalid_tx"})
+            bodies.append(res.content.decode())
+        for body in bodies:
+            for secret in (str(self.WIN), str(self.LOSE), self.win.commitment_salt, self.lose.commitment_salt,
+                           "bid_count", "supplier_id", "leaf_fields", "/api/files/"):
+                self.assertNotIn(secret, body)
+            self.assertNotIn(self.loser.company, body)
+
+    def test_deep_evidence_holds_no_stored_file_name_or_hash(self):
+        self.client.force_authenticate(user=None)
+        noa = Award.objects.get().notice_of_award.name
+        for row in self._trail(deep=True):
+            evidence = json.dumps(row["integrity"]["document_evidence"])
+            self.assertNotIn(noa, evidence)
+            self.assertNotIn("0x", evidence)
+
+    def test_a_losing_bidder_cannot_read_more_through_the_outcome(self):
+        self.client.force_authenticate(user=self.loser.user)
+        res = self.client.get(f"/api/projects/{self.project.pk}/anchors/{self.awarded.pk}/")
+        self.client.force_authenticate(user=None)
+        self.assertEqual(res.status_code, 200)
+        body = res.content.decode()
+        self.assertIn('"verification"', body)
+        self.assertNotIn(str(self.WIN), body)
+        self.assertNotIn(self.win.commitment_salt, body)

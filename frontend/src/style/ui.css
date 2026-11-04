@@ -46,7 +46,7 @@
 }
 
 /* Blockchain badges follow the same semantic palette. */
-.bc-badge-anchored { background: var(--tone-success-bg) !important; color: var(--tone-success-fg) !important; border-color: var(--tone-success-border) !important; }
+.bc-badge-anchored { background: var(--tone-info-bg) !important; color: var(--tone-info-fg) !important; border-color: var(--tone-info-border) !important; }
 .bc-badge-partial  { background: var(--tone-warning-bg) !important; color: var(--tone-warning-fg) !important; border-color: var(--tone-warning-border) !important; }
 .bc-badge-pending  { background: var(--tone-neutral-bg) !important; color: var(--tone-neutral-fg) !important; border-color: var(--tone-neutral-border) !important; }
 

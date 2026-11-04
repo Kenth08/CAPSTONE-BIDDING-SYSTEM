@@ -11,7 +11,8 @@ import EmptyState from '../components/ui/EmptyState'
 import ProcurementStepper from '../components/ui/ProcurementStepper'
 import Thumbnail from '../components/ui/Thumbnail'
 import { Skeleton } from '../components/Skeleton'
-import { fmtDate, peso, pesoCompact } from '../utils/format'
+import { publicDate } from '../blockchain/recordView'
+import { peso, pesoCompact } from '../utils/format'
 import { EXAMPLE_CODE, normalizeProcurementCode } from '../utils/procurementCode'
 import '../style/LandingPage.css'
 
@@ -260,11 +261,11 @@ export default function LandingPage() {
                   <div className="lpx-award-sub"><span className="rf-code">{a.code}</span> Awarded to <strong>{a.winner}</strong></div>
                 </div>
                 <div className="lpx-award-side">
-                  <span className="lpx-award-date">{fmtDate(a.awarded_at)}</span>
+                  <span className="lpx-award-date">{publicDate(a.awarded_at)}</span>
                   {a.verified_on_chain && (
                     <a className="lpx-verified" href={a.explorer_url} target="_blank" rel="noopener noreferrer"
                       title="View the award transaction on Etherscan (opens in a new tab)">
-                      <ShieldCheck size={13} aria-hidden="true" /> Verified on-chain
+                      <ShieldCheck size={13} aria-hidden="true" /> Confirmed on-chain
                     </a>
                   )}
                 </div>

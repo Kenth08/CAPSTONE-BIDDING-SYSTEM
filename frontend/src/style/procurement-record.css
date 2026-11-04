@@ -79,6 +79,8 @@
 .pr-receipt p { margin: 0; }
 .pr-verdict { display: flex; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); border-radius: 10px; width: 100%; box-sizing: border-box; }
 .pr-verdict-ok { background: var(--tone-success-bg); color: var(--tone-success-fg); border: 1px solid var(--tone-success-border); }
+/* A bidder's receipt checks hashes in this browser, not the ledger: never green. */
+.pr-verdict-info { background: var(--tone-info-bg); color: var(--tone-info-fg); border: 1px solid var(--tone-info-border); }
 .pr-verdict-bad { background: var(--tone-danger-bg); color: var(--tone-danger-fg); border: 1px solid var(--tone-danger-border); }
 .pr-checks { margin: 6px 0; padding-left: 0; list-style: none; font-size: var(--fs-small); }
 .pr-hashline { display: flex; align-items: center; gap: 6px; font-size: var(--fs-caption); margin-bottom: 4px; }

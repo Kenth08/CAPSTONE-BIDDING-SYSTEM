@@ -382,7 +382,7 @@ function DecisionChain({ anchor, onAnchored }) {
       <a className="rf-receipt" href={anchor.explorer_url} target="_blank" rel="noopener noreferrer"
         title={`${ANCHOR_STATES[state].text}: transaction ${anchor.tx_hash} on Etherscan`}>
         {state === 'verified'
-          ? <><ShieldCheck size={13} aria-hidden="true" /> Verified on-chain</>
+          ? <><ShieldCheck size={13} aria-hidden="true" /> Confirmed on-chain</>
           : <><Link2 size={13} aria-hidden="true" /> Tx reported</>}
       </a>
     )

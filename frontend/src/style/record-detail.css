@@ -68,6 +68,21 @@
 .rd .pc-ok      { background: var(--tone-success-bg); color: var(--tone-success-fg); border-color: var(--tone-success-border); }
 .rd .pc-bad     { background: var(--tone-danger-bg);  color: var(--tone-danger-fg);  border-color: var(--tone-danger-border); }
 .rd .pc-pending { background: var(--tone-warning-bg); color: var(--tone-warning-fg); border-color: var(--tone-warning-border); }
+.rd .pc-amber   { background: var(--tone-warning-bg); color: var(--tone-warning-fg); border-color: var(--tone-warning-border); }
+.rd .pc-legacy  { background: var(--tone-info-bg);    color: var(--tone-info-fg);    border-color: var(--tone-info-border); }
+.rd-checks { display: grid; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
+/* Explicit colours: these cards also sit on the dark public page, whose light text
+   colour would otherwise be inherited onto their white background. */
+.rd-check { display: grid; gap: 2px; font-size: var(--fs-caption, 12px); color: var(--text-default, #344054); }
+.rd-history { margin: 10px 0 0; font-size: var(--fs-caption, 12px); color: var(--text-default, #344054); }
+.rd-history dt { font-weight: 600; color: var(--text-strong); }
+.rd-history dd { margin: 0 0 6px; }
+.rd-checked-note { margin: 14px 0 0; color: var(--text-strong); }
+.rd-check strong { font-weight: 600; }
+.rd-unverified { margin: 4px 0 0; padding-left: 18px; font-size: var(--fs-caption, 12px); color: var(--text-default, #344054); }
+.rd-check-pass strong { color: var(--tone-info-fg); }
+.rd-check-fail strong { color: var(--tone-danger-fg); }
+.rd-check-missing strong, .rd-check-unavailable strong { color: var(--tone-warning-fg); }
 .rd .pc-head p, .rd .pc-step { color: var(--text-default, #344054); }
 .rd .pc-step-fail { color: var(--tone-danger-fg); }
 

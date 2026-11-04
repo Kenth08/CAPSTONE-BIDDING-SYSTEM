@@ -28,7 +28,7 @@ from datetime import timezone as dt_timezone
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 
-from . import payload_v2, payload_v3
+from . import document_evidence, payload_v2, payload_v3, payload_v3_reader
 from .canonical import hash_payload  # noqa: F401 — re-exported: `from .blockchain import hash_payload`
 from .models import AWARD_DOCUMENT_ISSUED_FIELDS, BlockchainAnchor
 from .openings import commitment_key_problems
@@ -161,14 +161,16 @@ class PayloadRules:
     `builders` is the frozen module for the shape (project_payload, bid_payload,
     award_payload, evaluation_payload, bid_leaf_fields, iso, REISSUE_KEYS).
     `legacy` = the stored snapshot is checked field-by-field against what the
-    builders produce, because the builders no longer produce its exact shape."""
+    builders produce, because the builders no longer produce its exact shape.
+    `reader` = this version has its own verify(anchor, record, deep=) instead."""
 
-    __slots__ = ("version", "builders", "legacy")
+    __slots__ = ("version", "builders", "legacy", "reader")
 
-    def __init__(self, version, builders, *, legacy=False):
+    def __init__(self, version, builders, *, legacy=False, reader=None):
         self.version = version
         self.builders = builders
         self.legacy = legacy
+        self.reader = reader
 
     def __repr__(self):
         return f"PayloadRules(v{self.version}{', legacy' if self.legacy else ''})"
@@ -197,10 +199,16 @@ def check_writer_version(version, rules):
 
 check_writer_version(PAYLOAD_VERSION, PAYLOAD_RULES)
 
+# Versions this server can verify but must never write. Kept out of PAYLOAD_RULES
+# on purpose: check_writer_version still refuses PAYLOAD_VERSION = 3, so being able
+# to READ v3 opens no path to writing it.
+READ_ONLY_RULES = {
+    3: PayloadRules(3, payload_v3, reader=payload_v3_reader.verify),
+}
+
 # Writes project-stage/3 anchors instead of v2 when on (anchor_project). Off, and
-# refused at start-up while the checks that must guard it don't exist yet. v3 has
-# no entry in PAYLOAD_RULES until its verification ships, so a v3 payload reports
-# "unsupported payload version", never "altered".
+# refused at start-up while its release gates are open (SECURITY.md, "Open gaps").
+# Verifying v3 does not depend on it: see READ_ONLY_RULES.
 PAYLOAD_V3_ENABLED = _env_flag("PAYLOAD_V3_ENABLED", "False")
 
 
@@ -210,8 +218,8 @@ def check_v3_gate(enabled):
     COMMITMENT_KEY does not lift the refusal; its absence is reported as well."""
     if enabled:
         raise ImproperlyConfigured(" ".join([
-            "PAYLOAD_V3_ENABLED is on, but v3 writing is not available yet: anchors "
-            "written now could not be verified or corrected. Unset it.",
+            "PAYLOAD_V3_ENABLED is on, but v3 writing is not available yet: its release "
+            "gates are open, and an anchor written now could not be corrected. Unset it.",
             *commitment_key_problems(),
         ]))
 
@@ -243,7 +251,7 @@ def payload_rules(anchor):
     version = payload["v"]
     if type(version) is not int:  # noqa: E721 — bool and float must not pass
         raise UnsupportedPayload(f"a malformed payload version ({version!r})")
-    rules = PAYLOAD_RULES.get(version)
+    rules = PAYLOAD_RULES.get(version) or READ_ONLY_RULES.get(version)
     if rules is None:
         raise UnsupportedPayload(f"payload version {version}, which this server has no rules for")
     return rules
@@ -481,9 +489,12 @@ def inclusion_receipt(bid):
     if anchor is None or not bid.commitment_salt:
         return None
     try:
-        fields = payload_rules(anchor).builders.bid_leaf_fields(bid)
+        rules = payload_rules(anchor)
     except UnsupportedPayload:
         return None   # no rules for that version here: no receipt rather than a wrong one
+    if rules.reader is not None:
+        return None   # a v3 leaf is an opening, and no route serves openings yet
+    fields = rules.builders.bid_leaf_fields(bid)
     return {
         "leaf_fields": fields,
         "leaf": hash_payload(fields),
@@ -612,85 +623,117 @@ def _legacy_record_ok(anchor, rebuilt):
 def verify_anchor(anchor, deep=False):
     """Check the live record against what was anchored.
 
-    Returns {status, record, document, detail}. `status` is the worst of the two
-    checks, so a caller can act on one field. Never raises — a verifier that
-    crashes on odd data is worse than one that reports "unavailable"."""
+    Returns {status, record, document, detail}, plus what was added in Stage 5:
+    `completeness` (what the anchor recorded about the five documents),
+    `document_evidence` (with deep: the exact version it fingerprinted, which for
+    v1/v2 stands beside `document` and does not change it) and, for a commitment,
+    `openings`. `status` is the worst of the record and document checks, so a
+    caller can act on one field. Never raises — a verifier that crashes on odd
+    data is worse than one that reports "unavailable"."""
     result = {"status": UNAVAILABLE, "record": UNAVAILABLE, "document": SKIPPED, "detail": ""}
     try:
-        record = live_record(anchor)
-        if record is None:
-            result["detail"] = "The record this anchor was taken from no longer exists."
-            return result
-
-        # ── Which rules? The anchor's own payload version, never today's ──
-        try:
-            rules = payload_rules(anchor)
-        except UnsupportedPayload as exc:
-            # Not evidence of tampering — this server simply can't interpret
-            # it. Reported as unavailable, never as altered.
-            result["detail"] = f"This record uses {exc}, so it can't be checked here."
-            return result
-
-        # ── Record check ──────────────────────────────────────────────────
-        payload, _ = rebuild_payload(anchor, record, document_hash=anchor.document_hash, rules=rules)
-
-        # A re-issued award document: check the old anchor against its own
-        # snapshot instead of the live record, which has legitimately moved on.
-        # Its file was replaced on purpose, so the deep document check doesn't
-        # apply either.
-        newer = superseding_anchor(anchor)
-        if newer is not None:
-            if _superseded_record_ok(anchor, payload, rules):
-                result.update(
-                    status=SUPERSEDED, record=SUPERSEDED, document=SKIPPED,
-                    detail=f"Replaced by a later issue of this document on {_iso(newer.created_at)[:10]}.",
-                    superseded_by=newer.id,
-                )
-            else:
-                result.update(
-                    status=MISMATCH, record=MISMATCH,
-                    detail="This record has been altered since it was recorded on-chain.",
-                )
-            return result
-
-        if rules.legacy:
-            record_ok = _legacy_record_ok(anchor, payload)
-        else:
-            record_ok = hash_payload(payload) == anchor.data_hash
-        result["record"] = MATCH if record_ok else MISMATCH
-        if not record_ok:
-            result["detail"] = "This record has been altered since it was recorded on-chain."
-
-        # ── Document check (opt-in) ───────────────────────────────────────
-        if deep and anchor.stage == EVALUATION_STAGE:
-            result["document"] = evaluation_documents_check(record)
-            if result["document"] == MISMATCH:
-                result["detail"] = result["detail"] or "A bid's quotation document has been replaced since the award."
-            elif result["document"] == UNAVAILABLE:
-                result["detail"] = result["detail"] or "A committed quotation document is missing from storage."
-        elif deep and anchor.document_hash:
-            _, current_doc_hash = rebuild_payload(anchor, record, document_hash=None, rules=rules)
-            if not current_doc_hash:
-                result["document"] = UNAVAILABLE
-                result["detail"] = result["detail"] or "The anchored document is missing from storage."
-            elif current_doc_hash == anchor.document_hash:
-                result["document"] = MATCH
-            else:
-                result["document"] = MISMATCH
-                result["detail"] = "The attached document has been replaced since it was recorded."
-
-        checks = [result["record"]] + ([result["document"]] if result["document"] != SKIPPED else [])
-        if MISMATCH in checks:
-            result["status"] = MISMATCH
-        elif UNAVAILABLE in checks:
-            result["status"] = UNAVAILABLE
-        else:
-            result["status"] = MATCH
-        return result
+        result = _verify_anchor(anchor, deep, result)
     except Exception:  # pragma: no cover — a verifier must never 500 a page
         logger.exception("Integrity check failed for anchor %s", getattr(anchor, "id", "?"))
         result["detail"] = "This record could not be checked."
+    result.setdefault("completeness", payload_v3_reader.completeness(anchor.payload))
+    if "document_evidence" not in result:
+        result["document_evidence"] = (
+            _single_document_evidence(anchor) if deep else document_evidence.not_checked())
+    return result
+
+
+def _single_document_evidence(anchor):
+    """The one document a v1/v2 anchor binds, by version. Never raises."""
+    try:
+        record = live_record(anchor)
+        if record is None or anchor.stage == EVALUATION_STAGE:
+            return document_evidence.not_applicable()
+        return document_evidence.check_single_document(
+            anchor, record, STAGE_DOCUMENT_FIELD.get(anchor.stage),
+            own_award_document=anchor.stage in AWARD_OWN_DOCUMENT_STAGES)
+    except Exception:  # noqa: BLE001 — the checks above keep their own result
+        logger.exception("Document evidence check failed for anchor %s", getattr(anchor, "id", "?"))
+        return {"checked": True, "state": document_evidence.FILE_UNREADABLE, "entries": []}
+
+
+def _verify_anchor(anchor, deep, result):
+    """verify_anchor's checks. Exceptions are verify_anchor's to report."""
+    record = live_record(anchor)
+    if record is None:
+        result["detail"] = "The record this anchor was taken from no longer exists."
+        result["reason"] = "record_gone"
         return result
+
+    # ── Which rules? The anchor's own payload version, never today's ──
+    try:
+        rules = payload_rules(anchor)
+    except UnsupportedPayload as exc:
+        # Not evidence of tampering — this server simply can't interpret
+        # it. Reported as unavailable, never as altered.
+        result["detail"] = f"This record uses {exc}, so it can't be checked here."
+        result["reason"] = "unsupported_version"
+        return result
+
+    if rules.reader is not None:
+        return rules.reader(anchor, record, deep=deep)
+
+    # ── Record check ──────────────────────────────────────────────────
+    payload, _ = rebuild_payload(anchor, record, document_hash=anchor.document_hash, rules=rules)
+
+    # A re-issued award document: check the old anchor against its own
+    # snapshot instead of the live record, which has legitimately moved on.
+    # Its file was replaced on purpose, so the deep document check doesn't
+    # apply either.
+    newer = superseding_anchor(anchor)
+    if newer is not None:
+        if _superseded_record_ok(anchor, payload, rules):
+            result.update(
+                status=SUPERSEDED, record=SUPERSEDED, document=SKIPPED,
+                detail=f"Replaced by a later issue of this document on {timezone.localdate(newer.created_at)}.",
+                superseded_by=newer.id,
+            )
+        else:
+            result.update(
+                status=MISMATCH, record=MISMATCH,
+                detail="This record has been altered since it was recorded on-chain.",
+            )
+        return result
+
+    if rules.legacy:
+        record_ok = _legacy_record_ok(anchor, payload)
+    else:
+        record_ok = hash_payload(payload) == anchor.data_hash
+    result["record"] = MATCH if record_ok else MISMATCH
+    if not record_ok:
+        result["detail"] = "This record has been altered since it was recorded on-chain."
+
+    # ── Document check (opt-in) ───────────────────────────────────────
+    if deep and anchor.stage == EVALUATION_STAGE:
+        result["document"] = evaluation_documents_check(record)
+        if result["document"] == MISMATCH:
+            result["detail"] = result["detail"] or "A bid's quotation document has been replaced since the award."
+        elif result["document"] == UNAVAILABLE:
+            result["detail"] = result["detail"] or "A committed quotation document is missing from storage."
+    elif deep and anchor.document_hash:
+        _, current_doc_hash = rebuild_payload(anchor, record, document_hash=None, rules=rules)
+        if not current_doc_hash:
+            result["document"] = UNAVAILABLE
+            result["detail"] = result["detail"] or "The anchored document is missing from storage."
+        elif current_doc_hash == anchor.document_hash:
+            result["document"] = MATCH
+        else:
+            result["document"] = MISMATCH
+            result["detail"] = "The attached document has been replaced since it was recorded."
+
+    checks = [result["record"]] + ([result["document"]] if result["document"] != SKIPPED else [])
+    if MISMATCH in checks:
+        result["status"] = MISMATCH
+    elif UNAVAILABLE in checks:
+        result["status"] = UNAVAILABLE
+    else:
+        result["status"] = MATCH
+    return result
 
 
 def attach_transaction(anchor, tx_hash, block_number=None, actor_address=""):
@@ -751,6 +794,8 @@ def anchor_summary(anchor, *, include_payload=False):
         "chain_status": anchor.chain_status,
         "chain_checked_at": anchor.chain_checked_at,
         "verified_on_chain": anchor.verified_on_chain,
+        # What this anchor recorded about the five documents; read from the payload.
+        "completeness": payload_v3_reader.completeness(anchor.payload),
         # The record's on-chain identity, filled only by the server's own
         # confirmation (null until then, and for receipts a node has pruned).
         **chain_identity(anchor),

@@ -25,20 +25,20 @@ test('a different file is reported as no match, with the image re-encoding hint'
 
 test('a verified step never claims the file itself is proven on-chain', () => {
   const v = documentVerdict(DOC, [row('verified')])
-  assert.equal(v.tone, 'ok')
+  assert.equal(v.tone, 'legacy')
   assert.match(v.title, /this system recorded/)
   assert.match(v.detail, /not this file’s hash directly/)
   assert.match(v.detail, /reported by this system’s database/)
   for (const s of [v.title, v.detail]) assert.doesNotMatch(s, /provabl|proven|attested/i)
 })
 
-test('only a ledger-verified step gets the success tone', () => {
+test('no match in this box is green: it compares a hash the server reported', () => {
   const tones = Object.fromEntries(
     ['verified', 'server', 'reported', 'pending', 'unmatched', 'altered', 'weird']
       .map((s) => [s, documentVerdict(DOC, [row(s)]).tone]),
   )
   assert.deepEqual(tones, {
-    verified: 'ok', server: 'pending', reported: 'pending', pending: 'pending',
+    verified: 'legacy', server: 'pending', reported: 'pending', pending: 'pending',
     unmatched: 'bad', altered: 'bad', weird: 'pending',
   })
 })
