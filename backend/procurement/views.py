@@ -1,6 +1,7 @@
 import logging
 import secrets
-from datetime import date, timedelta
+import time
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -24,12 +25,19 @@ from .blockchain import (
     SEPOLIA_CHAIN_ID,
     anchor_award,
     anchor_bid,
+    anchor_evaluation,
     anchor_project,
     anchor_summary,
     attach_anchors,
     attach_transaction,
     verify_anchor,
 )
+from .anchor_detail import build_anchor_detail, may_view_anchor
+from .document_versions import record_award_document_version
+from .project_documents import record_project_document_versions, snapshot_documents
+from .packets import is_public_packet, packet_for
+from .record import PUBLIC_STATUSES, build_record, public_date, public_record, viewer_for
+from .verification import summarize
 from .document_requirements import (
     CATEGORY_DOCUMENT_INDEX,
     EXPIRY_SUFFIX,
@@ -87,6 +95,7 @@ from .serializers import (
     SupplierMeUpdateSerializer,
     clean_business_types,
 )
+from .uploads import strip_image_metadata
 from .validators import validate_bid_upload, validate_product_image, validate_upload
 
 # Bid amount is a DecimalField(max_digits=14, decimal_places=2) — keep the
@@ -150,7 +159,11 @@ def save_product_images(bid, parsed):
     bid_product_image_path); only the Pillow-detected extension is kept."""
     for uploaded, ext, caption in parsed:
         image = BidProductImage(bid=bid, caption=caption)
-        image.image.save(f"image{ext}", uploaded, save=True)
+        # Re-encoded without EXIF/GPS before storage (see uploads.py). Saved
+        # through FieldFile.save, which the model-level cleaning doesn't see.
+        uploaded.seek(0)
+        cleaned = strip_image_metadata(uploaded.read(), ext)
+        image.image.save(f"image{ext}", ContentFile(cleaned), save=True)
 
 
 def delete_files_after_commit(images):
@@ -193,29 +206,40 @@ def bid_review_labels(keys):
 # Crockford-style alphabet: no 0/O, 1/I/L or U, so a code read aloud or typed
 # from a printed NOA can't be mistaken for another one.
 PROJECT_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
-PROJECT_CODE_RANDOM_LENGTH = 8
+PROJECT_CODE_RANDOM_LENGTH = 12
+PROJECT_CODE_PREFIX = "PC"
+# How many fresh codes perform_create draws before giving up on a create.
+PROJECT_CODE_MAX_ATTEMPTS = 10
 
 
 def next_project_code():
-    """A new random procurement code for this year, e.g. "PRC-2026-7K4M-Q9XT".
+    """A new random public bidding ID, e.g. "PC-7K4M-Q9XT-3HWD".
 
-    Codes used to be sequential ("P-2026-004"), which made every procurement
-    trivially guessable: knowing one code told you all the others. The random
-    part is now 8 characters from a 30-symbol alphabet (~6.5 x 10^11 codes per
-    year) drawn with `secrets`, so codes can't be predicted or enumerated.
+    History — every format below is still live, because the code is the on-chain
+    index (`entityRef`) of every anchor and renaming one would orphan its trail:
 
-    Older sequential codes stay exactly as they are — the code is the on-chain
-    index for every anchor, so renaming one would orphan its blockchain trail.
+      * "P-2026-004"          — sequential; knowing one code revealed them all.
+      * "PRC-2026-7K4M-Q9XT"  — random, but 8 characters and it leaked the year.
+      * "PC-7K4M-Q9XT-3HWD"   — current: 12 characters from a 30-symbol alphabet
+                                (~5.3 x 10^17 codes), drawn with `secrets`, with
+                                no year and no running number in it.
 
-    Collisions are astronomically unlikely, but the unique constraint on `code`
-    is still the real guard: perform_create retries with a fresh code if the
-    insert is ever rejected. The result is 18 characters, within max_length=20.
+    Uniqueness is guaranteed by the unique constraint on Project.code, not by
+    this function: perform_create retries with a fresh code on IntegrityError.
+    17 characters, within max_length=20 and the contract's 64-char entityRef.
     """
-    year = date.today().year
     chars = "".join(
         secrets.choice(PROJECT_CODE_ALPHABET) for _ in range(PROJECT_CODE_RANDOM_LENGTH)
     )
-    return f"PRC-{year}-{chars[:4]}-{chars[4:]}"
+    return f"{PROJECT_CODE_PREFIX}-{chars[:4]}-{chars[4:8]}-{chars[8:]}"
+
+
+def normalize_project_code(raw):
+    """Canonical form of a procurement code typed by a person or taken from a
+    URL: surrounding whitespace removed, upper-cased. Every format ever issued
+    (P-2026-001, PRC-2026-XXXX-XXXX, PC-XXXX-XXXX-XXXX) is upper-case, so this
+    accepts all of them without guessing at a pattern."""
+    return (raw or "").strip().upper()
 
 
 def close_expired_published_projects():
@@ -252,7 +276,16 @@ def attach_anchor_transaction(request, *, entity_ref, entity_type, entity_id):
     the fallback so a retry can find the newest un-anchored anchor for a stage.
 
     Idempotent: posting a tx hash for an already-anchored row is a no-op 200, so
-    a double-click or a retry after a flaky response can't corrupt the trail."""
+    a double-click or a retry after a flaky response can't corrupt the trail.
+
+    Refused outright on a read-only deployment (BLOCKCHAIN_WALLET_SIGNING=False),
+    before any lookup: the browser hides "Anchor now" there, but the API must not
+    rely on that — a hand-made request is refused the same way."""
+    if not chain.WALLET_SIGNING_ENABLED:
+        return Response(
+            {"detail": chain.SIGNING_DISABLED_DETAIL, "code": "signing_disabled"},
+            status=http_status.HTTP_409_CONFLICT)
+
     scoped = BlockchainAnchor.objects.filter(
         entity_ref=entity_ref, entity_type=entity_type, entity_id=str(entity_id),
     )
@@ -281,7 +314,10 @@ def attach_anchor_transaction(request, *, entity_ref, entity_type, entity_id):
             {"detail": "No matching blockchain anchor for this record."},
             status=http_status.HTTP_404_NOT_FOUND)
 
-    if anchor.anchored:
+    # Idempotent for a transaction already reported — EXCEPT one the server
+    # read back and found does not record this anchor: that reference is
+    # worthless, so a fresh signature may replace it.
+    if anchor.anchored and anchor.chain_status != BlockchainAnchor.ChainStatus.MISMATCH:
         return Response(anchor_summary(anchor))
 
     if str(request.data.get("server_submit", "")).lower() in {"1", "true"}:
@@ -321,7 +357,7 @@ def server_submit_anchor(request, anchor):
 
     with transaction.atomic():
         locked = BlockchainAnchor.objects.select_for_update().get(pk=anchor.pk)
-        if locked.anchored:
+        if locked.anchored and locked.chain_status != BlockchainAnchor.ChainStatus.MISMATCH:
             return Response(anchor_summary(locked))
         submitted = chain.submit_anchor_server_side(locked)
 
@@ -356,13 +392,26 @@ class PublicAnchorTrailView(APIView):
     Deliberately hash-only: no payloads, no bid amounts, no supplier identities —
     same privacy posture as PublicProcurementView. `document_hash` is included so
     a citizen holding a copy of a published document can hash their file and
-    prove it is the one that was attested to."""
+    see which step recorded it. That match is against this database: on-chain
+    is only `data_hash`, the hash of a payload that contains `document_hash`,
+    and the payload itself is not published here."""
 
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
 
+    # Only procurements that have been opened to the public have a public trail.
+    # A draft, a project still with the Head, or one the Head rejected is
+    # internal: answering for it told anyone who guessed an old sequential code
+    # (P-2026-003, ...) the name and status of a procurement nobody had
+    # published. Such codes get the same 404 as a code that doesn't exist, so
+    # the response doesn't even confirm the procurement is real.
+    PUBLIC_STATUSES = (
+        Project.Status.PUBLISHED, Project.Status.CLOSED, Project.Status.AWARDED,
+    )
+
     def get(self, request, code):
-        project = Project.objects.filter(code=code).first()
+        code = normalize_project_code(code)
+        project = Project.objects.filter(code=code, status__in=self.PUBLIC_STATUSES).first()
         if project is None:
             return Response({"detail": "Unknown procurement code."},
                             status=http_status.HTTP_404_NOT_FOUND)
@@ -373,16 +422,18 @@ class PublicAnchorTrailView(APIView):
         # amount, status or date.
         deep = request.query_params.get("deep") in {"1", "true", "yes"}
 
-        anchors = BlockchainAnchor.objects.filter(entity_ref=code)
+        anchors = BlockchainAnchor.objects.filter(entity_ref=project.code)
         integrity = {a.id: verify_anchor(a, deep=deep) for a in anchors}
         trail = [
             {
+                **_public_chain_fields(a),
+                "id": a.id,
                 "entity_type": a.entity_type,
                 "stage": a.stage,
                 "stage_label": a.get_stage_display(),
                 "data_hash": a.data_hash,
-                # Published to let a citizen hash a document they hold and prove
-                # it is the one attested to — but only for documents that are
+                # Published to let a citizen hash a document they hold and find
+                # the step that recorded it — but only for documents that are
                 # actually public. A losing bidder's quotation is not, so its
                 # hash is withheld (the AWARD anchor covers the winning bid,
                 # which a procurement award does make disclosable).
@@ -391,19 +442,39 @@ class PublicAnchorTrailView(APIView):
                 "block_number": a.block_number,
                 "actor_address": a.actor_address,
                 "anchored": a.anchored,
+                # What the SERVER found reading the transaction back. The page
+                # still reads the contract itself; this is the second opinion.
+                "chain_status": a.chain_status,
+                "verified_on_chain": a.verified_on_chain,
                 "explorer_url": (ETHERSCAN_TX_URL + a.tx_hash) if a.tx_hash else "",
-                "recorded_at": a.created_at,
-                "anchored_at": a.anchored_at,
+                # Dates only: see record.public_date.
+                "recorded_at": public_date(a.created_at),
+                "anchored_at": public_date(a.anchored_at),
+                "chain_checked_at": public_date(a.chain_checked_at),
+                # A project stage's five document hashes, so a file can be matched
+                # to the version it was recorded as. Public with its packet only.
+                "document_manifest": (
+                    a.payload["documents"]
+                    if is_public_packet(a, project) and a.payload.get("v") == 3 else None),
                 # Does the record STILL hash to what was published? Comparing the
                 # stored hash with the chain only proves the anchor row is
                 # intact; this proves the data behind it is.
                 "integrity": integrity[a.id],
+                "verification": summarize(a, integrity[a.id]),
             }
             for a in anchors
         ]
         altered = [t for t in trail if t["integrity"]["status"] == "mismatch"]
+        award = (Award.objects.filter(project=project, status=Award.Status.WON)
+                 .exclude(notice_of_award="").exclude(notice_of_award__isnull=True).first())
+        noa_url = ""
+        if award and project.status == Project.Status.AWARDED:
+            # The one document published to everyone (see files.PublicNoticeOfAwardView).
+            noa_url = request.build_absolute_uri(
+                f"/api/public/procurement/{project.code}/notice-of-award/")
         return Response({
             "code": project.code,
+            "notice_of_award_url": noa_url,
             "name": project.name,
             "status": project.status,
             "category": project.category,
@@ -414,6 +485,13 @@ class PublicAnchorTrailView(APIView):
             "altered_count": len(altered),
             "anchors": trail,
         })
+
+
+def _public_chain_fields(anchor):
+    """The on-chain identity for a public response, its time as a date."""
+    fields = chain.chain_identity(anchor)
+    fields["chain_timestamp"] = public_date(fields["chain_timestamp"])
+    return fields
 
 
 class PublicProcurementView(APIView):
@@ -449,6 +527,21 @@ class PublicProcurementView(APIView):
             for p in published
         ]
 
+        # Bidding over, no award yet (decision D4). Shown so their public
+        # blockchain trail is reachable; no bid count, no amounts.
+        closed = [
+            {
+                "code": p.code,
+                "name": p.name,
+                "category": p.category,
+                "type": p.type,
+                "budget": str(p.budget),
+                "deadline": p.deadline,
+                "delivery_location": p.delivery_location,
+            }
+            for p in Project.objects.filter(status=Project.Status.CLOSED).order_by("-deadline", "-created_at")
+        ]
+
         awards = (
             Award.objects.select_related("project", "supplier")
             .filter(status=Award.Status.WON)
@@ -465,7 +558,69 @@ class PublicProcurementView(APIView):
             for a in awards
         ]
 
-        return Response({"biddings": biddings, "winners": winners})
+        return Response({"biddings": biddings, "closed": closed, "winners": winners})
+
+
+class PublicAnchorPacketView(APIView):
+    """GET /api/public/procurement/<code>/anchors/<anchor_id>/packet/ — the
+    verification packet (exact payload + hashing rules + on-chain identity) of
+    one PUBLIC anchor: a project stage of a public procurement whose payload
+    holds only public fields (procurement/packets.py). Anything else — an award
+    or bid record, the evaluation commitment, an unpublished procurement, an
+    anchor of another procurement — is the same 404 as one that doesn't exist."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, code, anchor_id):
+        project = Project.objects.filter(
+            code=normalize_project_code(code), status__in=PUBLIC_STATUSES).first()
+        anchor = (BlockchainAnchor.objects.filter(pk=anchor_id, entity_ref=project.code).first()
+                  if project else None)
+        packet = packet_for(anchor, project, None) if anchor else None
+        if packet is None:
+            return Response({"detail": "No public verification packet for that record."},
+                            status=http_status.HTTP_404_NOT_FOUND)
+        return Response(packet)
+
+
+class PublicAnchorDetailView(APIView):
+    """GET /api/public/procurement/<code>/anchors/<anchor_id>/ — one record of a
+    public procurement's trail, in full (procurement/anchor_detail.py): the
+    same public fields as the trail plus its document version history. No
+    payload; `packet_available` says whether it can be verified independently.
+    An anchor of another procurement, or of a non-public one, is a 404."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, code, anchor_id):
+        project = Project.objects.filter(
+            code=normalize_project_code(code), status__in=PUBLIC_STATUSES).first()
+        anchor = (BlockchainAnchor.objects.filter(pk=anchor_id, entity_ref=project.code).first()
+                  if project else None)
+        if anchor is None or not may_view_anchor(anchor, project, None):
+            return Response({"detail": "No such public record."}, status=http_status.HTTP_404_NOT_FOUND)
+        return Response(build_anchor_detail(anchor, project, None, None, request))
+
+
+class PublicProcurementDetailView(APIView):
+    """GET /api/public/procurement/<code>/ — one procurement's public result
+    (procurement/record.py public_record: winner and date only, decision D2).
+    Same 404 rule as the public anchor trail: drafts, projects still with the
+    Head and rejected ones don't exist as far as the public is concerned."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, code):
+        close_expired_published_projects()
+        project = Project.objects.filter(
+            code=normalize_project_code(code), status__in=PUBLIC_STATUSES).first()
+        if project is None:
+            return Response({"detail": "Unknown procurement code."},
+                            status=http_status.HTTP_404_NOT_FOUND)
+        return Response(public_record(project))
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
@@ -483,11 +638,13 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return [IsHeadRole()]
         if self.action == "bid":
             return [IsSupplierRole()]
-        if self.action in {"list", "retrieve", "stats", "anchors"}:
+        # record / packet / anchor_detail decide per role inside the action
+        # (viewer_for, packet_for, may_view_anchor).
+        if self.action in {"list", "retrieve", "stats", "anchors", "record", "packet", "anchor_detail"}:
             return [permissions.IsAuthenticated()]
         # Both Admin and Head cause project transitions, so both may attach the
         # resulting transaction hash.
-        if self.action == "anchor":
+        if self.action in {"anchor", "verify_chain"}:
             return [IsAdminOrHeadRole()]
         return [IsAdminRole()]
 
@@ -674,6 +831,109 @@ class ProjectViewSet(viewsets.ModelViewSet):
             "deep_checked": deep,
             "altered_count": sum(1 for a in anchors if a["integrity"]["status"] == "mismatch"),
             "anchors": anchors,
+        })
+
+    @action(detail=True, methods=["get"])
+    def record(self, request, pk=None):
+        """The whole procurement, filing to final award, with the blockchain
+        evidence for each step — scoped to the caller (see procurement/record.py).
+
+        Looked up directly rather than through get_object(): a supplier's
+        queryset only holds PUBLISHED procurements, but a supplier who bid must
+        still be able to see the outcome after it closes or is awarded. Anyone
+        else gets the same 404 as a procurement that doesn't exist."""
+        close_expired_published_projects()
+        project = Project.objects.filter(pk=pk).first()
+        viewer = viewer_for(request.user, project) if project else None
+        if viewer is None:
+            return Response({"detail": "Not found."}, status=http_status.HTTP_404_NOT_FOUND)
+        role, supplier = viewer
+        deep = request.query_params.get("deep") in {"1", "true", "yes"}
+        return Response(build_record(project, role, supplier, request, deep=deep))
+
+    @action(detail=True, methods=["get"], url_path=r"anchors/(?P<anchor_id>[0-9]+)")
+    def anchor_detail(self, request, pk=None, anchor_id=None):
+        """One record of this procurement in full, scoped to the caller
+        (procurement/anchor_detail.py) — the record details page. Same lookup
+        and 404 rule as `record`: a supplier who bid may see it after the
+        procurement closes; a rival's bid record is a 404."""
+        project = Project.objects.filter(pk=pk).first()
+        viewer = viewer_for(request.user, project) if project else None
+        anchor = (BlockchainAnchor.objects.filter(pk=anchor_id, entity_ref=project.code).first()
+                  if viewer else None)
+        if anchor is None or not may_view_anchor(anchor, project, *viewer):
+            return Response({"detail": "Not found."}, status=http_status.HTTP_404_NOT_FOUND)
+        return Response(build_anchor_detail(anchor, project, *viewer, request))
+
+    @action(detail=True, methods=["get"], url_path=r"anchors/(?P<anchor_id>[0-9]+)/packet")
+    def packet(self, request, pk=None, anchor_id=None):
+        """One anchor's verification packet, scoped to the caller
+        (procurement/packets.py): Admin and Head get every anchor; a supplier
+        who bid gets the public ones plus their own evaluation receipt, and the
+        award records only if they won. Looked up like `record` so a bidder can
+        still verify after the procurement closes; everything a caller may not
+        have is a 404, indistinguishable from a missing anchor."""
+        project = Project.objects.filter(pk=pk).first()
+        viewer = viewer_for(request.user, project) if project else None
+        anchor = (BlockchainAnchor.objects.filter(pk=anchor_id, entity_ref=project.code).first()
+                  if viewer else None)
+        packet = packet_for(anchor, project, *viewer) if anchor else None
+        if packet is None:
+            return Response({"detail": "Not found."}, status=http_status.HTTP_404_NOT_FOUND)
+        return Response(packet)
+
+    # Bounds for the on-demand chain check, so it can never hold a gunicorn
+    # worker near its 30s timeout: each RPC call times out on its own
+    # (blockchain.RPC_TIMEOUT_SECONDS) and the loop stops after this budget.
+    VERIFY_CHAIN_LIMIT = 15
+    VERIFY_CHAIN_BUDGET_SECONDS = 15
+
+    @action(detail=True, methods=["post"], url_path="verify-chain")
+    def verify_chain(self, request, pk=None):
+        """Read this procurement's reported transactions back from Sepolia now.
+
+        The same check `confirm_anchors` runs on every deploy (blockchain.
+        confirm_anchor): a transaction only counts as on-chain once its receipt
+        shows success, our ledger address and an AnchorRecorded event with this
+        exact entity/code/stage/hash. Read-only on the chain — it never sends a
+        transaction — and it only updates the server's own chain_status."""
+        project = self.get_object()
+        to_check = list(
+            chain.needs_chain_check(BlockchainAnchor.objects.filter(entity_ref=project.code))
+            .order_by("id")[: self.VERIFY_CHAIN_LIMIT]
+        )
+        results = []
+        detail = ""
+        if to_check:
+            w3 = chain.web3_client() if chain.LEDGER_CONTRACT_ADDRESS else None
+            ok, chain_id = chain.network_check(w3) if w3 is not None else (None, None)
+            if w3 is None:
+                detail = ("This server cannot read the blockchain (no ledger contract address "
+                          "configured, or web3.py not installed). Nothing was changed.")
+            elif ok is None:
+                detail = "The blockchain node could not be reached. Nothing was changed; try again later."
+            elif not ok:
+                detail = (f"The server's blockchain node is on chain {chain_id}, not Sepolia "
+                          f"({chain.SEPOLIA_CHAIN_ID}). Nothing was checked or changed.")
+            else:
+                started = time.monotonic()
+                for anchor in to_check:
+                    if time.monotonic() - started > self.VERIFY_CHAIN_BUDGET_SECONDS:
+                        detail = "Stopped early to keep the request short; run the check again for the rest."
+                        break
+                    results.append({"id": anchor.id, "stage": anchor.stage,
+                                    "outcome": chain.confirm_anchor(anchor, w3=w3)})
+        log_action(
+            request, "blockchain.checked",
+            entity_type="Project", entity_id=project.id,
+            description=f"Checked {len(results)} reported transaction(s) for {project.code} against Sepolia.",
+        )
+        rows = BlockchainAnchor.objects.filter(entity_ref=project.code)
+        return Response({
+            "code": project.code,
+            "checked": results,
+            "detail": detail,
+            "anchors": [anchor_summary(a) for a in rows],
         })
 
     def get_queryset(self):
@@ -903,7 +1163,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         # Retried in the (astronomically unlikely) case a random code is
         # already taken; the unique constraint settles it, and the retry just
         # draws a fresh code rather than failing the create.
-        for attempt in range(5):
+        for attempt in range(PROJECT_CODE_MAX_ATTEMPTS):
             try:
                 with transaction.atomic():
                     project = serializer.save(
@@ -911,7 +1171,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
                         status=Project.Status.PENDING_HEAD)
                 break
             except IntegrityError:
-                if attempt == 4:
+                if attempt == PROJECT_CODE_MAX_ATTEMPTS - 1:
                     raise
         notify_heads(
             f"New procurement \"{project.name}\" ({project.code}) needs your approval.",
@@ -922,6 +1182,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             entity_type="Project", entity_id=project.id,
             description=f"Created procurement {project.code} - {project.name} (sent for approval).",
         )
+        record_project_document_versions(project, user=user)
         # First link in the chain: the procurement as filed, hashed together with
         # its Purchase Request document. Picked up by create() above.
         self._create_anchor = anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
@@ -1075,6 +1336,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
                     status=http_status.HTTP_400_BAD_REQUEST,
                 )
 
+            previous = snapshot_documents(project)
             reviews = dict(project.document_reviews or {})
             updated = []
             for key in PROCUREMENT_DOCUMENT_KEYS:
@@ -1095,6 +1357,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             project.status = Project.Status.PENDING_HEAD
             project.save()
 
+        record_project_document_versions(project, keys=updated, user=request.user, previous=previous)
         notify_heads(
             f"\"{project.name}\" ({project.code}) re-submitted {len(updated)} document(s) for review.",
             link="/head/pending",
@@ -1263,7 +1526,9 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             serializer.is_valid(raise_exception=True)
 
             with transaction.atomic():
-                supplier = Supplier.objects.select_for_update().select_related("user").get(pk=supplier.pk)
+                # of=("self",): lock only the supplier row. Supplier.user is nullable, so
+                # the join is an OUTER join, and PostgreSQL refuses FOR UPDATE on that.
+                supplier = Supplier.objects.select_for_update(of=("self",)).select_related("user").get(pk=supplier.pk)
                 full_name = request.data.get("full_name")
                 if full_name is not None and supplier.user_id:
                     supplier.user.full_name = str(full_name)[:150]
@@ -1424,7 +1689,9 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     def _pending_category_request(self, pk):
         """Lock the supplier and return (supplier, None), or (None, 400 Response)
         when there is no pending request to decide on."""
-        supplier = Supplier.objects.select_for_update().select_related("user").get(pk=pk)
+        # of=("self",): Supplier.user is nullable (outer join), and PostgreSQL
+        # refuses FOR UPDATE on the nullable side of an outer join.
+        supplier = Supplier.objects.select_for_update(of=("self",)).select_related("user").get(pk=pk)
         if supplier.category_request_status != Supplier.CategoryRequest.PENDING:
             return None, Response(
                 {"detail": f"{supplier.company} has no pending category change request."},
@@ -1840,6 +2107,17 @@ class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             qs = qs.filter(project_id=project_id)
         return qs
 
+    def _evaluation_closed(self, bid):
+        """Qualify/disqualify are refused once the procurement is awarded: the
+        outcome of every bid is fixed by the EVALUATION_COMPLETED commitment at
+        that moment, so a later change would silently contradict it (and verify
+        as altered). The UI already hid these buttons; this is the server rule."""
+        if bid.project.status == Project.Status.AWARDED:
+            return Response(
+                {"detail": "This procurement has already been awarded, so its bid evaluation is final."},
+                status=http_status.HTTP_400_BAD_REQUEST)
+        return None
+
     def _set_status(self, bid, status):
         bid.status = status
         bid.reviewed_at = timezone.now()
@@ -1853,6 +2131,9 @@ class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     def qualify(self, request, pk=None):
         """Mark a bid Qualified (passed the evaluation criteria)."""
         bid = self.get_object()
+        refusal = self._evaluation_closed(bid)
+        if refusal:
+            return refusal
         notify_supplier(
             bid.supplier,
             f"Your bid on \"{bid.project.name}\" ({bid.project.code}) qualified for evaluation.",
@@ -1870,6 +2151,9 @@ class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     def disqualify(self, request, pk=None):
         """Mark a bid Disqualified."""
         bid = self.get_object()
+        refusal = self._evaluation_closed(bid)
+        if refusal:
+            return refusal
         notify_supplier(
             bid.supplier,
             f"Your bid on \"{bid.project.name}\" ({bid.project.code}) was disqualified.",
@@ -2110,18 +2394,32 @@ class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             award = self._award(bid, project)
 
         self._announce_award(request, bid, project)
+        # First: one salted commitment to EVERY bid received and its final
+        # outcome (blockchain.anchor_evaluation). Fixes the evaluation as it
+        # stood at award without putting any losing amount on the ledger.
+        evaluation_anchor = anchor_evaluation(project)
         # The winning bid reaches the ledger here and nowhere else. Bids are not
         # anchored on submission or on qualification, because that would publish
         # every losing supplier's amount; only the bid that actually won the
         # contract is public business. Anchored BEFORE the award so the trail
         # reads in the order the events happened: the offer, then the award.
-        anchor_bid(bid, BlockchainAnchor.Stage.BID_SUBMITTED)
+        bid_anchor = anchor_bid(bid, BlockchainAnchor.Stage.BID_SUBMITTED)
 
         # Final link in the chain: the award itself, hashed with the winning
         # quotation. Anchored as AWARD (not BID) so the public trail ends with an
         # unambiguous "this contract went to this bid at this amount".
         anchor = anchor_award(award)
-        return anchored_response(self.get_serializer(bid).data, anchor)
+        response = anchored_response(self.get_serializer(bid).data, anchor)
+        # Every anchor this award produced, in the order they must be signed.
+        # `anchor` alone used to be the only one returned, so in the MetaMask
+        # flow the winning bid's anchor was never offered for signing and sat
+        # "not yet anchored" until someone found it. `anchor` is kept for
+        # older clients; `anchor_sequence` is what the dashboard signs.
+        # (Not named `anchors`: that key is the bid's own trail in BidSerializer.)
+        response.data["anchor_sequence"] = [
+            anchor_summary(a) for a in (evaluation_anchor, bid_anchor, anchor) if a is not None
+        ]
+        return response
 
     # Bidding must have been opened (and not undone) for there to be anything to
     # award; anything earlier or later in the lifecycle is refused.
@@ -2284,6 +2582,9 @@ class AwardViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
         # appends a NEW anchor rather than editing the old one, so a replacement
         # is visible in the trail instead of silently overwriting history.
         anchor = anchor_award(award, AWARD_DOCUMENT_STAGES[key])
+        # Keep this issue's exact file reachable after a later re-issue
+        # replaces it on the Award (procurement/document_versions.py).
+        record_award_document_version(award, key, anchor, generated=generated, user=request.user)
         return anchored_response(self.get_serializer(award).data, anchor)
 
     @action(detail=True, methods=["post"], url_path="documents/generate")

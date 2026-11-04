@@ -12,7 +12,7 @@ from .document_requirements import (
     expiring_documents,
     missing_documents,
 )
-from .files import protected_file_url
+from .files import SUPPLIER_VISIBLE_PROJECT_FIELDS, protected_file_url
 from .models import (
     AWARD_DOCUMENT_FIELDS,
     BID_DOCUMENT_FIELDS,
@@ -73,11 +73,19 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(source="user.full_name", read_only=True, default="")
     email = serializers.EmailField(source="user.email", read_only=True, default="")
     documents = serializers.SerializerMethodField()
+    # Sign-in lockout state, so the Admin can unlock the account (accounts/lockout.py).
+    user_id = serializers.IntegerField(source="user.id", read_only=True, default=None)
+    account_locked_until = serializers.SerializerMethodField()
+
+    def get_account_locked_until(self, obj):
+        from accounts.lockout import is_locked
+        return obj.user.locked_until if obj.user_id and is_locked(obj.user) else None
 
     class Meta:
         model = Supplier
         fields = [
-            "id", "company", "contact", "full_name", "email", "business_type",
+            "id", "user_id", "account_locked_until",
+            "company", "contact", "full_name", "email", "business_type",
             "business_types", "company_address", "phone_number", "tin",
             "representative_name", "track_record_description",
             "mayors_permit_expiry", "tax_clearance_expiry", "financial_statement_year",
@@ -262,8 +270,13 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
         show/download what the Admin uploaded and to flag individual documents."""
         request = self.context.get("request")
         reviews = obj.document_reviews or {}
+        # Suppliers only get the documents they need to bid (files.py has the
+        # same rule; listing the others would just show links that 404).
+        is_supplier = getattr(getattr(request, "user", None), "role", None) == "supplier"
         out = []
         for key, label, required in PROCUREMENT_DOCUMENT_FIELDS:
+            if is_supplier and key not in SUPPLIER_VISIBLE_PROJECT_FIELDS:
+                continue
             url = protected_file_url(request, "project", obj, key)
             review = reviews.get(key) or {}
             out.append({
@@ -417,6 +430,8 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
     # can flag a single document on a bid without disqualifying the whole bid.
     documents = serializers.SerializerMethodField()
     anchors = serializers.SerializerMethodField()
+    # Stored names are random (uploads.py); this is what the UI shows.
+    file_names = serializers.JSONField(source="original_filenames", read_only=True)
 
     class Meta:
         model = Bid
@@ -437,6 +452,8 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             "document_reviews", "documents",
             # blockchain anchor trail for this bid
             "anchors",
+            # the uploader's original file names, {field: name}
+            "file_names",
             # declarations
             "terms_accepted", "interest_declared", "scm_declared",
             "accuracy_confirmed", "specification_confirmed",

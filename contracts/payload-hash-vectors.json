@@ -1,0 +1,352 @@
+{
+  "_about": "Payloads and the data_hash the BACKEND (blockchain.hash_payload) computes for them. Both backend and browser tests assert against this file, so the two hashers can never drift apart. Regenerate only if hash_payload itself is intentionally changed — which would break every existing anchor.",
+  "vectors": [
+    {
+      "name": "project v2, ASCII",
+      "payload": {
+        "v": 2,
+        "entity": "PROJECT",
+        "stage": "BIDDING_OPEN",
+        "code": "PC-7K4M-Q9XT-3HWD",
+        "name": "Office Supplies Q4",
+        "category": "office_supplies",
+        "type": "goods",
+        "budget": "250000.00",
+        "bidding_period_days": 14,
+        "delivery_period_days": 30,
+        "created_at": "2026-11-03T08:15:00.123456+00:00",
+        "document_hash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "data_hash": "0x32082deee4f9029988a97ccbcf1e7b0d9e15ae12c44b647cd04000ca4fb1f160"
+    },
+    {
+      "name": "project v2, non-ASCII and emoji",
+      "payload": {
+        "v": 2,
+        "entity": "PROJECT",
+        "stage": "SUBMITTED",
+        "code": "PC-ÑAAA-BBBB-CCCC",
+        "name": "Pañuelo & ₱ supplies — “Dasmariñas” 🚀",
+        "category": "",
+        "type": "",
+        "budget": "0.00",
+        "bidding_period_days": 0,
+        "delivery_period_days": 0,
+        "created_at": "",
+        "document_hash": ""
+      },
+      "data_hash": "0x71cd8d80da46a941a33c170e39914d827cd08a88ffd9f53741e60474bbaea353"
+    },
+    {
+      "name": "control characters, quotes, backslash, DEL",
+      "payload": {
+        "v": 2,
+        "name": "tab\there \"quoted\" back\\slash newline\n cr\r bell\u0007 del nbsp "
+      },
+      "data_hash": "0xa7f35dd89bc6d50bd0f8fbdae9f0663913cc407a55e6476c88cdb47d1b367e01"
+    },
+    {
+      "name": "project v1 (legacy: status, deadline, reviewed_at, published_at)",
+      "payload": {
+        "v": 1,
+        "entity": "PROJECT",
+        "stage": "HEAD_APPROVED",
+        "code": "P-2026-005",
+        "name": "Legacy",
+        "category": "it_equipment",
+        "type": "goods",
+        "budget": "99999.99",
+        "status": "approved",
+        "deadline": "2026-08-01",
+        "reviewed_at": "2026-07-27T14:20:00+00:00",
+        "published_at": "",
+        "created_at": "2026-07-27T14:10:00+00:00",
+        "document_hash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "data_hash": "0x00a8e4d033ebc1d1e987f2f0d036ca6b0dbc2a400a671acb9a81d9be624e5928"
+    },
+    {
+      "name": "award document",
+      "payload": {
+        "v": 2,
+        "entity": "AWARD",
+        "stage": "NOA_ISSUED",
+        "project_code": "PC-7K4M-Q9XT-3HWD",
+        "award_id": 4,
+        "bid_id": 9,
+        "supplier_id": 3,
+        "amount": "229900.00",
+        "status": "noa_issued",
+        "awarded_at": "2026-11-03T09:00:00+00:00",
+        "issued_at": "2026-11-04",
+        "document_hash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "data_hash": "0x3213526a965838618af68d5d9ceb684ff530e307d14c5b459fed3efbf653eeac"
+    },
+    {
+      "name": "nested keys sorted at every level, empty containers, null, booleans",
+      "payload": {
+        "z": {
+          "b": [
+            3,
+            1,
+            {
+              "y": null,
+              "x": true
+            }
+          ],
+          "a": {}
+        },
+        "a": [],
+        "m": false,
+        "big": 9007199254740991
+      },
+      "data_hash": "0xfc75f7a02dea70ef8eb1350052be5d079857d3d515f87220681cd189143c96cc"
+    },
+    {
+      "name": "project-stage/3, all five documents present",
+      "payload": {
+        "v": 3,
+        "kind": "project-stage/3",
+        "entity": "PROJECT",
+        "stage": "SUBMITTED",
+        "code": "PC-7K4M-Q9XT-3HWD",
+        "name": "Office Supplies Q4",
+        "category": "Office Supplies",
+        "type": "Goods",
+        "budget": "250000.00",
+        "bidding_period_days": 14,
+        "delivery_period_days": 30,
+        "created_at": "2026-11-03T08:15:00.123456+00:00",
+        "documents": {
+          "purchase_request": {
+            "state": "present",
+            "sha256": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "version": 1
+          },
+          "technical_specifications": {
+            "state": "present",
+            "sha256": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "version": 1
+          },
+          "terms_of_reference": {
+            "state": "present",
+            "sha256": "0x3333333333333333333333333333333333333333333333333333333333333333",
+            "version": 1
+          },
+          "approved_budget_document": {
+            "state": "present",
+            "sha256": "0x4444444444444444444444444444444444444444444444444444444444444444",
+            "version": 1
+          },
+          "bid_evaluation_criteria": {
+            "state": "present",
+            "sha256": "0x5555555555555555555555555555555555555555555555555555555555555555",
+            "version": 1
+          }
+        },
+        "document_key": "purchase_request",
+        "document_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "data_hash": "0x0e55d713c67b38d5f10e0d9a28bbaeaf4c0ed9968d87fa43064a28403bd34a2f"
+    },
+    {
+      "name": "project-stage/3, non-ASCII and emoji, Terms of Reference absent",
+      "payload": {
+        "v": 3,
+        "kind": "project-stage/3",
+        "entity": "PROJECT",
+        "stage": "BIDDING_OPEN",
+        "code": "PC-7K4M-Q9XT-3HWD",
+        "name": "Pañuelo & ₱ supplies — “Dasmariñas” 🚀",
+        "category": "Office Supplies",
+        "type": "Goods",
+        "budget": "250000.00",
+        "bidding_period_days": 14,
+        "delivery_period_days": 30,
+        "created_at": "2026-11-03T08:15:00+00:00",
+        "documents": {
+          "purchase_request": {
+            "state": "present",
+            "sha256": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "version": 1
+          },
+          "technical_specifications": {
+            "state": "present",
+            "sha256": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "version": 1
+          },
+          "terms_of_reference": {
+            "state": "absent",
+            "sha256": "",
+            "version": 0
+          },
+          "approved_budget_document": {
+            "state": "present",
+            "sha256": "0x4444444444444444444444444444444444444444444444444444444444444444",
+            "version": 1
+          },
+          "bid_evaluation_criteria": {
+            "state": "present",
+            "sha256": "0x5555555555555555555555555555555555555555555555555555555555555555",
+            "version": 1
+          }
+        },
+        "document_key": "bid_evaluation_criteria",
+        "document_hash": "0x5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "data_hash": "0x78965869aa8d8386f54d270c6703ecad975fb48139283ec7b74a0f634c9aaf17"
+    },
+    {
+      "name": "project-stage/3, evidence document unreadable when recorded",
+      "payload": {
+        "v": 3,
+        "kind": "project-stage/3",
+        "entity": "PROJECT",
+        "stage": "HEAD_APPROVED",
+        "code": "PC-7K4M-Q9XT-3HWD",
+        "name": "Office Supplies Q4",
+        "category": "Office Supplies",
+        "type": "Goods",
+        "budget": "250000.00",
+        "bidding_period_days": 14,
+        "delivery_period_days": 30,
+        "created_at": "2026-11-03T08:15:00.123456+00:00",
+        "documents": {
+          "purchase_request": {
+            "state": "present",
+            "sha256": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "version": 1
+          },
+          "technical_specifications": {
+            "state": "present",
+            "sha256": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "version": 1
+          },
+          "terms_of_reference": {
+            "state": "present",
+            "sha256": "0x3333333333333333333333333333333333333333333333333333333333333333",
+            "version": 1
+          },
+          "approved_budget_document": {
+            "state": "unreadable",
+            "sha256": "",
+            "version": 1
+          },
+          "bid_evaluation_criteria": {
+            "state": "present",
+            "sha256": "0x5555555555555555555555555555555555555555555555555555555555555555",
+            "version": 1
+          }
+        },
+        "document_key": "approved_budget_document",
+        "document_hash": ""
+      },
+      "data_hash": "0xdc3f825e5489b421ea4e474e76dd6e6a8c796fcf3f367f40c32cdd94b6e18584"
+    },
+    {
+      "name": "project-stage/3, Purchase Request at version 3 (A, B, A)",
+      "payload": {
+        "v": 3,
+        "kind": "project-stage/3",
+        "entity": "PROJECT",
+        "stage": "REVISION_REQUESTED",
+        "code": "PC-7K4M-Q9XT-3HWD",
+        "name": "Office Supplies Q4",
+        "category": "Office Supplies",
+        "type": "Goods",
+        "budget": "250000.00",
+        "bidding_period_days": 14,
+        "delivery_period_days": 30,
+        "created_at": "2026-11-03T08:15:00.123456+00:00",
+        "documents": {
+          "purchase_request": {
+            "state": "present",
+            "sha256": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "version": 3
+          },
+          "technical_specifications": {
+            "state": "present",
+            "sha256": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "version": 1
+          },
+          "terms_of_reference": {
+            "state": "present",
+            "sha256": "0x3333333333333333333333333333333333333333333333333333333333333333",
+            "version": 1
+          },
+          "approved_budget_document": {
+            "state": "present",
+            "sha256": "0x4444444444444444444444444444444444444444444444444444444444444444",
+            "version": 1
+          },
+          "bid_evaluation_criteria": {
+            "state": "present",
+            "sha256": "0x5555555555555555555555555555555555555555555555555555555555555555",
+            "version": 1
+          }
+        },
+        "document_key": "purchase_request",
+        "document_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "data_hash": "0x863223e0e919ce0040c8439b042ad303c9af8b85e940bf209a65c8bae0c11108"
+    },
+    {
+      "name": "bid-leaf/3, winning bid",
+      "payload": {
+        "kind": "bid-leaf/3",
+        "bid_id": 9,
+        "supplier_id": 3,
+        "amount": "229900.00",
+        "submitted_at": "2026-11-03T08:15:00.123456+00:00",
+        "document_hash": "0xabababababababababababababababababababababababababababababababab",
+        "status": "winner",
+        "salt": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "data_hash": "0xecc4337b1d6e4afb0a182a2eb203e89c492f4d934fe981bf96b4e9eea236f863"
+    },
+    {
+      "name": "bid-leaf/3, losing bid with no document",
+      "payload": {
+        "kind": "bid-leaf/3",
+        "bid_id": 12,
+        "supplier_id": 5,
+        "amount": "241000.50",
+        "submitted_at": "2026-11-03T09:00:00+00:00",
+        "document_hash": "",
+        "status": "disqualified",
+        "salt": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "data_hash": "0x3a662336979433e1c1abafee7397a8d83c6c5edb4e3f7f61be473c70da61d063"
+    },
+    {
+      "name": "evaluation/3, leaves sorted by value",
+      "payload": {
+        "v": 3,
+        "kind": "evaluation/3",
+        "entity": "PROJECT",
+        "stage": "EVALUATION_COMPLETED",
+        "code": "PC-7K4M-Q9XT-3HWD",
+        "bid_count": 2,
+        "leaves": [
+          "0x3a662336979433e1c1abafee7397a8d83c6c5edb4e3f7f61be473c70da61d063",
+          "0xecc4337b1d6e4afb0a182a2eb203e89c492f4d934fe981bf96b4e9eea236f863"
+        ]
+      },
+      "data_hash": "0x834d19805677f1bf77b1b5845085207afd4cf1407137e6807bea9392c0c51eaf"
+    },
+    {
+      "name": "award-private/3 (Decision A Option 1, a working assumption)",
+      "payload": {
+        "kind": "award-private/3",
+        "award_id": 4,
+        "bid_id": 9,
+        "supplier_id": 3,
+        "status": "won",
+        "awarded_at": "2026-11-03T09:30:00.654321+00:00",
+        "salt": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "data_hash": "0x83a1662d514398fcb7f85e145e02740c49e25c93ccb18b2499646fa3c0c04c98"
+    }
+  ]
+}

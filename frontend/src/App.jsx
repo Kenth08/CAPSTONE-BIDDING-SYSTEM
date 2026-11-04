@@ -9,6 +9,8 @@ import ResetPasswordPage from './pages/ResetPasswordPage'
 import VerifyEmailPage from './pages/VerifyEmailPage'
 import SupplierRegister from './pages/SupplierRegister'
 import PublicResultsPage from './pages/PublicResultsPage'
+import PublicProcurementPage from './pages/PublicProcurementPage'
+import { PublicAnchorDetailPage } from './components/AnchorDetail'
 import TermsPage from './pages/TermsPage'
 import PrivacyPage from './pages/PrivacyPage'
 import { getToken, getRole } from './api'
@@ -32,6 +34,8 @@ function App() {
         <Route path="/verify-email"    element={<VerifyEmailPage />} />
         <Route path="/register"   element={<SupplierRegister />} />
         <Route path="/public"     element={<PublicResultsPage />} />
+        <Route path="/public/procurement/:code" element={<PublicProcurementPage />} />
+        <Route path="/public/procurement/:code/record/:anchorId" element={<PublicAnchorDetailPage />} />
         <Route path="/terms"      element={<TermsPage />} />
         <Route path="/privacy"    element={<PrivacyPage />} />
         <Route path="/admin/*"    element={<ProtectedRoute role="admin"><AdminDashboard /></ProtectedRoute>} />

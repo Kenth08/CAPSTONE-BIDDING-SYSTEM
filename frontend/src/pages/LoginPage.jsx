@@ -1,15 +1,25 @@
 import { useState } from 'react'
-import { Link, Navigate, useNavigate } from 'react-router-dom'
-import { Shield, Eye, EyeOff, ArrowLeft, AlertCircle, Loader2, LogIn } from 'lucide-react'
-import { apiLogin, saveSession, getToken, getRole } from '../api'
+import { Link, useNavigate } from 'react-router-dom'
+import { Shield, Eye, EyeOff, ArrowLeft, AlertCircle, Loader2, LogIn, LogOut } from 'lucide-react'
+import { apiLogin, apiLogout, saveSession, getToken, getRole } from '../api'
+import { storedUser } from '../components/shell/AppHeader'
+import MfaStep from '../components/MfaStep'
 import '../style/LoginPage.css'
+
+const ROLE_LABEL = { admin: 'Administrator', head: 'Department Head', supplier: 'Supplier' }
 
 export default function LoginPage() {
   const navigate = useNavigate()
+  // Already signed in (e.g. arrived from a public page link): say which account and
+  // let them choose, instead of silently entering it. Read once on arrival, so a
+  // sign-in made on this page goes straight to its dashboard.
+  const [signedInRole, setSignedInRole] = useState(() => getToken() && getRole())
   const [showPass, setShowPass] = useState(false)
   const [form, setForm] = useState({ identifier: '', password: '' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  // Set when an Admin/Head password was accepted and a 2FA code is needed.
+  const [mfaChallenge, setMfaChallenge] = useState(null)
 
   const goToDashboard = (userRole) => {
     if (userRole === 'admin') navigate('/admin')
@@ -23,6 +33,11 @@ export default function LoginPage() {
     setLoading(true)
     try {
       const result = await apiLogin(form.identifier.trim(), form.password)
+      if (result.mfa_required) {
+        setMfaChallenge(result)
+        setForm((f) => ({ ...f, password: '' }))
+        return
+      }
       saveSession(result)
       goToDashboard(result.user.role)
     } catch (err) {
@@ -32,10 +47,15 @@ export default function LoginPage() {
     }
   }
 
-  // Already signed in (e.g. arrived from a public page link): go straight back
-  // to the dashboard instead of showing a login form that looks like a logout.
-  const signedInRole = getToken() && getRole()
-  if (signedInRole) return <Navigate to={`/${signedInRole}`} replace />
+  const signOut = () => {
+    apiLogout()
+    setSignedInRole(null)
+  }
+
+  const finishMfa = (result) => {
+    saveSession(result)
+    goToDashboard(result.user.role)
+  }
 
   return (
     <div className="login-page">
@@ -50,6 +70,23 @@ export default function LoginPage() {
             </div>
           </div>
 
+          {mfaChallenge ? (
+            <MfaStep challenge={mfaChallenge} onDone={finishMfa} onCancel={() => setMfaChallenge(null)} />
+          ) : signedInRole ? (<>
+          <h1>You're already signed in</h1>
+          <p className="login-subtitle">
+            This browser is signed in as <strong>{storedUser().full_name || storedUser().username || 'this account'}</strong>
+            {ROLE_LABEL[signedInRole] ? ` (${ROLE_LABEL[signedInRole]})` : ''}.
+          </p>
+          <div className="login-form">
+            <button type="button" className="login-submit" onClick={() => goToDashboard(signedInRole)}>
+              Continue to dashboard
+            </button>
+            <button type="button" className="login-other" onClick={signOut}>
+              <LogOut size={16} aria-hidden="true" /> Sign out and use another account
+            </button>
+          </div>
+          </>) : (<>
           <h1>Welcome Back</h1>
           <p className="login-subtitle">Sign in with your username or email to continue.</p>
           <form onSubmit={handleSubmit} className="login-form">
@@ -95,6 +132,7 @@ export default function LoginPage() {
           <p className="login-switch">
             New supplier? <Link to="/register">Register here</Link>
           </p>
+          </>)}
         </div>
       </div>
       <div className="login-right">

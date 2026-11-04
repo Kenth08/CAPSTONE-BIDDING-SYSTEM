@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
   ChevronDown, LogOut,
   ClipboardCheck, AlertCircle, AlertTriangle, FolderOpen, Eye,
-  ThumbsUp, ThumbsDown, FileText, Menu, X, Image as ImageIcon, ChevronRight, ShieldCheck, Link2, Loader2,
+  ThumbsUp, ThumbsDown, FileText, Menu, X, Image as ImageIcon, ChevronRight, ShieldCheck, Link2, Loader2, Trophy,
 } from 'lucide-react'
 import { apiLogout, apiHeadSummary } from '../api'
 import {
@@ -19,6 +19,8 @@ import StatusBadge from '../components/ui/StatusBadge'
 import EmptyState from '../components/ui/EmptyState'
 import AnchorActivity from '../components/AnchorActivity'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
+import ProcurementRecordPage from '../components/ProcurementRecord'
+import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import KpiCard, { KpiRow } from '../components/ui/KpiCard'
 import Thumbnail from '../components/ui/Thumbnail'
 import Lightbox from '../components/ui/Lightbox'
@@ -26,8 +28,11 @@ import ConfirmDialog from '../components/ui/ConfirmDialog'
 import RelativeTime from '../components/ui/RelativeTime'
 import Toaster, { toast } from '../components/ui/Toaster'
 import { useNow } from '../components/ui/Countdown'
+import { signingBlocked } from '../blockchain/anchor'
 import { runAnchor, isAnchorBusy, useAnchorActivity } from '../blockchain/anchorStore'
+import { ANCHOR_STATES, anchorState } from '../blockchain/anchorState'
 import { daysSince, greeting, peso, todayLong } from '../utils/format'
+import SecureImg from '../components/ui/SecureImg'
 import '../style/HeadDashboard.css'
 
 const NAV_SECTIONS = (pendingCount) => [
@@ -37,6 +42,9 @@ const NAV_SECTIONS = (pendingCount) => [
   { label: 'Approvals', items: [
     { icon: Clock, label: 'Pending Approval', to: '/head/pending', badge: pendingCount },
     { icon: CheckCircle2, label: 'Reviewed Projects', to: '/head/approved' },
+  ] },
+  { label: 'Outcomes', items: [
+    { icon: Trophy, label: 'Results', to: '/head/results' },
   ] },
 ]
 
@@ -169,7 +177,7 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultE
                 <div className="hd-refimg-section">
                   <span className="hd-refimg-label"><ImageIcon size={13} /> Project Reference Image</span>
                   <a href={project.referenceImage} target="_blank" rel="noopener noreferrer" title="Open full size">
-                    <img src={project.referenceImage} alt="Project reference" className="hd-refimg-thumb" />
+                    <SecureImg src={project.referenceImage} alt="Project reference" className="hd-refimg-thumb" />
                   </a>
                 </div>
               )}
@@ -223,7 +231,8 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultE
               {/* What has already been written to the blockchain for this
                   procurement — the Head can see the Admin's submission was anchored
                   before deciding, and anchor anything still pending. */}
-              <BlockchainTrail anchors={project.anchors} entityRef={project.code} />
+              <BlockchainTrail anchors={project.anchors} entityRef={project.code} projectId={project.pk ?? project.id}
+                canSignAnchor={(a) => a.entity_type === 'PROJECT'} />
             </div>
           </div>
 
@@ -367,11 +376,14 @@ function DecisionChain({ anchor, onAnchored }) {
   const activity = useAnchorActivity()
   const [busy, setBusy] = useState(false)
   if (!anchor) return <span className="rf-muted">Not recorded</span>
-  if (anchor.anchored) {
+  const state = anchorState(anchor)
+  if (state === 'verified' || state === 'reported') {
     return (
       <a className="rf-receipt" href={anchor.explorer_url} target="_blank" rel="noopener noreferrer"
-        title={`Transaction ${anchor.tx_hash} on Etherscan`}>
-        <ShieldCheck size={13} aria-hidden="true" /> On-chain
+        title={`${ANCHOR_STATES[state].text}: transaction ${anchor.tx_hash} on Etherscan`}>
+        {state === 'verified'
+          ? <><ShieldCheck size={13} aria-hidden="true" /> Confirmed on-chain</>
+          : <><Link2 size={13} aria-hidden="true" /> Tx reported</>}
       </a>
     )
   }
@@ -379,11 +391,13 @@ function DecisionChain({ anchor, onAnchored }) {
     setBusy(true)
     const ok = await runAnchor(anchor, { label: `${anchor.entity_ref} · ${anchor.stage_label}` })
     setBusy(false)
-    if (ok) { toast.success(`${anchor.entity_ref} decision recorded on-chain.`); onAnchored() }
+    if (ok) { toast.success(`${anchor.entity_ref} decision: transaction submitted to Sepolia.`); onAnchored() }
   }
   return (
-    <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={go} disabled={busy || isAnchorBusy(activity)}>
-      {busy ? <Loader2 size={12} className="ui-spin" /> : <Link2 size={12} />} {busy ? 'Anchoring…' : 'Anchor now'}
+    <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={go}
+      disabled={!!signingBlocked(anchor) || busy || isAnchorBusy(activity)}
+      title={signingBlocked(anchor) || undefined}>
+      {busy ? <Loader2 size={12} className="ui-spin" /> : <Link2 size={12} />} {busy ? 'Anchoring…' : signingBlocked(anchor) ? 'Signing disabled' : 'Anchor now'}
     </button>
   )
 }
@@ -608,6 +622,60 @@ function PendingPage() {
   )
 }
 
+// Procurements whose bidding is over: the award (or "no award yet") and every
+// bid behind it, with the blockchain evidence — opened as a procurement record.
+function ResultsPage() {
+  const { projects, loading } = useProjects()
+  const navigate = useNavigate()
+  const done = projects
+    .filter(p => p.status === 'awarded' || p.status === 'closed')
+    .sort((a, b) => ((a.deadlineRaw || '') < (b.deadlineRaw || '') ? 1 : -1))
+
+  return (
+    <div className="hd-content">
+      <div className="hd-card">
+        <div className="hd-card-header">
+          <div>
+            <h2>Results</h2>
+            <p>Awarded and closed procurements — open one to see every bid, the outcome and its blockchain evidence</p>
+          </div>
+        </div>
+        {loading && done.length === 0 ? (
+          <div className="hd-table-wrap"><table className="hd-table"><tbody><TableSkeleton rows={4} cols={6} /></tbody></table></div>
+        ) : done.length === 0 ? (
+          <EmptyState icon={Trophy} title="No results yet"
+            description="Procurements appear here once their bidding closes or a winner is selected." />
+        ) : (
+          <div className="hd-table-wrap">
+            <table className="hd-table">
+              <thead>
+                <tr><th>ID</th><th>Project Name</th><th>Category</th><th className="hd-num">ABC</th><th>Bids</th><th>Outcome</th><th><span className="sr-only">Actions</span></th></tr>
+              </thead>
+              <tbody>
+                {done.map(p => (
+                  <tr key={p.id}>
+                    <td><span className="hd-id">{p.code}</span></td>
+                    <td className="hd-bold">{p.name}</td>
+                    <td><span className="ui-badge ui-badge--neutral">{p.category || p.type}</span></td>
+                    <td className="hd-num">{p.budget}</td>
+                    <td className="hd-muted">{p.bids ?? '—'}</td>
+                    <td><StatusBadge domain="project" status={p.status} /></td>
+                    <td>
+                      <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={() => navigate(`/head/record/${p.id}`)}>
+                        <ShieldCheck size={13} /> View record
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 const REVIEW_TABS = ['All', 'Approved', 'Rejected']
 
 function ApprovedPage() {
@@ -695,8 +763,9 @@ export default function HeadDashboard() {
     '/head': 'Dashboard',
     '/head/pending': 'Pending Approval',
     '/head/approved': 'Reviewed Projects',
+    '/head/results': 'Results',
   }
-  const title = PAGE_TITLES[loc.pathname] || 'Dashboard'
+  const title = PAGE_TITLES[loc.pathname] || (loc.pathname.startsWith('/head/record/') ? 'Procurement Record' : 'Dashboard')
 
   const u = storedUser()
   const user = {
@@ -711,7 +780,7 @@ export default function HeadDashboard() {
         workspace="Head Workspace"
         logoIcon={ClipboardCheck}
         sections={NAV_SECTIONS(pendingCount)}
-        isActive={(to) => loc.pathname === to}
+        isActive={(to) => loc.pathname === to || (to === '/head/results' && loc.pathname.startsWith('/head/record/'))}
         open={navOpen}
         onClose={() => setNavOpen(false)}
       />
@@ -729,6 +798,9 @@ export default function HeadDashboard() {
             <Route index element={<HeadHome />} />
             <Route path="pending" element={<PendingPage />} />
             <Route path="approved" element={<ApprovedPage />} />
+            <Route path="results" element={<ResultsPage />} />
+            <Route path="record/:id" element={<ProcurementRecordPage className="hd-content" backTo="/head/results" backLabel="Back to results" />} />
+            <Route path="record/:id/anchor/:anchorId" element={<ProjectAnchorDetailPage className="hd-content" />} />
             <Route path="*" element={<HeadHome />} />
           </Routes>
         </div>

@@ -8,6 +8,8 @@ assertion.
 import contextlib
 import io
 import re
+from datetime import datetime
+from datetime import timezone as dt_timezone
 from urllib.parse import parse_qs, urlparse
 from unittest import mock
 
@@ -32,6 +34,7 @@ from accounts.tests import registration_payload
 
 from .management.commands import seed as seed_cmd
 from .models import Award, Bid, BidAttachment, BlockchainAnchor, Project, Supplier, SupplierCategoryDocument
+from .blockchain import hash_payload, verify_anchor
 from .tests import IN_A_YEAR, IN_TWO_YEARS, attach_base_documents, dummy_pdf, make_admin, make_head, make_project, make_supplier
 
 User = get_user_model()
@@ -83,24 +86,22 @@ class ProjectCodeGenerationTests(APITestCase):
     def test_codes_are_random_and_not_sequential(self):
         """Sequential codes ("P-2026-001", "-002", ...) let anyone guess every
         other procurement's reference from one. New codes are long and random."""
-        import re
         codes = [self._create().data["code"] for _ in range(5)]
-        pattern = re.compile(r"^PRC-\d{4}-[23456789A-HJKMNP-TV-Z]{4}-[23456789A-HJKMNP-TV-Z]{4}$")
+        pattern = re.compile(r"^PC-[23456789A-HJKMNP-TV-Z]{4}-[23456789A-HJKMNP-TV-Z]{4}-[23456789A-HJKMNP-TV-Z]{4}$")
         for code in codes:
             self.assertRegex(code, pattern)
             self.assertLessEqual(len(code), Project._meta.get_field("code").max_length)
         self.assertEqual(len(set(codes)), 5)
 
     def test_create_retries_when_a_random_code_is_already_taken(self):
-        from unittest import mock
         existing = self._create().data["code"]
         with mock.patch(
             "procurement.views.next_project_code",
-            side_effect=[existing, "PRC-2026-ABCD-EFGH"],
+            side_effect=[existing, existing, "PC-ABCD-EFGH-JKMN"],
         ):
             res = self._create()
         self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
-        self.assertEqual(res.data["code"], "PRC-2026-ABCD-EFGH")
+        self.assertEqual(res.data["code"], "PC-ABCD-EFGH-JKMN")
 
 
 class PublishRequiresHeadApprovalTests(APITestCase):
@@ -315,10 +316,25 @@ class ProtectedFileAccessTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(b"".join(res.streaming_content), b"%PDF-1.4 fake")
 
-    def test_signed_link_works_without_an_auth_header(self):
-        # This is the case a plain <a href target="_blank"> hits: a browser
-        # navigation carries no Authorization header.
+    def _one_time_link_for_owner(self):
+        """What a click does: ask for a one-time link with the JWT."""
+        self.client.force_authenticate(user=self.owner.user)
+        res = self.client.post(f"/api/files/supplier/{self.owner.pk}/valid_id/link/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return res.data["url"]
+
+    def test_serialized_url_is_not_a_credential(self):
+        # The address in API responses carries no token, so it can be logged or
+        # leaked without granting anything.
         url = self._url_for_owner()
+        self.assertNotIn("t=", url)
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_one_time_link_works_without_an_auth_header(self):
+        # This is the case a browser download hits: a navigation carries no
+        # Authorization header.
+        url = self._one_time_link_for_owner()
         self.client.force_authenticate(user=None)
         res = self.client.get(url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
@@ -340,7 +356,7 @@ class ProtectedFileAccessTests(APITestCase):
         self.rival.valid_id = dummy_pdf("rival-id.pdf")
         self.rival.save()
 
-        url = self._url_for_owner()
+        url = self._one_time_link_for_owner()
         token = url.split("t=")[1]
         self.client.force_authenticate(user=None)
         # Same signature, different supplier in the path — the token is bound to
@@ -349,7 +365,7 @@ class ProtectedFileAccessTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_a_tampered_token_is_rejected(self):
-        url = self._url_for_owner()
+        url = self._one_time_link_for_owner()
         base, token = url.split("?t=")
         self.client.force_authenticate(user=None)
         # Flip the last character of the signature.
@@ -629,12 +645,15 @@ class AwardDocumentAccessTests(APITestCase):
         self.assertEqual(self.client.get(doc["url"]).status_code, status.HTTP_200_OK)
 
     def test_a_losing_bidder_cannot_read_the_award_document(self):
-        self.client.post(
-            f"/api/awards/{self.award.pk}/documents/generate/",
-            {"key": "notice_of_award"}, format="json")
-        self.client.force_authenticate(user=self.loser.user)
-        res = self.client.get(f"/api/files/award/{self.award.pk}/notice_of_award/")
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        # The NOA of an awarded procurement is public by design; the BAC
+        # Resolution and the NTP are not.
+        for key in ("award_resolution", "notice_to_proceed"):
+            self.client.force_authenticate(user=self.admin)
+            self.client.post(
+                f"/api/awards/{self.award.pk}/documents/generate/", {"key": key}, format="json")
+            self.client.force_authenticate(user=self.loser.user)
+            res = self.client.get(f"/api/files/award/{self.award.pk}/{key}/")
+            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND, key)
 
 
 class SeedCommandSafetyTests(TestCase):
@@ -1174,7 +1193,7 @@ class CategoryChangeWorkflowTests(APITestCase):
         self.head = make_head()
         self.supplier = make_supplier(verified=True, categories=["IT Equipment"])
         self.furniture = make_project(status=Project.Status.PUBLISHED, category="Furniture")
-        self.furniture.purchase_request = dummy_pdf()
+        self.furniture.terms_of_reference = dummy_pdf()
         self.furniture.save()
 
     def _request(self, categories, user=None):
@@ -1188,7 +1207,7 @@ class CategoryChangeWorkflowTests(APITestCase):
     def _can_see_furniture(self):
         self.client.force_authenticate(user=self.supplier.user)
         visible = [p["id"] for p in self.client.get("/api/projects/").json()]
-        doc = self.client.get(f"/api/files/project/{self.furniture.pk}/purchase_request/")
+        doc = self.client.get(f"/api/files/project/{self.furniture.pk}/terms_of_reference/")
         return self.furniture.pk in visible, doc.status_code
 
     def test_request_is_pending_logged_and_announced(self):
@@ -1382,7 +1401,7 @@ class SupplierCategoryMigrationTests(TransactionTestCase):
                 "representative_name, business_types, mayors_permit_expiry, tax_clearance_expiry, "
                 "financial_statement_year, track_record_description, declaration_accepted, admin_notes, "
                 "document_reviews, reviewed_at) VALUES ('Old Release Co', 'c', '', 'draft', "
-                "'waiting_admin_approval', 0, '2026-10-20', '', '', '', '', '[]', NULL, NULL, NULL, '', 0, "
+                "'waiting_admin_approval', FALSE, '2026-10-20', '', '', '', '', '[]', NULL, NULL, NULL, '', FALSE, "
                 "'', '{}', NULL)")
         self.assertEqual(NewSupplier.objects.get(company="Old Release Co").category_request_status, "")
 
@@ -1525,13 +1544,14 @@ class SupplierCategoryDocumentAccessTests(APITestCase):
             supplier=self.owner, key="fda_lto", file=dummy_pdf("lto.pdf"), expiry_date=IN_A_YEAR)
         self.path = f"/api/files/supplierdoc/{self.row.pk}/file/"
 
-    def test_serializer_emits_a_signed_supplierdoc_url(self):
+    def test_serializer_emits_a_protected_supplierdoc_url(self):
         self.client.force_authenticate(user=self.owner.user)
         res = self.client.get("/api/suppliers/me/")
         doc = next(d for d in res.data["documents"] if d["key"] == "fda_lto")
         self.assertIn("/api/files/supplierdoc/", doc["url"])
-        self.client.force_authenticate(user=None)
         self.assertEqual(self.client.get(doc["url"]).status_code, status.HTTP_200_OK)
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get(doc["url"]).status_code, status.HTTP_404_NOT_FOUND)
 
     def test_owner_can_read(self):
         self.client.force_authenticate(user=self.owner.user)
@@ -1541,11 +1561,12 @@ class SupplierCategoryDocumentAccessTests(APITestCase):
         self.client.force_authenticate(user=self.rival.user)
         self.assertEqual(self.client.get(self.path).status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_admin_and_head_can_read(self):
-        for user in (make_admin(), make_head()):
-            with self.subTest(role=user.role):
-                self.client.force_authenticate(user=user)
-                self.assertEqual(self.client.get(self.path).status_code, status.HTTP_200_OK)
+    def test_admin_can_read_but_head_cannot(self):
+        # The Head never reviews supplier registrations.
+        self.client.force_authenticate(user=make_admin())
+        self.assertEqual(self.client.get(self.path).status_code, status.HTTP_200_OK)
+        self.client.force_authenticate(user=make_head())
+        self.assertEqual(self.client.get(self.path).status_code, status.HTTP_404_NOT_FOUND)
 
     def test_an_unlisted_field_cannot_be_addressed(self):
         self.client.force_authenticate(user=make_admin())
@@ -1593,3 +1614,457 @@ class SupplierCategoryDocumentMigrationTests(TransactionTestCase):
         BackSupplier = back.get_model("procurement", "Supplier")
         self.assertEqual(BackSupplier.objects.get(pk=verified.pk).qualification_status, "verified")
         self.assertNotIn("procurement_suppliercategorydocument", connection.introspection.table_names())
+
+
+class ReissuedAwardDocumentVerificationTests(APITestCase):
+    """Re-issuing an award document (generate the draft, then upload the signed
+    copy — the flow the Awards page encourages) overwrote the document and its
+    *_issued_at. verify_anchor rebuilt the OLDER anchor from that live record,
+    got the new issue date, and reported an honest procurement as "altered" on
+    the public verifier. The older anchor must read "superseded" instead, while
+    a real edit (the award amount) is still caught on every anchor."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.winner = make_supplier()
+        self.bid = qualified_bid(self.project, self.winner, 1000)
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/bids/{self.bid.pk}/select-winner/")
+        self.award = Award.objects.get(project=self.project)
+
+    def _reissue_noa(self):
+        res = self.client.post(f"/api/awards/{self.award.pk}/documents/generate/",
+                               {"key": "notice_of_award"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        res = self.client.post(f"/api/awards/{self.award.pk}/documents/",
+                               {"key": "notice_of_award", "file": dummy_pdf("signed-noa.pdf")},
+                               format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        return list(BlockchainAnchor.objects.filter(
+            stage=BlockchainAnchor.Stage.NOA_ISSUED).order_by("id"))
+
+    def _public_trail(self, deep=False):
+        url = f"/api/public/procurement/{self.project.code}/anchors/" + ("?deep=1" if deep else "")
+        self.client.force_authenticate(user=None)
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return res.data
+
+    def test_older_issue_is_superseded_and_latest_matches(self):
+        older, latest = self._reissue_noa()
+        data = self._public_trail(deep=True)
+        by_hash = {a["data_hash"]: a for a in data["anchors"]}
+        self.assertEqual(by_hash[older.data_hash]["integrity"]["status"], "superseded")
+        self.assertEqual(by_hash[latest.data_hash]["integrity"]["status"], "match")
+        self.assertEqual(data["altered_count"], 0)
+
+    def test_editing_the_award_amount_is_still_caught_on_both_issues(self):
+        older, latest = self._reissue_noa()
+        Award.objects.filter(pk=self.award.pk).update(amount=1)
+        by_hash = {a["data_hash"]: a for a in self._public_trail()["anchors"]}
+        self.assertEqual(by_hash[older.data_hash]["integrity"]["status"], "mismatch")
+        self.assertEqual(by_hash[latest.data_hash]["integrity"]["status"], "mismatch")
+
+    def test_editing_the_old_anchor_snapshot_is_caught(self):
+        older, _ = self._reissue_noa()
+        payload = dict(older.payload)
+        payload["issued_at"] = "2020-01-01T00:00:00+00:00"   # someone "backdates" the old notice
+        BlockchainAnchor.objects.filter(pk=older.pk).update(payload=payload)
+        by_hash = {a["data_hash"]: a for a in self._public_trail()["anchors"]}
+        self.assertEqual(by_hash[older.data_hash]["integrity"]["status"], "mismatch")
+
+
+class SelectWinnerAnchorSequenceTests(APITestCase):
+    """select_winner created the winning BID_SUBMITTED anchor and the AWARDED
+    anchor but returned only the latter, so in the MetaMask flow the bid's
+    anchor was never offered for signing."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.bid = qualified_bid(self.project, make_supplier(), 1000)
+        self.client.force_authenticate(user=self.admin)
+
+    def test_response_carries_every_anchor_in_signing_order(self):
+        res = self.client.post(f"/api/bids/{self.bid.pk}/select-winner/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        stages = [a["stage"] for a in res.data["anchor_sequence"]]
+        self.assertEqual(stages[-2:], ["BID_SUBMITTED", "AWARDED"])
+        # Older clients still read `anchor`.
+        self.assertEqual(res.data["anchor"]["stage"], "AWARDED")
+        for a in res.data["anchor_sequence"]:
+            self.assertTrue(a["attach_url"])
+            self.assertFalse(a["anchored"])
+
+
+class ConfirmationNeverErasesWhatItCannotSeeTests(APITestCase):
+    """Two ways a genuine anchor could lose its tx hash because of the NODE,
+    not the chain (found while adding on-chain identity, Stage 2)."""
+
+    LEDGER = "0x" + "12" * 20
+    TX = "0x" + "ab" * 32
+
+    def setUp(self):
+        patcher = mock.patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", self.LEDGER)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _anchor(self, **fields):
+        from datetime import timedelta
+        from django.utils import timezone
+        return BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref="PRC-2026-976X-TVMX", stage="SUBMITTED",
+            data_hash="0x" + "cd" * 32, tx_hash=self.TX,
+            anchored_at=timezone.now() - timedelta(days=90), **fields)
+
+    def test_an_unreadable_ledger_state_is_not_read_as_dropped(self):
+        # Old tx unknown to a pruned node, AND the getAnchorsByRef fallback
+        # errors: _ledger_holds used to return False ("not there") and the
+        # genuine tx hash was cleared as DROPPED.
+        from .blockchain import confirm_anchor
+        from .tests import sepolia_node
+        anchor = self._anchor()
+        w3 = sepolia_node(receipt_missing=True, tx_known=False)
+        w3.eth.contract.return_value.functions.getAnchorsByRef.side_effect = ConnectionError("rpc down")
+        self.assertEqual(confirm_anchor(anchor, w3=w3), "unknown")
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.tx_hash, self.TX)
+        self.assertFalse(AuditLog.objects.filter(action="blockchain.dropped").exists())
+
+    def test_a_confirmed_anchor_is_not_downgraded_when_its_receipt_is_pruned(self):
+        # Anchors confirmed before Stage 2 have no on-chain identity yet and
+        # are re-read to fill it in. On the default (pruning) RPC the receipt
+        # is gone: that must leave the earlier confirmation exactly as it was.
+        from .blockchain import confirm_anchor
+        from .tests import sepolia_node
+        anchor = self._anchor(chain_status=BlockchainAnchor.ChainStatus.CONFIRMED, block_number=9_100_000)
+        w3 = sepolia_node(receipt_missing=True, tx_known=False)
+        w3.eth.contract.return_value.functions.getAnchorsByRef.return_value.call.return_value = []
+        self.assertEqual(confirm_anchor(anchor, w3=w3), "unknown")
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.chain_status, BlockchainAnchor.ChainStatus.CONFIRMED)
+        self.assertEqual((anchor.tx_hash, anchor.block_number), (self.TX, 9_100_000))
+        self.assertIsNone(anchor.chain_anchor_id)        # nothing invented
+
+
+class PublicAwardDateTests(APITestCase):
+    """The public procurement detail returned the exact Project.awarded_at, to the
+    microsecond. Only the date is public; the exact time stays internal, for the
+    private commitment and for signed-in viewers."""
+
+    def _award(self, at):
+        from unittest.mock import patch as _patch
+        cache.clear()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        bid = Bid.objects.create(project=self.project, supplier=make_supplier(), amount=900,
+                                 status=Bid.Status.QUALIFIED)
+        self.admin = User.objects.filter(username="admin").first() or make_admin()
+        self.client.force_authenticate(user=self.admin)
+        with _patch("django.utils.timezone.now", return_value=at):
+            self.assertEqual(self.client.post(f"/api/bids/{bid.pk}/select-winner/").status_code, 200)
+        self.project.refresh_from_db()
+        self.client.force_authenticate(user=None)
+
+    def _public(self):
+        res = self.client.get(f"/api/public/procurement/{self.project.code}/")
+        self.assertEqual(res.status_code, 200)
+        return res
+
+    def test_the_public_detail_shows_the_date_and_no_time(self):
+        self._award(datetime(2026, 11, 3, 9, 15, 42, 654321, tzinfo=dt_timezone.utc))
+        res = self._public()
+        self.assertEqual(res.json()["result"]["awarded_at"], "2026-11-03")
+        body = res.content.decode("utf-8")
+        for fragment in ("09:15", "17:15", "42.654321", "654321", "2026-11-03T"):
+            self.assertNotIn(fragment, body)
+
+    def test_the_date_is_the_philippine_date_late_in_the_utc_day(self):
+        self._award(datetime(2026, 11, 3, 17, 30, 0, 654321, tzinfo=dt_timezone.utc))
+        self.assertEqual(self._public().json()["result"]["awarded_at"], "2026-11-04")
+
+    def test_an_award_with_no_exact_time_falls_back_to_its_date(self):
+        self._award(datetime(2026, 11, 3, 9, 15, tzinfo=dt_timezone.utc))
+        Project.objects.filter(pk=self.project.pk).update(awarded_at=None)
+        Award.objects.filter(project=self.project).update(awarded_at="2026-01-15")
+        self.assertEqual(self._public().json()["result"]["awarded_at"], "2026-01-15")
+
+    def test_the_exact_time_stays_authoritative_internally(self):
+        at = datetime(2026, 11, 3, 17, 30, 0, 654321, tzinfo=dt_timezone.utc)
+        self._award(at)
+        self._public()
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.awarded_at, at)
+        self.client.force_authenticate(user=self.admin)
+        record = self.client.get(f"/api/projects/{self.project.pk}/record/").json()
+        self.assertEqual(record["result"]["awarded_at"], "2026-11-03T17:30:00.654321Z")
+
+    def test_the_v2_award_anchors_still_verify(self):
+        self._award(datetime(2026, 11, 3, 17, 30, tzinfo=dt_timezone.utc))
+        self._public()
+        anchors = BlockchainAnchor.objects.filter(entity_ref=self.project.code)
+        self.assertEqual(anchors.count(), 3)
+        for anchor in anchors:
+            self.assertEqual(anchor.payload["v"], 2)
+            self.assertEqual(verify_anchor(anchor, deep=True)["status"], "match")
+
+
+class PayloadVersionDispatchTests(APITestCase):
+    """Stage 5 Phase 1 (finding F4): every anchor is verified with the builders
+    of ITS OWN payload version.
+
+    Before PAYLOAD_RULES, verify_anchor rebuilt every anchor with the CURRENT
+    builders and chose the v1 compatibility path with `v < PAYLOAD_VERSION`.
+    The day a new payload shape was introduced, every existing v2 anchor would
+    have been rebuilt in the new shape and reported as altered — honest records
+    on Sepolia turning red, with nothing on-chain able to fix it. These tests
+    register a stand-in "v3" with a different shape, switch the writer to it,
+    and require every older anchor to verify exactly as before."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        cache.clear()
+        media = tempfile.mkdtemp()
+        override = override_settings(MEDIA_ROOT=media)
+        override.enable()
+        self.addCleanup(override.disable)
+        self.addCleanup(shutil.rmtree, media, ignore_errors=True)
+
+        self.admin, self.head = make_admin(), make_head()
+        self.project = make_project(status=Project.Status.PENDING_HEAD)
+        self.v1_anchor = self._write_v1_anchor()
+        # A whole lifecycle under today's writer (v2): Head approval and
+        # publication, then the award (evaluation commitment, winning bid,
+        # AWARDED), then a Notice of Award issued twice (one superseded).
+        self.client.force_authenticate(user=self.head)
+        self.assertEqual(self.client.post(f"/api/projects/{self.project.pk}/approve/").status_code, 200)
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/projects/{self.project.pk}/publish/").status_code, 200)
+        win = Bid.objects.create(project=self.project, supplier=make_supplier(), amount=50000,
+                                 status=Bid.Status.QUALIFIED)
+        Bid.objects.create(project=self.project, supplier=make_supplier(), amount=60000,
+                           status=Bid.Status.QUALIFIED)
+        self.assertEqual(self.client.post(f"/api/bids/{win.pk}/select-winner/").status_code, 200)
+        self.award = Award.objects.get(project=self.project)
+        self.assertEqual(self.client.post(f"/api/awards/{self.award.pk}/documents/generate/",
+                                          {"key": "notice_of_award"}, format="json").status_code, 200)
+        signed = SimpleUploadedFile("signed-noa.pdf", b"%PDF-1.4 signed notice", content_type="application/pdf")
+        self.assertEqual(self.client.post(f"/api/awards/{self.award.pk}/documents/",
+                                          {"key": "notice_of_award", "file": signed},
+                                          format="multipart").status_code, 200)
+        self.anchors = list(BlockchainAnchor.objects.filter(entity_ref=self.project.code).order_by("id"))
+
+    def _write_v1_anchor(self):
+        payload = {
+            "v": 1, "entity": "PROJECT", "stage": "SUBMITTED", "code": self.project.code,
+            "name": self.project.name, "category": self.project.category or "",
+            "type": self.project.type or "", "budget": f"{self.project.budget:.2f}",
+            "status": self.project.status,
+            "bidding_period_days": self.project.bidding_period_days or 0,
+            "delivery_period_days": self.project.delivery_period_days or 0,
+            "deadline": "", "created_at": self.project.created_at.isoformat(),
+            "reviewed_at": "", "published_at": "", "document_hash": "",
+        }
+        return BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+            stage="SUBMITTED", data_hash=hash_payload(payload), payload=payload)
+
+    @staticmethod
+    def _fake_v3():
+        """A stand-in for a future payload module: the v2 shape plus a field
+        v2 never had, under v3. Enough to make a rebuild in the wrong shape fail."""
+        from types import SimpleNamespace
+
+        from . import payload_v2
+
+        def tagged(builder):
+            return lambda *args, **kwargs: {**builder(*args, **kwargs), "v": 3, "kind": "stand-in/3"}
+
+        return SimpleNamespace(
+            project_payload=tagged(payload_v2.project_payload),
+            bid_payload=tagged(payload_v2.bid_payload),
+            award_payload=tagged(payload_v2.award_payload),
+            evaluation_payload=tagged(payload_v2.evaluation_payload),
+            bid_leaf_fields=payload_v2.bid_leaf_fields,
+            iso=payload_v2.iso,
+            REISSUE_KEYS=payload_v2.REISSUE_KEYS,
+        )
+
+    @contextlib.contextmanager
+    def _newer_version_written(self):
+        from . import blockchain
+        with mock.patch.dict(blockchain.PAYLOAD_RULES, {3: blockchain.PayloadRules(3, self._fake_v3())}), \
+                mock.patch.object(blockchain, "PAYLOAD_VERSION", 3):
+            yield
+
+    def _results(self):
+        return {a.id: (a.stage, verify_anchor(a, deep=True)["status"]) for a in self.anchors}
+
+    def test_the_lifecycle_covers_every_kind_of_anchor(self):
+        stages = [a.stage for a in self.anchors]
+        for stage in ("SUBMITTED", "HEAD_APPROVED", "BIDDING_OPEN", "EVALUATION_COMPLETED",
+                      "BID_SUBMITTED", "AWARDED", "NOA_ISSUED"):
+            self.assertIn(stage, stages)
+        self.assertEqual(stages.count("NOA_ISSUED"), 2)
+        self.assertEqual({(a.payload or {}).get("v") for a in self.anchors}, {1, 2})
+
+    def test_old_anchors_verify_the_same_after_a_newer_version_is_introduced(self):
+        before = self._results()
+        self.assertEqual(before[self.v1_anchor.id], ("SUBMITTED", "match"))
+        self.assertTrue(all(status_ in ("match", "superseded") for _, status_ in before.values()), before)
+        self.assertIn("superseded", [status_ for _, status_ in before.values()])
+        with self._newer_version_written():
+            self.assertEqual(self._results(), before)
+
+    def test_new_anchors_are_written_and_verified_in_the_newer_version(self):
+        # The registry works in both directions: today's writer can move on
+        # while yesterday's anchors keep their own rules.
+        fresh = make_project(status=Project.Status.PENDING_HEAD)
+        self.client.force_authenticate(user=self.head)
+        with self._newer_version_written():
+            res = self.client.post(f"/api/projects/{fresh.pk}/approve/")
+            anchor = BlockchainAnchor.objects.get(pk=res.data["anchor"]["id"])
+            self.assertEqual((anchor.payload["v"], anchor.payload["kind"]), (3, "stand-in/3"))
+            self.assertEqual(verify_anchor(anchor)["status"], "match")
+        # Without rules for v3, the same anchor is "can't check here", not "altered".
+        result = verify_anchor(anchor)
+        self.assertEqual((result["status"], result["record"]), ("unavailable", "unavailable"))
+        self.assertIn("payload version 3", result["detail"])
+
+    def test_tampering_is_still_caught_with_a_newer_version_registered(self):
+        with self._newer_version_written():
+            Project.objects.filter(pk=self.project.pk).update(budget=1)
+            Award.objects.filter(pk=self.award.pk).update(amount=1)
+            results = self._results()
+        by_stage = {}
+        for stage, status_ in results.values():
+            by_stage.setdefault(stage, set()).add(status_)
+        # v1 and v2, current and superseded issues alike.
+        for stage in ("SUBMITTED", "HEAD_APPROVED", "BIDDING_OPEN", "AWARDED", "NOA_ISSUED"):
+            self.assertEqual(by_stage[stage], {"mismatch"}, stage)
+
+    def test_unknown_or_malformed_versions_are_unavailable_never_altered(self):
+        template = next(a for a in self.anchors if a.stage == "HEAD_APPROVED").payload
+        for version in (4, 0, -1, "2", 2.0, True, None, [2]):
+            with self.subTest(version=version):
+                payload = {**template, "v": version}
+                anchor = BlockchainAnchor.objects.create(
+                    entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+                    stage="HEAD_APPROVED", data_hash=hash_payload(payload), payload=payload)
+                result = verify_anchor(anchor, deep=True)
+                self.assertEqual((result["status"], result["record"]), ("unavailable", "unavailable"))
+                self.assertIn("payload version", result["detail"])
+
+    def test_a_payload_without_a_version_is_still_version_1(self):
+        payload = {k: v for k, v in self.v1_anchor.payload.items() if k != "v"}
+        anchor = BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+            stage="SUBMITTED", data_hash=hash_payload(payload), payload=payload)
+        self.assertEqual(verify_anchor(anchor)["status"], "match")
+
+    def test_todays_writer_is_unchanged(self):
+        from . import blockchain, canonical
+        self.assertEqual(blockchain.PAYLOAD_VERSION, 2)
+        self.assertIs(blockchain.hash_payload, canonical.hash_payload)
+        self.assertEqual({a.payload["v"] for a in self.anchors if a.id != self.v1_anchor.id}, {2})
+        for anchor in self.anchors:   # every stored payload still reproduces its anchored hash
+            self.assertEqual(hash_payload(anchor.payload), anchor.data_hash, anchor.stage)
+
+    def test_an_inclusion_receipt_for_an_unsupported_version_is_withheld(self):
+        from .blockchain import inclusion_receipt
+        evaluation = next(a for a in self.anchors if a.stage == "EVALUATION_COMPLETED")
+        bid = Bid.objects.filter(project=self.project).first()
+        self.assertIsNotNone(inclusion_receipt(bid))
+        BlockchainAnchor.objects.filter(pk=evaluation.pk).update(payload={**evaluation.payload, "v": 9})
+        self.assertIsNone(inclusion_receipt(bid))
+
+    def _project_anchor(self, payload, data_hash=None, stage="HEAD_APPROVED"):
+        return BlockchainAnchor.objects.create(
+            entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+            stage=stage, payload=payload,
+            data_hash=data_hash or hash_payload(payload))
+
+    def test_a_non_object_payload_is_unavailable_never_altered(self):
+        # Whether or not it happens to reproduce the anchored hash, a stored
+        # payload that is not a JSON object can't be interpreted, so it is
+        # never reported as altered.
+        for payload in (["x"], [{"v": 2}], "a string", 5, 2.5, True):
+            for data_hash in (None, "0x" + "00" * 32):
+                with self.subTest(payload=payload, hash_consistent=data_hash is None):
+                    result = verify_anchor(self._project_anchor(payload, data_hash), deep=True)
+                    self.assertEqual((result["status"], result["record"]), ("unavailable", "unavailable"))
+                    self.assertIn("not a JSON object", result["detail"])
+
+    def test_a_genuinely_different_json_object_is_still_a_mismatch(self):
+        approved = next(a for a in self.anchors if a.stage == "HEAD_APPROVED")
+        # A v2 object whose anchored hash is not what the record hashes to.
+        self.assertEqual(verify_anchor(self._project_anchor(dict(approved.payload), "0x" + "00" * 32))["status"],
+                         "mismatch")
+        # A v1 snapshot edited after anchoring: it no longer reproduces data_hash.
+        edited = {**self.v1_anchor.payload, "budget": "1.00"}
+        self.assertEqual(verify_anchor(self._project_anchor(edited, self.v1_anchor.data_hash, "SUBMITTED"))["status"],
+                         "mismatch")
+        # A valid v2 object, but the live record was changed.
+        Project.objects.filter(pk=self.project.pk).update(name="Renamed after anchoring")
+        self.assertEqual(verify_anchor(approved)["status"], "mismatch")
+
+    def test_empty_payloads_keep_their_existing_result(self):
+        # Unchanged from before Phase 1: with no stored snapshot nothing can be
+        # proven, and these have always reported a mismatch. Unsaved anchors:
+        # the column is NOT NULL, but verification must not depend on that.
+        for payload in (None, {}, []):
+            with self.subTest(payload=payload):
+                anchor = BlockchainAnchor(
+                    entity_type="PROJECT", entity_ref=self.project.code, entity_id=str(self.project.pk),
+                    stage="HEAD_APPROVED", payload=payload, data_hash="0x" + "00" * 32)
+                self.assertEqual(verify_anchor(anchor)["status"], "mismatch")
+
+    def test_an_unsupported_writer_version_is_refused(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        from . import blockchain
+        blockchain.check_writer_version(2, blockchain.PAYLOAD_RULES)    # today's: accepted
+        with self.assertRaisesMessage(ImproperlyConfigured, "PAYLOAD_VERSION = 3 has no entry in PAYLOAD_RULES"):
+            blockchain.check_writer_version(3, blockchain.PAYLOAD_RULES)
+
+    def test_the_writer_version_check_runs_at_import_under_python_O(self):
+        # `python -O` strips asserts; the startup check must not be one. In a
+        # separate `-O` interpreter, import blockchain.py's own source with the
+        # writer version set to 3 (in memory only — no file is changed) and
+        # require the import itself to fail. Local SQLite only: DB_HOST is
+        # blanked and the child calls itself a test run.
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        from django.conf import settings
+        child = "\n".join([
+            "import sys, re, types",
+            "sys.argv = ['manage.py', 'test']",
+            "import django",
+            "django.setup()",
+            "from django.core.exceptions import ImproperlyConfigured",
+            "src = open('procurement/blockchain.py', encoding='utf-8').read()",
+            "src, n = re.subn(r'(?m)^PAYLOAD_VERSION = 2\\r?$', 'PAYLOAD_VERSION = 3', src)",
+            "print('optimize', sys.flags.optimize, 'replaced', n)",
+            "module = types.ModuleType('procurement._writer_version_probe')",
+            "module.__package__ = 'procurement'",
+            "try:",
+            "    exec(compile(src, 'blockchain.py', 'exec'), module.__dict__)",
+            "    print('IMPORTED')",
+            "except ImproperlyConfigured as exc:",
+            "    print('REFUSED', exc)",
+        ])
+        backend = Path(settings.BASE_DIR)
+        env = {**os.environ, "DB_HOST": "", "DJANGO_SETTINGS_MODULE": "config.settings",
+               "PYTHONPATH": str(backend), "PYTHONIOENCODING": "utf-8"}
+        out = subprocess.run([sys.executable, "-O", "-c", child], cwd=backend, env=env,
+                             capture_output=True, text=True, encoding="utf-8", timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("optimize 1 replaced 1", out.stdout)
+        self.assertIn("REFUSED PAYLOAD_VERSION = 3 has no entry in PAYLOAD_RULES", out.stdout)
+        self.assertNotIn("IMPORTED", out.stdout)

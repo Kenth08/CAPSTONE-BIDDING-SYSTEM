@@ -690,7 +690,7 @@
 }
 
 /* ── REFERENCE CODE ───────────────────────────────────── */
-/* The public lookup key (e.g. P-2026-001). Monospace + tinted so it reads as an
+/* The public lookup key (e.g. PC-7K4M-Q9XT-3HWD). Monospace + tinted so it reads as an
    identifier rather than prose, and click-to-copy because admins paste it into
    the Public Verifier and hand it to suppliers constantly. */
 .ad-ref {
@@ -1517,7 +1517,7 @@
   border: none;
   text-decoration: none;
 }
-.ad-award-doc-chain.is-anchored { color: #16a34a; }
+.ad-award-doc-chain.is-anchored { color: #2563eb; }
 .ad-award-doc-chain.is-anchored:hover { text-decoration: underline; }
 /* Un-anchored documents offer a one-click retry rather than a dead label. */
 .ad-award-doc-chain.is-retry { color: #2563eb; cursor: pointer; }

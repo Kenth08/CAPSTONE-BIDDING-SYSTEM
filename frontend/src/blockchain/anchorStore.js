@@ -13,6 +13,7 @@ import { useSyncExternalStore } from 'react'
 
 import {
   AnchorError, anchorTransition, attachAnchorTx, hasWallet, isUserRejection, serverSubmitAnchor,
+  signingBlocked,
 } from './anchor'
 import { isLedgerConfigured, txUrl } from './contract'
 
@@ -31,15 +32,24 @@ const set = (next) => { activity = next; emit() }
 
 /** Human wording per phase, shown in the anchoring card. */
 const MESSAGES = {
-  signing: 'Waiting for MetaMask — confirm the transaction to anchor this record.',
+  // Network check + wallet connection. No transaction exists yet, so the
+  // wording must not ask the user to "confirm a transaction".
+  connecting: 'Checking your wallet… If MetaMask asks to connect, approve it. No transaction has been requested yet.',
+  // Only reached once the transaction prompt is really being opened.
+  signing: 'Confirm the transaction in MetaMask to anchor this record, or reject it to cancel.',
   mining: 'Anchoring on Sepolia… waiting for the transaction to be mined.',
   saving: 'Transaction confirmed. Saving the reference…',
   server: 'Anchoring on Sepolia… the server is signing this record.',
   serverFailed: 'The server could not anchor this record right now. It is still saved — try again in a moment.',
-  done: 'Recorded on the blockchain.',
+  // Honest about what the browser knows: the transaction is mined (MetaMask
+  // waits for the receipt) or broadcast (server signing), but "Verified
+  // on-chain" is only shown once the server has read it back and found this
+  // exact fingerprint in it.
+  done: 'Transaction submitted to Sepolia. It shows as “Confirmed on-chain” once the server has checked it.',
   rejected: 'Not anchored — the MetaMask signature was declined. You can retry any time.',
   unavailable: 'Not anchored — no wallet or contract configured. The record is saved and can be anchored later.',
   error: 'Could not anchor this record. The record itself is saved — you can retry.',
+  // wrongNetwork / disabled carry their own message (signingPolicy.js).
   unsaved: 'Anchored on-chain, but the app could not save the reference. Retry to save it (no extra gas).',
 }
 
@@ -57,12 +67,22 @@ export function dismissAnchorActivity() {
  * Deliberately NOT awaited by callers and never re-throws: the status change has
  * already been saved by the time this runs, so an anchoring problem is feedback,
  * not a failed operation. `label` describes the record for the UI, e.g.
- * "P-2026-001 · Approved by Head".
+ * "PC-7K4M-Q9XT-3HWD · Approved by Head".
  *
  * @returns {Promise<boolean>} whether the anchor made it on-chain.
  */
 export async function runAnchor(anchor, { label = '' } = {}) {
   if (!anchor) return false
+
+  // Read-only deployment (build flag or the backend's signing_enabled=false):
+  // stop here, before ANY wallet or server call — no connect, no network
+  // switch, no signature, no server_submit. Checked first so even the
+  // automatic anchoring after a status change only reports, never prompts.
+  const blocked = signingBlocked(anchor)
+  if (blocked) {
+    set({ state: 'disabled', anchor, label, message: blocked })
+    return false
+  }
 
   // Already on-chain before the browser ever saw it — the backend signed and
   // submitted this anchor itself (BLOCKCHAIN_SERVER_SIGNING). Prompting for a
@@ -73,7 +93,9 @@ export async function runAnchor(anchor, { label = '' } = {}) {
   // this one guard covers all of them — no dashboard needs to know whether the
   // deployment signs server-side or through MetaMask. Reported as 'done' rather
   // than skipped silently, because from the user's point of view it IS done.
-  if (anchor.anchored || anchor.tx_hash) {
+  // Exception: a reported transaction the server found does NOT record this
+  // anchor (chain_status "mismatch", can_reanchor) — that one is signed again.
+  if ((anchor.anchored || anchor.tx_hash) && !anchor.can_reanchor) {
     set({
       state: 'done', anchor, label,
       txHash: anchor.tx_hash, blockNumber: anchor.block_number,
@@ -114,10 +136,11 @@ export async function runAnchor(anchor, { label = '' } = {}) {
     return false
   }
 
-  set({ state: 'signing', anchor, label, message: MESSAGES.signing })
+  set({ state: 'connecting', anchor, label, message: MESSAGES.connecting })
   try {
     const result = await anchorTransition(anchor, {
-      // signing (wallet popup) → mining (broadcast) → saving (tx confirmed).
+      // connecting (network check + connect) → signing (transaction prompt open)
+      // → mining (broadcast) → saving (tx confirmed).
       onStatus: ({ state, txHash, blockNumber }) => {
         set({
           state, anchor, label, txHash, blockNumber,
@@ -138,6 +161,14 @@ export async function runAnchor(anchor, { label = '' } = {}) {
       set({ state: 'rejected', anchor, label, message: MESSAGES.rejected })
       return false
     }
+    if (err instanceof AnchorError && err.code === 'WRONG_NETWORK') {
+      set({ state: 'wrongNetwork', anchor, label, message: err.message })
+      return false
+    }
+    if (err instanceof AnchorError && err.code === 'SIGNING_DISABLED') {
+      set({ state: 'disabled', anchor, label, message: err.message })
+      return false
+    }
     if (err instanceof AnchorError && err.code === 'NOT_SAVED') {
       // Keep the tx details: the retry only has to re-save them (see below).
       set({
@@ -151,6 +182,28 @@ export async function runAnchor(anchor, { label = '' } = {}) {
     set({ state: 'error', anchor, label, message: err?.message || MESSAGES.error })
     return false
   }
+}
+
+/**
+ * Anchor several records from ONE action, one wallet prompt at a time (e.g.
+ * selecting a winner produces the evaluation commitment, the winning bid and
+ * the award). MetaMask can only show one prompt at a time, so they are signed
+ * strictly in order.
+ *
+ * Stops at the first one that doesn't make it on-chain: if the user declined
+ * the first prompt, firing two more is not what they asked for. Whatever is
+ * left stays "not yet anchored" and can be signed from the record's trail.
+ *
+ * @param items [{ anchor, label }]
+ * @returns {Promise<boolean>} whether every anchor made it on-chain.
+ */
+export async function runAnchorSequence(items = []) {
+  for (const { anchor, label } of items) {
+    if (!anchor) continue
+    const ok = await runAnchor(anchor, { label })
+    if (!ok) return false
+  }
+  return true
 }
 
 /**
@@ -187,4 +240,4 @@ export async function retryAnchor() {
 
 /** True while a wallet interaction is in flight — used to disable retry buttons. */
 export const isAnchorBusy = (act) =>
-  !!act && ['signing', 'mining', 'saving'].includes(act.state)
+  !!act && ['connecting', 'signing', 'mining', 'saving'].includes(act.state)

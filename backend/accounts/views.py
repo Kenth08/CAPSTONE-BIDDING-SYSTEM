@@ -16,6 +16,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from procurement.permissions import IsAdminRole
 
+from . import lockout, mfa
 from .audit import log_action
 from .emails import send_verification_email
 from .serializers import (
@@ -30,6 +31,7 @@ from .serializers import (
 from .throttling import (
     EmailVerifyRateThrottle,
     LoginRateThrottle,
+    MfaRateThrottle,
     PasswordResetRateThrottle,
     RegisterRateThrottle,
 )
@@ -49,8 +51,9 @@ class LoginView(TokenObtainPairView):
 
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
-        # Only a 200 is a real, successful sign-in worth recording.
-        if response.status_code == 200:
+        # Only a 200 WITH tokens is a completed sign-in; an MFA account is
+        # recorded when its code is verified (MfaVerifyView).
+        if response.status_code == 200 and "access" in response.data:
             info = response.data.get("user") or {}
             user = User.objects.filter(id=info.get("id")).first()
             log_action(
@@ -254,3 +257,98 @@ class LogoutView(APIView):
                 description=f"{request.user.username} logged out.",
             )
         return Response(status=status.HTTP_205_RESET_CONTENT)
+
+
+class UnlockAccountView(APIView):
+    """POST /api/auth/users/<id>/unlock/ — an Admin lifts a temporary lockout
+    early (see accounts/lockout.py). Audit-logged."""
+
+    permission_classes = [IsAdminRole]
+
+    def post(self, request, pk):
+        user = User.objects.filter(pk=pk).first()
+        if user is None:
+            return Response({"detail": "Account not found."}, status=status.HTTP_404_NOT_FOUND)
+        was_locked = lockout.is_locked(user)
+        lockout.unlock(request, user)
+        return Response({
+            "detail": f"{user.username} is unlocked." if was_locked
+            else f"{user.username} was not locked; failed attempts were reset.",
+        })
+
+
+def _issue_tokens(user):
+    """The same token pair a password-only login returns."""
+    from django.contrib.auth.models import update_last_login
+
+    refresh = RoleTokenObtainPairSerializer.get_token(user)
+    update_last_login(None, user)
+    return {"refresh": str(refresh), "access": str(refresh.access_token),
+            "user": UserSerializer(user).data}
+
+
+class MfaSetupView(APIView):
+    """POST {mfa_token} -> {secret, otpauth_uri, qr} for an account that has
+    passed the password step but has not enrolled an authenticator yet."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [MfaRateThrottle]
+
+    def post(self, request):
+        user = mfa.user_from_ticket(request.data.get("mfa_token"))
+        if user is None:
+            return Response({"detail": "Your sign-in expired. Please sign in again."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if user.mfa_enabled:
+            return Response({"detail": "Two-factor authentication is already set up."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        secret, uri, qr = mfa.start_enrollment(user)
+        return Response({"secret": secret, "otpauth_uri": uri, "qr": qr})
+
+
+class MfaVerifyView(APIView):
+    """POST {mfa_token, code} -> tokens. Completes enrolment on first use (and
+    returns the one-time backup codes); afterwards accepts a TOTP code or a
+    backup code. Wrong codes count towards the account lockout."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [MfaRateThrottle]
+
+    INVALID = "That code is not valid. Check your authenticator app and try again."
+
+    def post(self, request):
+        user = mfa.user_from_ticket(request.data.get("mfa_token"))
+        if user is None:
+            return Response({"detail": "Your sign-in expired. Please sign in again."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if lockout.is_locked(user):
+            return Response({"detail": lockout.LOCKED_MESSAGE}, status=status.HTTP_400_BAD_REQUEST)
+
+        code = request.data.get("code", "")
+        enrolling = not user.mfa_enabled
+        if enrolling:
+            method = "totp" if user.mfa_secret and mfa.verify_totp(user, code) else None
+        else:
+            method = mfa.verify_code(user, code)
+        if method is None:
+            locked = lockout.record_failure(request, user, user.username, via="mfa")
+            return Response({"detail": lockout.LOCKED_MESSAGE if locked else self.INVALID},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        lockout.record_success(user)
+        if enrolling:
+            user.mfa_enabled = True
+            user.save(update_fields=["mfa_enabled"])
+        data = _issue_tokens(user)
+        if enrolling:
+            data["backup_codes"] = mfa.generate_backup_codes(user)
+            log_action(request, "auth.mfa_enrolled", user=user, entity_type="User",
+                       entity_id=user.pk, description=f"{user.username} set up two-factor authentication.")
+        if method == "backup":
+            log_action(request, "auth.mfa_backup_code_used", user=user, entity_type="User",
+                       entity_id=user.pk, description=f"{user.username} signed in with a backup code.")
+        log_action(request, "auth.login", user=user, entity_type="User", entity_id=user.pk,
+                   description=f"{user.username} logged in (two-factor).")
+        return Response(data)

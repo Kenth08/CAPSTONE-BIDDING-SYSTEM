@@ -11,7 +11,9 @@ import EmptyState from '../components/ui/EmptyState'
 import ProcurementStepper from '../components/ui/ProcurementStepper'
 import Thumbnail from '../components/ui/Thumbnail'
 import { Skeleton } from '../components/Skeleton'
-import { fmtDate, peso, pesoCompact } from '../utils/format'
+import { publicDate } from '../blockchain/recordView'
+import { peso, pesoCompact } from '../utils/format'
+import { EXAMPLE_CODE, normalizeProcurementCode } from '../utils/procurementCode'
 import '../style/LandingPage.css'
 
 // What actually happens at each lifecycle stage in this system.
@@ -25,7 +27,7 @@ const STAGE_NOTES = [
 ]
 
 const FEATURES = [
-  { icon: Link2, title: 'Tamper-evident records', desc: 'Each lifecycle step is hashed and recorded on Ethereum Sepolia. Changing a record afterwards breaks its hash.' },
+  { icon: Link2, title: 'Tamper-evident records', desc: 'Filing, the Head’s decision, publication, the evaluation (one salted commitment to every bid), the award and the award documents are fingerprinted on Ethereum Sepolia. Changing a record afterwards breaks its fingerprint.' },
   { icon: ClipboardCheck, title: 'Head approval before bidding', desc: 'Nothing is published until the Approving Authority has reviewed the procurement and its documents.' },
   { icon: Users, title: 'Category-matched suppliers', desc: 'Verified suppliers only see and bid on procurements in the categories they registered for.' },
   { icon: Scale, title: 'Documented evaluation', desc: 'Bids are compared against the ABC and qualified or disqualified with every document on record.' },
@@ -74,7 +76,7 @@ function VerifyBox() {
   const [code, setCode] = useState('')
   const submit = (e) => {
     e.preventDefault()
-    const ref = code.trim().toUpperCase()
+    const ref = normalizeProcurementCode(code)
     navigate(ref ? `/public?verify=${encodeURIComponent(ref)}#verify` : '/public#verify')
   }
   return (
@@ -83,7 +85,7 @@ function VerifyBox() {
       <div className="lpx-verify-row">
         <Search size={16} aria-hidden="true" />
         <input id="lpx-verify-input" value={code} onChange={(e) => setCode(e.target.value)}
-          placeholder="Reference number, e.g. P-2026-001" autoComplete="off" spellCheck="false" />
+          placeholder={`Reference number, e.g. ${EXAMPLE_CODE}`} autoComplete="off" spellCheck="false" />
         <button type="submit" className="btn-primary">Verify <ArrowRight size={14} /></button>
       </div>
     </form>
@@ -259,12 +261,11 @@ export default function LandingPage() {
                   <div className="lpx-award-sub"><span className="rf-code">{a.code}</span> Awarded to <strong>{a.winner}</strong></div>
                 </div>
                 <div className="lpx-award-side">
-                  <span className="rf-amount">{peso(a.amount)}</span>
-                  <span className="lpx-award-date">{fmtDate(a.awarded_at)}</span>
-                  {a.anchored && (
+                  <span className="lpx-award-date">{publicDate(a.awarded_at)}</span>
+                  {a.verified_on_chain && (
                     <a className="lpx-verified" href={a.explorer_url} target="_blank" rel="noopener noreferrer"
                       title="View the award transaction on Etherscan (opens in a new tab)">
-                      <ShieldCheck size={13} aria-hidden="true" /> Verified on-chain
+                      <ShieldCheck size={13} aria-hidden="true" /> Confirmed on-chain
                     </a>
                   )}
                 </div>
@@ -277,7 +278,7 @@ export default function LandingPage() {
       <section className="lp-section lp-hiw lpx-section" id="how-it-works" aria-labelledby="hiw-h">
         <div className="lp-section-label">PROCESS</div>
         <h2 className="lp-section-title" id="hiw-h">How a procurement moves</h2>
-        <p className="lp-section-sub">The same eight stages every procurement in this system goes through. Each one is recorded on the blockchain when it happens.</p>
+        <p className="lp-section-sub">The same eight stages every procurement in this system goes through. Every stage after the draft leaves a fingerprint on the blockchain — the evaluation is fixed as a whole when the winner is selected.</p>
         <div className="lpx-stepper"><ProcurementStepper label="Procurement lifecycle stages" /></div>
         <ol className="lpx-stage-notes">
           {STAGE_NOTES.map(([title, desc]) => (

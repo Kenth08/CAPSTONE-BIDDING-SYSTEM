@@ -46,7 +46,7 @@ const fmtPeso = (v) => '₱' + Number(v || 0).toLocaleString('en-PH')
 function fromApi(p) {
   return {
     id: p.id,                       // numeric PK — used for actions & React keys
-    code: p.code,                   // human id, e.g. "P-2026-001" — shown in the UI
+    code: p.code,                   // human id, e.g. "PC-7K4M-Q9XT-3HWD" — shown in the UI
     name: p.name,
     type: p.type,
     category: p.category || '',

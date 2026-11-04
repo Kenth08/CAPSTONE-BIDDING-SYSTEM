@@ -1,10 +1,8 @@
-import os
-import uuid
 
 from django.conf import settings
 from django.db import models
-from django.utils.text import get_valid_filename
 
+from .uploads import SecureUploadsMixin, random_storage_name
 from .validators import validate_bid_upload, validate_image_upload, validate_upload
 
 
@@ -89,59 +87,47 @@ PROCUREMENT_DOCUMENT_KEYS = [key for key, _, _ in PROCUREMENT_DOCUMENT_FIELDS]
 
 
 def procurement_doc_path(instance, filename):
-    """Store each procurement document under a per-project folder with a short,
-    sanitized, unique name."""
-    base, ext = os.path.splitext(filename)
-    base = get_valid_filename(base)[:40] or "doc"
-    ext = ext.lower()[:10]
-    unique = uuid.uuid4().hex[:8]
-    return f"procurement_docs/{instance.pk or 'new'}/{base}_{unique}{ext}"
+    """Procurement documents (PR, ToR, specs, ABC, criteria). Random name only; see procurement/uploads.py."""
+    return random_storage_name("procurement_docs", filename)
 
 
 def procurement_image_path(instance, filename):
-    """Store an optional procurement reference image under procurement_images/
-    with a short, sanitized, unique name."""
-    base, ext = os.path.splitext(filename)
-    base = get_valid_filename(base)[:40] or "image"
-    ext = ext.lower()[:10]
-    unique = uuid.uuid4().hex[:8]
-    return f"procurement_images/{base}_{unique}{ext}"
+    """Optional procurement reference image. Random name only; see procurement/uploads.py."""
+    return random_storage_name("procurement_images", filename)
 
 
 def award_doc_path(instance, filename):
-    """Store each post-award document under a per-award folder with a short,
-    sanitized, unique name (same convention as procurement_doc_path)."""
-    base, ext = os.path.splitext(filename)
-    base = get_valid_filename(base)[:40] or "doc"
-    ext = ext.lower()[:10]
-    unique = uuid.uuid4().hex[:8]
-    return f"award_docs/{instance.pk or 'new'}/{base}_{unique}{ext}"
+    """Post-award documents (BAC Resolution, NOA, NTP). Random name only; see procurement/uploads.py."""
+    return random_storage_name("award_docs", filename)
 
 
 def bid_product_image_path(instance, filename):
-    """Store a bid product image under a per-bid folder with a random name.
+    """Bid product photos. Random name only; see procurement/uploads.py."""
+    return random_storage_name("bid_documents/product_images", filename)
 
-    The uploaded filename is ignored entirely — only the extension survives, and
-    the view sets that from the format Pillow actually detected (see
-    validate_product_image), so a stored name never carries anything the
-    supplier typed."""
-    ext = os.path.splitext(filename)[1].lower()[:10]
-    return f"bid_documents/product_images/{instance.bid_id or 'new'}/{uuid.uuid4().hex}{ext}"
+
+def bid_document_path(instance, filename):
+    """Bid documents and attachments (quotation, technical proposal, datasheet,
+    compliance document, other attachments). Random name only."""
+    return random_storage_name("bid_documents", filename)
 
 
 def supplier_doc_path(instance, filename):
-    """Store each supplier's document under a per-supplier folder with a short,
-    sanitized, unique name (long original filenames would overflow the column
-    and unsafe characters are stripped)."""
-    base, ext = os.path.splitext(filename)
-    base = get_valid_filename(base)[:40] or "doc"
-    ext = ext.lower()[:10]
-    unique = uuid.uuid4().hex[:8]
-    return f"supplier_docs/{instance.pk or 'new'}/{base}_{unique}{ext}"
+    """Supplier registration documents. Random name only; see procurement/uploads.py."""
+    return random_storage_name("supplier_docs", filename)
 
 
-class Supplier(models.Model):
+class Supplier(SecureUploadsMixin, models.Model):
     """A supplier company profile, linked to a user account."""
+
+    # Registration documents (IDs, tax and financial records) are encrypted at
+    # rest with FILE_ENCRYPTION_KEY — see procurement/storage_crypto.py.
+    ENCRYPTED_FILE_FIELDS = frozenset(SUPPLIER_DOCUMENT_KEYS)
+
+    # The uploader's original file names, {field: name}. Stored names are
+    # random (procurement/uploads.py), so this is what downloads are named.
+    # db_default lets the previous release keep inserting rows mid-deploy.
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
@@ -259,15 +245,11 @@ class Supplier(models.Model):
 
 
 def supplier_category_doc_path(instance, filename):
-    """Same folder and naming as the base supplier documents."""
-    base, ext = os.path.splitext(filename)
-    base = get_valid_filename(base)[:40] or "doc"
-    ext = ext.lower()[:10]
-    unique = uuid.uuid4().hex[:8]
-    return f"supplier_docs/{instance.supplier_id or 'new'}/{base}_{unique}{ext}"
+    """Supplier category licenses. Random name only; see procurement/uploads.py."""
+    return random_storage_name("supplier_docs", filename)
 
 
-class SupplierCategoryDocument(models.Model):
+class SupplierCategoryDocument(SecureUploadsMixin, models.Model):
     """An extra license a business category requires (e.g. an FDA License to
     Operate for Medical Supplies), on top of the 10 base documents that stay as
     FileFields on Supplier.
@@ -281,6 +263,14 @@ class SupplierCategoryDocument(models.Model):
     A separate table rather than new Supplier columns: on deploy, migrate runs
     while the previous release is still serving, and a new table is invisible
     to it — nothing it inserts can fail."""
+
+    # Category licenses are encrypted at rest — see procurement/storage_crypto.py.
+    ENCRYPTED_FILE_FIELDS = frozenset({"file"})
+
+    # The uploader's original file names, {field: name}. Stored names are
+    # random (procurement/uploads.py), so this is what downloads are named.
+    # db_default lets the previous release keep inserting rows mid-deploy.
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
 
     supplier = models.ForeignKey(
         Supplier, on_delete=models.CASCADE, related_name="category_documents")
@@ -301,11 +291,16 @@ class SupplierCategoryDocument(models.Model):
         return f"{self.supplier_id} · {self.key}"
 
 
-class Project(models.Model):
+class Project(SecureUploadsMixin, models.Model):
     """A procurement project. Flows: draft -> pending_head -> approved ->
     published -> awarded / closed; or pending_head -> rejected (by the Head);
     or pending_head -> needs_revision -> pending_head (Head flags a specific
     document, Admin fixes it, it returns to the Head's queue)."""
+
+    # The uploader's original file names, {field: name}. Stored names are
+    # random (procurement/uploads.py), so this is what downloads are named.
+    # db_default lets the previous release keep inserting rows mid-deploy.
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
@@ -317,7 +312,7 @@ class Project(models.Model):
         AWARDED = "awarded", "Awarded"
         CLOSED = "closed", "Closed"
 
-    code = models.CharField(max_length=20, unique=True)  # e.g. PRC-2026-7K4M-Q9XT (older: P-2026-001)
+    code = models.CharField(max_length=20, unique=True)  # e.g. PC-7K4M-Q9XT-3HWD (older: PRC-2026-7K4M-Q9XT, P-2026-001)
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)  # Approved Budget (ABC)
@@ -407,8 +402,13 @@ class Project(models.Model):
         return f"{self.code} - {self.name}"
 
 
-class Bid(models.Model):
+class Bid(SecureUploadsMixin, models.Model):
     """A supplier's bid on a project."""
+
+    # The uploader's original file names, {field: name}. Stored names are
+    # random (procurement/uploads.py), so this is what downloads are named.
+    # db_default lets the previous release keep inserting rows mid-deploy.
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Status(models.TextChoices):
         UNDER_REVIEW = "under_review", "Under Review"
@@ -442,23 +442,23 @@ class Bid(models.Model):
     model_number = models.CharField(max_length=255, blank=True, null=True)
     warranty_period = models.CharField(max_length=100, blank=True, null=True)
     supplier_product_image = models.FileField(
-        upload_to="bid_documents/product_images/", validators=[validate_bid_upload],
+        upload_to=bid_document_path, validators=[validate_bid_upload],
         max_length=255, blank=True, null=True)
     supplier_datasheet = models.FileField(
-        upload_to="bid_documents/supplier_datasheets/", validators=[validate_bid_upload],
+        upload_to=bid_document_path, validators=[validate_bid_upload],
         max_length=255, blank=True, null=True)
     supplier_compliance_doc = models.FileField(
-        upload_to="bid_documents/compliance_docs/", validators=[validate_bid_upload],
+        upload_to=bid_document_path, validators=[validate_bid_upload],
         max_length=255, blank=True, null=True)
 
     # ── Supporting documents ──────────────────────────────────────────────────
     # Quotation is required (enforced in the view); kept nullable at the model
     # level so the migration doesn't fail on existing rows.
     quotation_document = models.FileField(
-        upload_to="bid_documents/quotations/", validators=[validate_bid_upload],
+        upload_to=bid_document_path, validators=[validate_bid_upload],
         max_length=255, blank=True, null=True)
     technical_document = models.FileField(
-        upload_to="bid_documents/technical/", validators=[validate_bid_upload],
+        upload_to=bid_document_path, validators=[validate_bid_upload],
         max_length=255, blank=True, null=True)
 
     # ── Declarations & compliance (RA 9184). Enforced True in the view ────────
@@ -468,6 +468,15 @@ class Bid(models.Model):
     accuracy_confirmed = models.BooleanField(default=False)
     # Only required when the project has a reference image.
     specification_confirmed = models.BooleanField(default=False)
+
+    # ── Evaluation commitment (set once, at award time) ───────────────────────
+    # Inputs to this bid's leaf in the EVALUATION_COMPLETED anchor (see
+    # blockchain.bid_leaf). The salt is random and secret: without it, a leaf
+    # (and so the public anchor hash) could be brute-forced back to an amount.
+    # Never serialized except in the bid owner's own inclusion receipt.
+    # db_default so the previous release can keep inserting rows mid-deploy.
+    commitment_salt = models.CharField(max_length=64, blank=True, default="", db_default="")
+    committed_document_hash = models.CharField(max_length=66, blank=True, default="", db_default="")
 
     class Meta:
         ordering = ["-submitted_at"]
@@ -480,13 +489,13 @@ class Bid(models.Model):
         return f"{self.supplier.company} -> {self.project.name} ({self.amount})"
 
 
-class BidAttachment(models.Model):
+class BidAttachment(SecureUploadsMixin, models.Model):
     """An extra "Other Attachment" file on a bid — a supplier may upload several,
     each stored as its own row so the count is unbounded."""
 
     bid = models.ForeignKey(Bid, on_delete=models.CASCADE, related_name="attachments")
     file = models.FileField(
-        upload_to="bid_documents/attachments/", validators=[validate_bid_upload], max_length=255)
+        upload_to=bid_document_path, validators=[validate_bid_upload], max_length=255)
     file_name = models.CharField(max_length=255)
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
@@ -497,7 +506,7 @@ class BidAttachment(models.Model):
         return self.file_name
 
 
-class BidProductImage(models.Model):
+class BidProductImage(SecureUploadsMixin, models.Model):
     """A photo of the product a supplier is offering, attached to their bid.
 
     Up to MAX_BID_PRODUCT_IMAGES per bid, each with an optional caption. Kept in
@@ -521,8 +530,13 @@ class BidProductImage(models.Model):
 MAX_BID_PRODUCT_IMAGES = 5
 
 
-class Award(models.Model):
+class Award(SecureUploadsMixin, models.Model):
     """A finalized award of a project to a supplier."""
+
+    # The uploader's original file names, {field: name}. Stored names are
+    # random (procurement/uploads.py), so this is what downloads are named.
+    # db_default lets the previous release keep inserting rows mid-deploy.
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
 
     class Status(models.TextChoices):
         WON = "won", "Won"
@@ -615,9 +629,14 @@ class BlockchainAnchor(models.Model):
         RESOLUTION_ISSUED = "RESOLUTION_ISSUED", "BAC Resolution issued"
         NOA_ISSUED = "NOA_ISSUED", "Notice of Award issued"
         NTP_ISSUED = "NTP_ISSUED", "Notice to Proceed issued"
+        # Written once, at award time: a salted commitment to EVERY bid received
+        # and its final outcome (blockchain.evaluation_payload). Proves the set
+        # of bids and the evaluation were fixed when the award was made, without
+        # putting any losing bidder's amount on the public ledger.
+        EVALUATION_COMPLETED = "EVALUATION_COMPLETED", "Evaluation completed (all bids committed)"
 
     entity_type = models.CharField(max_length=10, choices=EntityType.choices)
-    # The procurement code (e.g. "P-2026-001") for EVERY anchor — project, bid
+    # The procurement code (e.g. "PC-7K4M-Q9XT-3HWD") for EVERY anchor — project, bid
     # and award alike — because that's how the contract indexes anchors, so one
     # on-chain lookup returns a procurement's whole trail.
     entity_ref = models.CharField(max_length=64)
@@ -642,20 +661,238 @@ class BlockchainAnchor(models.Model):
     anchored_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # What the SERVER found when it read this transaction back from Sepolia
+    # (blockchain.confirm_anchor). A tx_hash on its own is only a claim the
+    # browser posted; it counts as on-chain once this says CONFIRMED: a
+    # successful transaction to the ledger contract that emitted an
+    # AnchorRecorded event with exactly this entity/code/stage/hash.
+    # db_default so the previous release can keep inserting rows mid-deploy.
+    class ChainStatus(models.TextChoices):
+        UNCHECKED = "unchecked", "Not checked yet"
+        CONFIRMED = "confirmed", "Confirmed on-chain"
+        MISMATCH = "mismatch", "Transaction does not contain this record"
+        REVERTED = "reverted", "Last transaction failed on-chain"
+        DROPPED = "dropped", "Last transaction was never mined"
+
+    chain_status = models.CharField(
+        max_length=12, choices=ChainStatus.choices,
+        default=ChainStatus.UNCHECKED, db_default=ChainStatus.UNCHECKED)
+    chain_checked_at = models.DateTimeField(null=True, blank=True)
+
+    # The on-chain identity of the record, copied from the AnchorRecorded event
+    # the server decoded (and cross-checked with the contract's getAnchor) when
+    # it confirmed the transaction. Never typed in or guessed: empty until then,
+    # and left empty for older anchors whose receipt the RPC can no longer serve.
+    # `chain_anchor_id` is the contract's own index (getAnchor(id)) — not this
+    # row's id and not the tx hash; one transaction can carry several of them.
+    chain_anchor_id = models.PositiveBigIntegerField(null=True, blank=True)
+    chain_log_index = models.PositiveIntegerField(null=True, blank=True)
+    chain_timestamp = models.DateTimeField(null=True, blank=True)   # block time stored by the contract
+    chain_id = models.PositiveBigIntegerField(null=True, blank=True)  # network actually read (eth_chainId)
+    chain_contract = models.CharField(max_length=42, blank=True, default="", db_default="")
+    # Depth when last checked (1 = in the latest block), and whether that block
+    # was at or below the chain's `finalized` block. False also when the node
+    # could not report finality — "not shown to be final", never assumed final.
+    chain_confirmations = models.PositiveBigIntegerField(null=True, blank=True)
+    chain_finalized = models.BooleanField(default=False, db_default=False)
+
     class Meta:
         ordering = ["created_at", "id"]
         indexes = [
             models.Index(fields=["entity_ref", "created_at"]),
             models.Index(fields=["entity_type", "entity_id"]),
         ]
+        constraints = [
+            # One on-chain record can back only one anchor row: a batched
+            # transaction carries several events, each claimed once, and the
+            # same event can never be "reused" to vouch for a second record.
+            models.UniqueConstraint(
+                fields=["chain_id", "chain_contract", "chain_anchor_id"],
+                condition=models.Q(chain_anchor_id__isnull=False),
+                name="uniq_onchain_anchor_record",
+            ),
+        ]
 
     @property
     def anchored(self):
+        """A transaction has been REPORTED for this anchor. Not proof by
+        itself — see `verified_on_chain`."""
         return bool(self.tx_hash)
+
+    @property
+    def verified_on_chain(self):
+        return bool(self.tx_hash) and self.chain_status == self.ChainStatus.CONFIRMED
 
     def __str__(self):
         state = self.tx_hash[:12] + "…" if self.tx_hash else "not anchored"
         return f"{self.entity_ref} {self.stage} ({state})"
+
+
+class AwardDocumentVersion(models.Model):
+    """One issue of a post-award document (BAC Resolution, NOA, NTP), kept for
+    good so every issue stays downloadable and verifiable.
+
+    Re-issuing a document replaces the file on the Award row. Storage keeps the
+    old bytes (names are random and nothing deletes them), but nothing else
+    remembers where they are — so the version row records the stored NAME at
+    issue time. No copy is made: `file` points at exactly the bytes that were
+    hashed and anchored.
+
+    Issues made before this table existed have no row. They still appear as
+    versions (from their anchors), with their file marked "not preserved":
+    the anchor never recorded the file name, and it is not guessed."""
+
+    KEY_CHOICES = [(key, label) for key, label, _, _ in AWARD_DOCUMENT_FIELDS]
+
+    award = models.ForeignKey(Award, on_delete=models.CASCADE, related_name="document_versions")
+    key = models.CharField(max_length=32, choices=KEY_CHOICES)
+    version = models.PositiveIntegerField()      # issue number, 1 = first issue of this document
+    file = models.FileField(upload_to=award_doc_path, max_length=255)
+    original_filename = models.CharField(max_length=255, blank=True)
+    document_hash = models.CharField(max_length=66, blank=True)   # SHA-256 of the stored bytes
+    issued_at = models.DateTimeField()
+    generated = models.BooleanField(default=False)               # generated PDF vs uploaded scan
+    # The anchor written for this issue, when anchoring produced one. Never
+    # filled in afterwards by guesswork.
+    anchor = models.OneToOneField(
+        BlockchainAnchor, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="document_version")
+    issued_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["award_id", "key", "version"]
+        constraints = [
+            models.UniqueConstraint(fields=["award", "key", "version"], name="uniq_award_document_version"),
+        ]
+
+    def __str__(self):
+        return f"{self.award_id} {self.key} v{self.version}"
+
+
+class ProjectDocumentVersionQuerySet(models.QuerySet):
+    """Bulk writes would skip the model's own guard, so they are refused too."""
+
+    def _refuse(self, *args, **kwargs):
+        raise TypeError("Project document versions are write-once.")
+
+    update = delete = bulk_update = _refuse
+
+
+class ProjectDocumentVersion(models.Model):
+    """One distinct content of a procurement document (procurement/project_documents.py).
+
+    `file` records the stored NAME, as AwardDocumentVersion does: replacing a
+    document leaves the old bytes in storage, so no copy is made.
+
+    Write-once: the app can add a row, never edit or delete one, and neither the
+    Django admin, a serializer nor a file route exposes them. Deleting a project
+    before bidding opens is allowed and its anchors outlive it, so the rows do
+    too: `project` goes null and `project_code` still says whose they were."""
+
+    KEY_CHOICES = [(key, label) for key, label, _ in PROCUREMENT_DOCUMENT_FIELDS]
+
+    project = models.ForeignKey(
+        Project, on_delete=models.SET_NULL, null=True, related_name="document_versions")
+    project_code = models.CharField(max_length=20)
+    key = models.CharField(max_length=32, choices=KEY_CHOICES)
+    version = models.PositiveIntegerField()      # 1 = first known content of this document
+    file = models.FileField(upload_to=procurement_doc_path, max_length=255)
+    original_filename = models.CharField(max_length=255, blank=True)
+    # SHA-256 of the stored bytes. Blank only if storage couldn't read the file
+    # when this row was written.
+    sha256 = models.CharField(max_length=66, blank=True)
+    # Null when the uploader isn't known: a file that was already on the project
+    # when history began. `recorded_at` is when this row was written, which for
+    # those files is later than their upload.
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ProjectDocumentVersionQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["project_code", "key", "version"]
+        constraints = [
+            models.UniqueConstraint(fields=["project", "key", "version"], name="uniq_project_document_version"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise TypeError("Project document versions are write-once.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise TypeError("Project document versions are write-once.")
+
+    def __str__(self):
+        return f"{self.project_code} {self.key} v{self.version}"
+
+
+class CommitmentOpeningQuerySet(models.QuerySet):
+    """Bulk writes would skip the model's own guard, so they are refused too."""
+
+    def _refuse(self, *args, **kwargs):
+        raise TypeError("Commitment openings are write-once.")
+
+    update = delete = bulk_update = _refuse
+
+
+class CommitmentOpening(models.Model):
+    """The exact object behind one salted commitment, encrypted (procurement/openings.py).
+
+    Write-once, and kept as long as its anchor: an anchor with an opening can't
+    be deleted. The only later change is rotating the encryption key, which
+    replaces `ciphertext` and `key_fingerprint` (`rewrap`). The salt, the
+    commitment and the anchor never change.
+
+    The salt is only ever inside `ciphertext`. `salt_fingerprint`, a SHA-256 of
+    the salt, is what lets the database refuse a repeated salt; reversing it
+    would mean guessing a 256-bit random value."""
+
+    class Kind(models.TextChoices):
+        BID_LEAF = "bid-leaf/3", "Bid leaf"
+        AWARD_PRIVATE = "award-private/3", "Award private fields"
+
+    anchor = models.ForeignKey(BlockchainAnchor, on_delete=models.PROTECT, related_name="openings")
+    kind = models.CharField(max_length=24, choices=Kind.choices)
+    # The bid (bid-leaf/3) or award (award-private/3) this commits to. Several bid
+    # leaves share one evaluation anchor, so this is part of a row's identity.
+    subject_id = models.PositiveBigIntegerField()
+    # Who may read it besides Admin and Head: the bidder, or the awardee.
+    supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, related_name="+")
+    commitment = models.CharField(max_length=66)     # SHA-256 of the canonical opening
+    salt_fingerprint = models.CharField(max_length=64, unique=True)
+    ciphertext = models.TextField()
+    key_fingerprint = models.CharField(max_length=8)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = CommitmentOpeningQuerySet.as_manager()
+
+    class Meta:
+        ordering = ["anchor_id", "kind", "subject_id"]
+        constraints = [
+            models.UniqueConstraint(fields=["anchor", "kind", "subject_id"], name="uniq_commitment_opening"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise TypeError("Commitment openings are write-once.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise TypeError("Commitment openings are write-once.")
+
+    @classmethod
+    def rewrap(cls, pk, old_ciphertext, new_ciphertext, key_fingerprint):
+        """Key rotation only. Conditional, so it can't overwrite a concurrent
+        change. Returns whether the row was updated."""
+        return models.QuerySet(model=cls).filter(pk=pk, ciphertext=old_ciphertext).update(
+            ciphertext=new_ciphertext, key_fingerprint=key_fingerprint) == 1
+
+    def __str__(self):
+        return f"anchor {self.anchor_id} {self.kind} {self.subject_id}"
 
 
 class Notification(models.Model):
@@ -673,3 +910,32 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"{self.user} - {self.message[:40]}"
+
+
+class FileDownloadToken(models.Model):
+    """A one-time, short-lived grant to download exactly one file.
+
+    Minted by POST /api/files/<kind>/<pk>/<field>/link/ the moment a signed-in
+    user clicks "download", and redeemed by the browser navigation that follows
+    (which cannot carry the Authorization header). See procurement/files.py.
+
+    Only a SHA-256 of the token is stored, so a database leak does not leak
+    working links. Rows are kept after use as part of the download history and
+    pruned once they are well past expiry.
+    """
+
+    token_hash = models.CharField(max_length=64, unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="file_download_tokens")
+    kind = models.CharField(max_length=20)
+    object_id = models.PositiveBigIntegerField()
+    field = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["expires_at"])]
+
+    def __str__(self):
+        return f"{self.user_id} {self.kind}/{self.object_id}/{self.field}"

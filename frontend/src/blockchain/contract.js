@@ -7,9 +7,16 @@
 //
 // The ABI is a verbatim copy of contracts/ProcurementLedger.abi.json. If you
 // ever change the Solidity, re-copy the ABI from Remix into BOTH files.
+import { isSigningOffFlag } from './signingPolicy.js'
 
 /** Deployed ProcurementLedger address on Sepolia, e.g. "0xAbC…". */
 export const LEDGER_ADDRESS = import.meta.env.VITE_LEDGER_ADDRESS || ''
+
+/** Build-level read-only switch: VITE_BLOCKCHAIN_SIGNING=off means no anchor is
+ *  ever signed from this build — no wallet connection, network switch or
+ *  transaction prompt. Unset keeps signing on (the production default). Reading
+ *  and verifying the chain are unaffected. See signingPolicy.js. */
+export const SIGNING_OFF_BY_BUILD = isSigningOffFlag(import.meta.env.VITE_BLOCKCHAIN_SIGNING)
 
 /** Read-only Sepolia RPC used by the public verification page (no wallet, no gas).
  *  Defaults to a public endpoint so the page works with zero configuration. */

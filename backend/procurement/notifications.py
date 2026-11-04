@@ -37,7 +37,7 @@ def email_user(user, subject, message):
             fail_silently=False,
         )
     except Exception:  # pragma: no cover - email must never break the flow
-        logger.exception("Failed to email %s: %s", user.email, subject)
+        logger.exception("Failed to email user %s: %s", user.pk, subject)
 
 
 def notify_users(users, message, link=""):

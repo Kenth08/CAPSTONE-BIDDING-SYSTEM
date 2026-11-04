@@ -11,6 +11,10 @@
 //   4. The tx hash + block number are posted back to `attach_url` so the record
 //      can show "anchored" and link to Etherscan.
 //
+// Nothing here runs on a read-only deployment (signingBlocked → no wallet call
+// at all), and the wallet's network is only ever READ — never switched for the
+// user (assertWalletOnSepolia).
+//
 // Steps 3–4 are allowed to fail. A declined signature, the wrong network, or an
 // empty gas tank leaves the record valid and simply un-anchored, retryable from
 // the blockchain badge. Nothing here ever rolls back step 1.
@@ -21,11 +25,13 @@ import {
   LEDGER_ABI,
   LEDGER_ADDRESS,
   SEPOLIA_CHAIN_ID,
-  SEPOLIA_CHAIN_ID_HEX,
-  SEPOLIA_NETWORK,
   SEPOLIA_RPC_URL,
+  SIGNING_OFF_BY_BUILD,
   isLedgerConfigured,
 } from './contract'
+import { makeLedgerReader } from './ledgerReader'
+import { assertChainId } from './network'
+import { SIGNING_DISABLED_MESSAGE, signingBlockedReason, walletNetworkProblem } from './signingPolicy'
 
 /** Error carrying a `code` so the UI can tell "the user said no" (which is not a
  *  failure worth shouting about) from a real problem. */
@@ -46,35 +52,25 @@ export const isUserRejection = (err) =>
   REJECTED_CODES.has(err?.info?.error?.code) ||
   /user (rejected|denied)/i.test(err?.message || '')
 
+/** Why this anchor may not be signed from this browser, or '' if it may. */
+export const signingBlocked = (anchor) =>
+  signingBlockedReason(anchor, { buildSigningOff: SIGNING_OFF_BY_BUILD })
+
 /**
- * Make sure the wallet is on Sepolia, prompting a switch (and offering to add
- * the network if it isn't there yet). Signing on the wrong chain would write the
- * anchor to a different ledger, so this is a hard precondition, not a nicety.
+ * Throw unless the wallet is on Sepolia. Signing on the wrong chain would write
+ * the anchor to a different ledger, so this is a hard precondition.
+ *
+ * Only READS the chain id (eth_chainId needs no permission and opens no popup).
+ * It deliberately does NOT call wallet_switchEthereumChain / wallet_addEthereumChain:
+ * an automatic switch prompt is a wallet request the user never asked for, and
+ * approving it would lead straight into a transaction prompt. The user switches
+ * in MetaMask themselves and retries.
  */
-export async function ensureSepolia() {
+export async function assertWalletOnSepolia() {
   if (!hasWallet()) throw new AnchorError('MetaMask is not installed in this browser.', 'NO_WALLET')
   const current = await window.ethereum.request({ method: 'eth_chainId' })
-  if (current?.toLowerCase() === SEPOLIA_CHAIN_ID_HEX) return
-
-  try {
-    await window.ethereum.request({
-      method: 'wallet_switchEthereumChain',
-      params: [{ chainId: SEPOLIA_CHAIN_ID_HEX }],
-    })
-  } catch (err) {
-    // 4902 = the chain isn't configured in this wallet yet; add it, then retry.
-    if (err?.code === 4902 || err?.data?.originalError?.code === 4902) {
-      await window.ethereum.request({
-        method: 'wallet_addEthereumChain',
-        params: [SEPOLIA_NETWORK],
-      })
-      return
-    }
-    if (isUserRejection(err)) {
-      throw new AnchorError('Switch MetaMask to the Sepolia test network to anchor.', 'WRONG_NETWORK')
-    }
-    throw err
-  }
+  const problem = walletNetworkProblem(current, SEPOLIA_CHAIN_ID)
+  if (problem) throw new AnchorError(problem, 'WRONG_NETWORK')
 }
 
 /** Connected wallet address, prompting the connection popup if needed. */
@@ -90,7 +86,10 @@ export async function connectWallet() {
  *
  * @returns {Promise<{txHash: string, blockNumber: number, actorAddress: string}>}
  */
-export async function anchorOnChain({ entityType, entityRef, stage, dataHash, onSubmitted }) {
+export async function anchorOnChain({ entityType, entityRef, stage, dataHash, onConfirmPrompt, onSubmitted }) {
+  if (SIGNING_OFF_BY_BUILD) {
+    throw new AnchorError(SIGNING_DISABLED_MESSAGE, 'SIGNING_DISABLED')
+  }
   if (!isLedgerConfigured()) {
     throw new AnchorError(
       'No ledger contract address configured. Set VITE_LEDGER_ADDRESS in frontend/.env.',
@@ -103,15 +102,20 @@ export async function anchorOnChain({ entityType, entityRef, stage, dataHash, on
     throw new AnchorError('The record hash is malformed; nothing was sent on-chain.', 'BAD_HASH')
   }
 
+  // Wrong network → stop before any popup at all (not even "connect").
+  await assertWalletOnSepolia()
   const actorAddress = await connectWallet()
-  await ensureSepolia()
 
-  // Build the provider AFTER the network switch so ethers reads the final chain.
   const provider = new BrowserProvider(window.ethereum)
   const signer = await provider.getSigner()
   const ledger = new Contract(LEDGER_ADDRESS, LEDGER_ABI, signer)
 
-  const tx = await ledger.recordEvent(entityType, entityRef, stage, dataHash)
+  // Re-check immediately before signing: the user may have switched networks
+  // while the connect popup was open. The explicit chainId makes ethers and
+  // MetaMask refuse the transaction if the wallet still moves after this.
+  await assertWalletOnSepolia()
+  onConfirmPrompt?.()
+  const tx = await ledger.recordEvent(entityType, entityRef, stage, dataHash, { chainId: SEPOLIA_CHAIN_ID })
   // Signed and broadcast — from here it's just waiting for a Sepolia block
   // (usually a few seconds, occasionally much longer), so tell the UI.
   onSubmitted?.(tx.hash)
@@ -127,18 +131,24 @@ export async function anchorOnChain({ entityType, entityRef, stage, dataHash, on
  * Full anchor flow for one transition: sign it, then tell the backend.
  *
  * @param anchor   The `anchor` object from a transition response.
- * @param onStatus Optional progress callback: 'signing' → 'mining' → 'saving' → 'done'.
+ * @param onStatus Optional progress callback:
+ *                 'connecting' → 'signing' → 'mining' → 'saving' → 'done'.
+ *                 'signing' is only reported once the transaction prompt is
+ *                 really being opened (network checked, wallet connected).
  */
 export async function anchorTransition(anchor, { onStatus } = {}) {
   if (!anchor) return null
+  const blocked = signingBlocked(anchor)
+  if (blocked) throw new AnchorError(blocked, 'SIGNING_DISABLED')
   const report = (state, extra = {}) => onStatus?.({ state, anchor, ...extra })
 
-  report('signing')
+  report('connecting')
   const { txHash, blockNumber, actorAddress } = await anchorOnChain({
     entityType: anchor.entity_type,
     entityRef: anchor.entity_ref,
     stage: anchor.stage,
     dataHash: anchor.data_hash,
+    onConfirmPrompt: () => report('signing'),
     onSubmitted: (hash) => report('mining', { txHash: hash }),
   })
 
@@ -189,6 +199,8 @@ export function attachAnchorTx(anchor, { txHash, blockNumber, actorAddress = '' 
  * checks apply as for a MetaMask attach. Resolves to the updated anchor.
  */
 export function serverSubmitAnchor(anchor) {
+  const blocked = signingBlocked(anchor)
+  if (blocked) return Promise.reject(new AnchorError(blocked, 'SIGNING_DISABLED'))
   return apiFetch(anchor.attach_url, {
     method: 'POST',
     body: JSON.stringify({ anchor_id: anchor.id, stage: anchor.stage, server_submit: true }),
@@ -207,9 +219,29 @@ const getReadProvider = () => {
   return readProvider
 }
 
+// staticNetwork means ethers never asks which chain the RPC is on, so ask once
+// ourselves. Only a pass is cached; a failure (wrong chain or unreachable) is
+// retried on the next read.
+let networkCheck = null
+const checkReadNetwork = () => {
+  if (!networkCheck) {
+    networkCheck = getReadProvider().send('eth_chainId', [])
+      .then((id) => assertChainId(id, SEPOLIA_CHAIN_ID))
+    networkCheck.catch(() => { networkCheck = null })
+  }
+  return networkCheck
+}
+
 /** Read-only contract handle for the public verification page. */
 export const getReadOnlyLedger = () =>
   new Contract(LEDGER_ADDRESS, LEDGER_ABI, getReadProvider())
+
+/** Chain reader for packetVerify.verifyPacket, plus the network and contract
+ *  this build trusts (from its own config — never from a packet). */
+export const packetVerifyContext = () => ({
+  reader: makeLedgerReader(getReadProvider(), LEDGER_ADDRESS, LEDGER_ABI),
+  trusted: { chainId: SEPOLIA_CHAIN_ID, contract: isLedgerConfigured() ? LEDGER_ADDRESS : '' },
+})
 
 /**
  * Read a procurement's whole trail straight from the contract.
@@ -222,6 +254,7 @@ export const getReadOnlyLedger = () =>
  */
 export async function readChainTrail(entityRef) {
   if (!isLedgerConfigured() || !entityRef) return []
+  await checkReadNetwork()
   const ledger = getReadOnlyLedger()
 
   const shape = (row) => ({
@@ -246,6 +279,7 @@ export async function readChainTrail(entityRef) {
 /** Total anchors on the ledger — a cheap "the contract is reachable" probe. */
 export async function readLedgerTotal() {
   if (!isLedgerConfigured()) return null
+  await checkReadNetwork()
   return Number(await getReadOnlyLedger().total())
 }
 

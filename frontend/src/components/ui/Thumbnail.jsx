@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSecureSrc } from './SecureImg'
 import {
   Armchair, BookOpen, Bus, Dumbbell, FlaskConical, HardHat, Laptop, Package, Paintbrush,
   Printer, Stethoscope, UtensilsCrossed, Zap,
@@ -31,11 +32,13 @@ export const categoryIcon = (category) => CATEGORY_ICON[category] || Package
 export default function Thumbnail({ src, alt, size = 48, category, onOpen, badge, className = '' }) {
   const [failed, setFailed] = useState(false)
   const Icon = categoryIcon(category)
-  const showImg = src && !failed
+  // Protected images are fetched with the login token (see SecureImg).
+  const { src: shown, failed: loadFailed } = useSecureSrc(src)
+  const showImg = shown && !failed && !loadFailed
   const inner = (
     <>
       {showImg ? (
-        <img src={src} alt={onOpen ? '' : alt} width={size} height={size} loading="lazy" decoding="async"
+        <img src={shown} alt={onOpen ? '' : alt} width={size} height={size} loading="lazy" decoding="async"
           onError={() => setFailed(true)} />
       ) : (
         <span className="rf-thumb-ph" aria-hidden="true"><Icon size={Math.round(size * 0.42)} /></span>

@@ -10,13 +10,19 @@ const shortTx = (tx) => (tx ? `${tx.slice(0, 10)}…${tx.slice(-6)}` : '')
 // Per-phase presentation. `tone` drives the accent colour; `retry` decides
 // whether the card offers a retry button.
 const PHASES = {
-  signing:     { title: 'Waiting for MetaMask',  tone: '',        spin: true },
+  connecting:  { title: 'Checking your wallet',  tone: '',        spin: true },
+  signing:     { title: 'Confirm in MetaMask',   tone: '',        spin: true },
   mining:      { title: 'Anchoring on Sepolia',  tone: '',        spin: true },
   saving:      { title: 'Saving the reference',  tone: '',        spin: true },
-  done:        { title: 'Anchored on-chain',     tone: 'is-done' },
+  // Submitted, not yet VERIFIED: the server confirms it by reading the receipt.
+  done:        { title: 'Transaction submitted', tone: 'is-done' },
   rejected:    { title: 'Not anchored',          tone: 'is-warn',  retry: true },
   unavailable: { title: 'Not anchored',          tone: 'is-warn',  retry: true },
   unsaved:     { title: 'Anchored, not saved',   tone: 'is-warn',  retry: true },
+  // Retry only after the user has switched networks in MetaMask themselves.
+  wrongNetwork: { title: 'Wrong wallet network', tone: 'is-warn', retry: true },
+  // Read-only deployment: nothing to retry, ever.
+  disabled:    { title: 'Signing disabled',      tone: 'is-warn' },
   error:       { title: 'Anchoring failed',      tone: 'is-error', retry: true },
 }
 

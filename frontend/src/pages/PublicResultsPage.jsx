@@ -5,12 +5,14 @@ import {
 } from 'lucide-react'
 import { apiPublicProcurement, apiGetMySupplier, getToken, getRole } from '../api'
 import PublicVerifier from '../components/PublicVerifier'
+import { normalizeProcurementCode } from '../utils/procurementCode'
 import { readLedgerTotal } from '../blockchain/anchor'
 import Countdown from '../components/ui/Countdown'
 import DataTable from '../components/ui/DataTable'
 import KpiCard, { KpiRow } from '../components/ui/KpiCard'
 import StatusBadge from '../components/ui/StatusBadge'
 import Thumbnail from '../components/ui/Thumbnail'
+import { publicDate } from '../blockchain/recordView'
 import { fmtDate, peso, pesoCompact } from '../utils/format'
 import '../style/PublicResultsPage.css'
 
@@ -22,8 +24,8 @@ export default function PublicResultsPage() {
   const navigate = useNavigate()
   const loc = useLocation()
   const [params] = useSearchParams()
-  const verifyCode = (params.get('verify') || '').trim().toUpperCase()
-  const [data, setData] = useState({ biddings: [], winners: [] })
+  const verifyCode = normalizeProcurementCode(params.get('verify'))
+  const [data, setData] = useState({ biddings: [], closed: [], winners: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [category, setCategory] = useState('all')
@@ -38,7 +40,7 @@ export default function PublicResultsPage() {
   useEffect(() => {
     let alive = true
     apiPublicProcurement()
-      .then((d) => { if (alive) setData({ biddings: d.biddings || [], winners: d.winners || [] }) })
+      .then((d) => { if (alive) setData({ biddings: d.biddings || [], closed: d.closed || [], winners: d.winners || [] }) })
       .catch((e) => { if (alive) setError(e.message) })
       .finally(() => { if (alive) setLoading(false) })
     readLedgerTotal().then((n) => { if (alive && Number.isFinite(n)) setOnChain(n) }).catch(() => {})
@@ -73,12 +75,14 @@ export default function PublicResultsPage() {
     setBidNotice(PENDING_MSG)
   }
 
-  const { biddings, winners } = data
+  const { biddings, closed, winners } = data
   // One list for the table: open biddings and awarded contracts.
   const rows = useMemo(() => [
     ...biddings.map((b) => ({ ...b, key: `o-${b.code}`, state: 'open' })),
+    // Bidding over, no award yet (D4). Listed so their trail can be checked.
+    ...closed.map((c) => ({ ...c, key: `c-${c.code}`, state: 'closed' })),
     ...winners.map((w) => ({ ...w, key: `a-${w.code}`, state: 'awarded' })),
-  ], [biddings, winners])
+  ], [biddings, closed, winners])
   const categories = [...new Set(rows.map((r) => r.category).filter(Boolean))].sort()
   const visible = category === 'all' ? rows : rows.filter((r) => r.category === category)
   const openAbc = biddings.reduce((s, b) => s + Number(b.budget || 0), 0)
@@ -116,19 +120,28 @@ export default function PublicResultsPage() {
             <Countdown deadline={r.deadline} />
             <span className="rf-muted">{fmtDate(r.deadline)} · {r.bids} bid{r.bids === 1 ? '' : 's'}</span>
           </div>
+        : r.state === 'closed'
+        ? <div className="rf-stack-cell">
+            <span>Bidding closed</span>
+            <span className="rf-muted">{fmtDate(r.deadline)} · no award yet</span>
+          </div>
         : <div className="rf-stack-cell">
             <span className="pub-winner"><Trophy size={13} aria-hidden="true" /> {r.winner}</span>
-            <span className="rf-muted">Awarded {fmtDate(r.awarded_at)}</span>
+            <span className="rf-muted">Awarded {publicDate(r.awarded_at)}</span>
           </div>),
     },
     {
       key: 'status', header: 'Status', sortValue: (r) => r.state,
-      render: (r) => <StatusBadge domain="project" status={r.state === 'open' ? 'published' : 'awarded'} />,
+      render: (r) => <StatusBadge domain="project" status={r.state === 'open' ? 'published' : r.state} />,
     },
     {
       key: 'actions', header: <span className="sr-only">Actions</span>, align: 'right', className: 'rf-sticky-col',
       render: (r) => (
         <div className="rf-row-actions">
+          <Link className="ui-btn ui-btn--ghost ui-btn--sm" to={`/public/procurement/${encodeURIComponent(r.code)}`}
+            aria-label={`Result and blockchain history of ${r.code}`}>
+            <Eye size={13} /> Details
+          </Link>
           <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => verify(r.code)}
             aria-label={`Verify ${r.code} on the blockchain`}>
             <ShieldCheck size={13} /> Verify
@@ -170,7 +183,7 @@ export default function PublicResultsPage() {
         <div className="pub-badge"><Eye size={14} /> Public View</div>
         <h1>Public Procurement Results</h1>
         <p>
-          Every procurement open for bidding and every awarded contract — no account required.
+          Every procurement open for bidding, closed, or awarded — no account required.
           Check any of them against the blockchain with the verifier below.
         </p>
       </header>
@@ -187,7 +200,7 @@ export default function PublicResultsPage() {
           <KpiCard label="ABC open for bidding" icon={Search} loading={loading}
             value={pesoCompact(openAbc)} title={peso(openAbc)} context="Approved budgets of open biddings" />
           <KpiCard label="Contracts awarded" icon={Trophy} tone="success" loading={loading} value={winners.length}
-            context={winners[0] ? `Latest ${fmtDate(winners[0].awarded_at)}` : 'None yet'} />
+            context={winners[0] ? `Latest ${publicDate(winners[0].awarded_at)}` : 'None yet'} />
           {onChain != null && (
             <KpiCard label="Steps on Ethereum Sepolia" icon={ShieldCheck} to="/public#verify" value={onChain}
               context="Read live from the ledger contract" />
@@ -208,6 +221,7 @@ export default function PublicResultsPage() {
             filters={[
               { key: 'all', label: 'All', test: () => true },
               { key: 'open', label: 'Open for bidding', test: (r) => r.state === 'open' },
+              { key: 'closed', label: 'Closed', test: (r) => r.state === 'closed' },
               { key: 'awarded', label: 'Awarded', test: (r) => r.state === 'awarded' },
             ]}
             toolbar={categories.length > 0 && (

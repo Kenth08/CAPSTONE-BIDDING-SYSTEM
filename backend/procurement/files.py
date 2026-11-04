@@ -2,64 +2,83 @@
 
 WHY THIS EXISTS
 ---------------
-Uploads used to be linked directly at MEDIA_URL ("/media/supplier_docs/..."),
-which had two separate problems:
-
-1. It only worked in development. config/urls.py registers the MEDIA_URL route
-   *only* when DEBUG is True, and WhiteNoise serves STATIC_ROOT, never
-   MEDIA_ROOT — so on the deployed site (DEBUG=False) every document link
-   returned 404. Supplier documents, quotations, Purchase Requests and Notices
-   of Award were all unreachable in production.
-
-2. It had no access control at all. A media URL is just a path: anyone holding
-   or guessing one could read a supplier's government ID, their audited
-   financial statements, or a losing bidder's quotation — no login required.
-   Switching to S3 would not have fixed that, only made the public URLs
-   permanent (AWS_QUERYSTRING_AUTH is off).
-
-Every file is therefore served through this module instead. A request names a
-record and a field; this resolves the FileField, checks that *this* caller is
-allowed to see *that* file, and streams it. It works identically on local disk
+Files are never linked directly (no MEDIA_URL, no bucket URL, no pre-signed S3
+URL ever reaches the browser). A request names a record and a field; this
+module resolves the FileField, decides whether *this* caller may read *that*
+file, streams it, and writes an audit entry. It works identically on local disk
 and on S3, so nothing here depends on which storage backend is configured.
 
-THE RULES, IN ONE PLACE
------------------------
-    supplier documents  → admin/head, or that supplier
-    procurement docs    → admin/head, or a supplier the procurement is open to
-    bid documents       → admin/head, or the supplier who filed the bid
-    award documents     → admin/head, or the supplier who won
-    bid product images  → admin, or the supplier who filed the bid (NOT the Head)
+THE RULES, IN ONE PLACE  (see `_can_read`)
+------------------------------------------
+    supplier registration docs  → Admin, or that supplier
+    bid documents, attachments,
+      product images            → Admin, or the supplier who filed the bid
+    project documents
+      ToR / Tech Specs /
+      Bid Evaluation Criteria,
+      reference image           → Admin, Head, or an eligible supplier (verified,
+                                  matching category, procurement open for bids)
+      Purchase Request /
+      Approved Budget document  → Admin and Head only
+    award documents             → Admin, Head, or the winning supplier;
+                                  the Notice of Award is also PUBLIC once the
+                                  procurement is awarded (`_is_public`)
+    earlier award-document
+      versions (awardversion)   → exactly the rule of that award's documents;
+                                  never public (only the current NOA is)
 
-Note the third rule: a supplier can read their OWN bid documents and nobody
-else's, which is what keeps rival quotations private during evaluation.
+Everything else — including another supplier's anything — is a 404, never a
+403: whether a supplier uploaded a particular document is itself private.
 
-HOW A BROWSER PROVES IT MAY READ A FILE
----------------------------------------
-Documents are opened with `<a href target="_blank">` and reference images with
-`<img src>`. Both are plain browser navigations: they carry cookies, but NOT the
-`Authorization: Bearer` header this API authenticates with. A JWT-only check
-would therefore reject every real document link in the UI.
+HOW A BROWSER DOWNLOADS A FILE
+------------------------------
+A download link is a plain browser navigation, which cannot send the
+`Authorization: Bearer` header this API authenticates with. So a click does two
+things (frontend/src/files.js):
 
-So each URL carries a signed, expiring token instead. The serializer mints it
-only while rendering a response for a caller who already passed the viewset's
-permission check — that issuing moment IS the authorization decision, and the
-signature makes the resulting link unforgeable and short-lived (the same model
-as an S3 pre-signed URL). A token is bound to one kind/pk/field, so it cannot be
-edited to point at another supplier's file.
+1. POST /api/files/<kind>/<pk>/<field>/link/ with the JWT. If the caller may
+   read the file, a random token is minted and stored (hashed) for that user
+   and that one file, valid for FILE_LINK_MAX_AGE_SECONDS.
+2. The browser navigates to the returned URL. The token is redeemed exactly
+   once; the permission check is run AGAIN for the token's user (so access
+   revoked in the meantime still wins) and the download is logged.
 
-An authenticated API client with no token in the URL is still served, by
-re-running the ownership check directly — belt and braces, and it keeps the
-endpoint usable from scripts and tests.
+A copied link is therefore useless: it is already spent, or it expires within
+two minutes. Images shown inline are fetched by the frontend with the JWT
+(GET without a token), which runs the same check and is logged the same way.
 """
+import hashlib
 import logging
-import mimetypes
 import os
+import secrets
+from datetime import timedelta
 
-from django.core import signing
+from django.db import transaction
 from django.http import FileResponse, Http404
+from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.exceptions import NotFound
+from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from accounts.audit import log_action
+
+from .models import (
+    AWARD_DOCUMENT_KEYS,
+    BID_DOCUMENT_KEYS,
+    PROCUREMENT_DOCUMENT_KEYS,
+    SUPPLIER_DOCUMENT_KEYS,
+    Award,
+    AwardDocumentVersion,
+    Bid,
+    BidAttachment,
+    BidProductImage,
+    FileDownloadToken,
+    Project,
+    Supplier,
+    SupplierCategoryDocument,
+)
+from .uploads import display_filename
 
 logger = logging.getLogger(__name__)
 
@@ -70,45 +89,13 @@ MISSING_FILE_DETAIL = (
     "Ask the supplier to upload it again."
 )
 
-# How long a document link stays valid. Long enough that a tab left open over a
-# lunch break still works, short enough that a URL pasted into a chat or leaked
-# through a Referer header stops working the same day.
-FILE_URL_MAX_AGE_SECONDS = 6 * 60 * 60
+# A download link is minted on click and used immediately, so it only needs to
+# survive the redirect. Short enough that a link pasted into a chat, a ticket or
+# a Referer header is dead before anyone else can use it.
+FILE_LINK_MAX_AGE_SECONDS = 2 * 60
 
-# Namespaced so these tokens can never be confused with any other signed value
-# the project produces (password reset, email verification, session data).
-_FILE_SALT = "procurement.files.protected-download"
-
-
-def _sign(kind, pk, field):
-    """A tamper-proof, timestamped token for exactly one file."""
-    return signing.TimestampSigner(salt=_FILE_SALT).sign(f"{kind}:{pk}:{field}")
-
-
-def _token_grants(token, kind, pk, field):
-    """Is `token` a currently-valid grant for this exact file?"""
-    if not token:
-        return False
-    try:
-        value = signing.TimestampSigner(salt=_FILE_SALT).unsign(
-            token, max_age=FILE_URL_MAX_AGE_SECONDS)
-    except signing.BadSignature:
-        return False
-    return value == f"{kind}:{pk}:{field}"
-
-from .models import (
-    AWARD_DOCUMENT_KEYS,
-    BID_DOCUMENT_KEYS,
-    PROCUREMENT_DOCUMENT_KEYS,
-    SUPPLIER_DOCUMENT_KEYS,
-    Award,
-    Bid,
-    BidAttachment,
-    BidProductImage,
-    Project,
-    Supplier,
-    SupplierCategoryDocument,
-)
+# Spent/expired tokens are kept a while as download history, then pruned.
+FILE_LINK_RETENTION = timedelta(days=30)
 
 # Only these fields can ever be addressed, per record kind. This is a strict
 # allow-list, not a filter: `getattr(record, field)` on caller-supplied input
@@ -120,9 +107,23 @@ ALLOWED_FIELDS = {
     "project": set(PROCUREMENT_DOCUMENT_KEYS) | {"reference_image"},
     "bid": set(BID_DOCUMENT_KEYS),
     "award": set(AWARD_DOCUMENT_KEYS),
+    # One issue of a post-award document (AwardDocumentVersion rows).
+    "awardversion": {"file"},
     "attachment": {"file"},
     "bidimage": {"image"},
 }
+
+# Project documents a bidder needs in order to prepare a bid. The Purchase
+# Request and the Approved Budget document are internal approval paperwork and
+# stay with the Admin and the Head (the ABC amount itself is public anyway).
+SUPPLIER_VISIBLE_PROJECT_FIELDS = {
+    "terms_of_reference", "technical_specifications", "bid_evaluation_criteria",
+    "reference_image",
+}
+
+# Award documents the Head may read. The Head approves procurements and sees
+# their outcome, but never evaluates bids or reviews supplier registrations.
+HEAD_KINDS = {"project", "award", "awardversion"}
 
 
 def _supplier_of(user):
@@ -130,24 +131,16 @@ def _supplier_of(user):
     return Supplier.objects.filter(user=user).first()
 
 
-def _can_read(user, kind, record):
-    """Is `user` allowed to read a file hanging off `record`?
-
-    Admins and the Head can read everything — they run the procurement. Every
-    other rule is ownership: a supplier sees their own documents and nothing
-    belonging to anyone else.
-    """
+def _can_read(user, kind, record, field):
+    """Is `user` allowed to read `field` on `record`? The single policy every
+    download path (signed link, authenticated fetch) goes through."""
+    if not (user and user.is_authenticated and user.is_active):
+        return False
     role = getattr(user, "role", None)
-    if kind == "bidimage":
-        # Product photos are bid evaluation material: the Admin evaluates, the
-        # owner manages them. The Head never evaluates bids (BidViewSet gives
-        # the Head no bids at all), so the Head isn't granted these.
-        if role == "admin":
-            return True
-        supplier = _supplier_of(user) if role == "supplier" else None
-        return supplier is not None and record.bid.supplier_id == supplier.pk
-    if role in {"admin", "head"}:
+    if role == "admin":
         return True
+    if role == "head":
+        return kind in HEAD_KINDS
     if role != "supplier":
         return False
 
@@ -161,20 +154,34 @@ def _can_read(user, kind, record):
         return record.supplier_id == supplier.pk
     if kind == "bid":
         return record.supplier_id == supplier.pk
-    if kind == "attachment":
+    if kind in {"attachment", "bidimage"}:
         return record.bid.supplier_id == supplier.pk
     if kind == "award":
-        return record.supplier_id == supplier.pk
+        return record.supplier_id == supplier.pk and record.status == Award.Status.WON
+    if kind == "awardversion":
+        return _can_read(user, "award", record.award, record.key)
     if kind == "project":
-        # Suppliers need the Terms of Reference, specifications and evaluation
-        # criteria to bid at all, so a procurement that is open to them exposes
-        # its documents. Mirrors ProjectViewSet.get_queryset exactly: published,
-        # and in a category the supplier registered for.
+        # Mirrors ProjectViewSet.get_queryset (published + category match) and
+        # adds the verification requirement bidding itself has.
         return (
-            record.status == Project.Status.PUBLISHED
+            field in SUPPLIER_VISIBLE_PROJECT_FIELDS
+            and supplier.qualification_status == Supplier.Qualification.VERIFIED
+            and record.status == Project.Status.PUBLISHED
             and record.category in (supplier.business_types or [])
         )
     return False
+
+
+def _is_public(kind, record, field):
+    """Files anyone may download without an account: only the Notice of Award
+    of an awarded procurement, so the public can hash it and compare it with
+    the NOA_ISSUED anchor. Everything else needs a login."""
+    return (
+        kind == "award"
+        and field == "notice_of_award"
+        and record.status == Award.Status.WON
+        and record.project.status == Project.Status.AWARDED
+    )
 
 
 # Resolves a URL `kind` to the queryset it addresses. select_related pulls in
@@ -184,78 +191,199 @@ _LOOKUPS = {
     "supplierdoc": lambda: SupplierCategoryDocument.objects.all(),
     "project": lambda: Project.objects.all(),
     "bid": lambda: Bid.objects.select_related("supplier"),
-    "award": lambda: Award.objects.select_related("supplier"),
+    "award": lambda: Award.objects.select_related("supplier", "project"),
+    "awardversion": lambda: AwardDocumentVersion.objects.select_related("award__supplier", "award__project"),
     "attachment": lambda: BidAttachment.objects.select_related("bid"),
     "bidimage": lambda: BidProductImage.objects.select_related("bid"),
 }
 
 
-class ProtectedFileView(APIView):
-    """GET /api/files/<kind>/<pk>/<field>/?t=<token> — stream one uploaded file.
+def _resolve(kind, pk, field):
+    """The record a URL addresses, or Http404 for an unknown kind/field/pk."""
+    if kind not in _LOOKUPS or field not in ALLOWED_FIELDS.get(kind, ()):
+        raise Http404
+    record = _LOOKUPS[kind]().filter(pk=pk).first()
+    if record is None:
+        raise Http404
+    return record
 
-    Returns 404 (never 403) when the caller may not read the file: whether a
-    particular supplier uploaded a particular document is itself information
-    worth withholding, and a 403 would confirm the record exists.
+
+def _hash_token(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def issue_download_token(user, kind, pk, field):
+    """Mint a one-time token for `user` to fetch one file. Returns the raw token
+    (only its hash is stored). Also prunes long-expired rows."""
+    now = timezone.now()
+    FileDownloadToken.objects.filter(expires_at__lt=now - FILE_LINK_RETENTION).delete()
+    token = secrets.token_urlsafe(32)
+    FileDownloadToken.objects.create(
+        token_hash=_hash_token(token), user=user, kind=kind, object_id=pk, field=field,
+        expires_at=now + timedelta(seconds=FILE_LINK_MAX_AGE_SECONDS),
+    )
+    return token
+
+
+def redeem_download_token(token, kind, pk, field):
+    """Spend `token` if it is a live grant for exactly this file. Returns the
+    user it was issued to, or None. Atomic: two simultaneous requests with the
+    same token can't both succeed."""
+    if not token:
+        return None
+    now = timezone.now()
+    with transaction.atomic():
+        grant = (FileDownloadToken.objects.select_for_update().select_related("user")
+                 .filter(token_hash=_hash_token(token)).first())
+        if (grant is None or grant.used_at is not None or grant.expires_at <= now
+                or (grant.kind, grant.object_id, grant.field) != (kind, int(pk), field)):
+            return None
+        grant.used_at = now
+        grant.save(update_fields=["used_at"])
+    return grant.user
+
+
+def display_name(record, field, field_file):
+    """The file name offered to the person downloading it: the uploader's
+    original name when one was recorded (stored names are random UUIDs, see
+    uploads.py), otherwise the stored name's basename for older files."""
+    recorded = (getattr(record, "original_filenames", None) or {}).get(field)
+    if not recorded and isinstance(record, AwardDocumentVersion):
+        recorded = record.original_filename
+    if not recorded and isinstance(record, BidAttachment):
+        recorded = record.file_name
+    return display_filename(recorded or os.path.basename(getattr(field_file, "name", "") or ""))
+
+
+def _deny(request, kind, pk, field, user=None, reason="not permitted"):
+    """Log a refused file request (only when someone identifiable asked —
+    anonymous scanners would just flood the log) and raise the uniform 404."""
+    who = user or getattr(request, "user", None)
+    if who is not None and getattr(who, "is_authenticated", False):
+        log_action(request, "file.download_denied", user=who, entity_type=kind,
+                   entity_id=pk, description=f"Refused {kind}/{pk}/{field} ({reason}).")
+    raise Http404
+
+
+def serve_file(request, kind, record, field, *, user=None):
+    """Stream one file as a download and audit-log it. `user` is None for a
+    public (anonymous) download."""
+    from .storage_crypto import open_for_download   # avoids an import cycle
+
+    file_field = getattr(record, field, None)
+    if not file_field:
+        raise Http404
+    try:
+        handle = open_for_download(file_field)
+    except (FileNotFoundError, OSError, ValueError):
+        # The record still points at a file storage no longer has — most likely
+        # written to Render's ephemeral disk before the bucket was configured.
+        logger.warning("Protected file missing from storage: %s/%s/%s",
+                       kind, record.pk, field)
+        raise NotFound(MISSING_FILE_DETAIL)
+
+    filename = display_name(record, field, file_field)
+    log_action(
+        request, "file.downloaded", user=user,
+        entity_type=kind, entity_id=record.pk,
+        description=f"Downloaded {kind}/{record.pk}/{field} ({filename})"
+                    + ("" if user else " — public"),
+    )
+    # as_attachment: the browser saves the file instead of rendering it inside
+    # our origin, so an uploaded file can never execute as a page. FileResponse
+    # encodes the filename safely (RFC 6266) and guesses the Content-Type.
+    response = FileResponse(handle, as_attachment=True, filename=filename)
+    # Private and permission-dependent: no shared or browser cache may keep it.
+    response["Cache-Control"] = "private, no-store, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return response
+
+
+class ProtectedFileView(APIView):
+    """GET /api/files/<kind>/<pk>/<field>/[?t=<one-time token>]
+
+    Served when ONE of these holds, checked in this order:
+      1. `t` is a live one-time token for this exact file, and its user still
+         passes the policy (browser downloads);
+      2. the caller is authenticated with a JWT and passes the policy (inline
+         images fetched by the frontend, scripts, tests);
+      3. the file is public (`_is_public`: an awarded procurement's NOA).
+    Anything else is a 404.
     """
 
-    # AllowAny because the signed `t` token is the credential for browser
-    # navigations, which cannot send an Authorization header. Access is decided
-    # below — either the token is valid, or the caller is a signed-in user who
-    # passes _can_read. Never both-optional: with neither, nothing is served.
+    # AllowAny because a one-time token or a public file needs no session.
+    # Access is decided below — never by this class.
     permission_classes = [permissions.AllowAny]
 
     def get(self, request, kind, pk, field):
-        if kind not in _LOOKUPS or field not in ALLOWED_FIELDS.get(kind, ()):
+        record = _resolve(kind, pk, field)
+
+        token = request.query_params.get("t")
+        if token:
+            user = redeem_download_token(token, kind, pk, field)
+            if user is None:
+                raise Http404   # spent, expired, forged or for another file
+            if not _can_read(user, kind, record, field):
+                _deny(request, kind, pk, field, user=user, reason="access revoked")
+            return serve_file(request, kind, record, field, user=user)
+
+        user = request.user
+        if user and user.is_authenticated:
+            if _can_read(user, kind, record, field):
+                return serve_file(request, kind, record, field, user=user)
+        if _is_public(kind, record, field):
+            return serve_file(request, kind, record, field, user=None)
+        _deny(request, kind, pk, field)
+
+
+class ProtectedFileLinkView(APIView):
+    """POST /api/files/<kind>/<pk>/<field>/link/ → {"url": one-time URL}.
+
+    Called by the frontend at the moment a user clicks a document. The link is
+    bound to that user and that file, works once, and expires after
+    FILE_LINK_MAX_AGE_SECONDS. 404 when the caller may not read the file."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, kind, pk, field):
+        record = _resolve(kind, pk, field)
+        if not _can_read(request.user, kind, record, field):
+            _deny(request, kind, pk, field)
+        if not getattr(record, field, None):
             raise Http404
+        token = issue_download_token(request.user, kind, record.pk, field)
+        path = f"/api/files/{kind}/{record.pk}/{field}/?t={token}"
+        return Response({
+            "url": request.build_absolute_uri(path),
+            "expires_in": FILE_LINK_MAX_AGE_SECONDS,
+        })
 
-        record = _LOOKUPS[kind]().filter(pk=pk).first()
-        if record is None:
+
+class PublicNoticeOfAwardView(APIView):
+    """GET /api/public/procurement/<code>/notice-of-award/ — the one document
+    published to everyone, so the public can check it against its anchor."""
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request, code):
+        code = (code or "").strip().upper()
+        award = (Award.objects.select_related("project", "supplier")
+                 .filter(project__code=code, status=Award.Status.WON).first())
+        if award is None or not _is_public("award", award, "notice_of_award"):
             raise Http404
-
-        granted = _token_grants(request.query_params.get("t"), kind, pk, field)
-        if not granted:
-            user = request.user
-            if not (user and user.is_authenticated and _can_read(user, kind, record)):
-                raise Http404
-
-        file_field = getattr(record, field, None)
-        if not file_field:
-            raise Http404
-
-        try:
-            handle = file_field.open("rb")
-        except (FileNotFoundError, OSError, ValueError):
-            # The record still points at a file that storage no longer has —
-            # most likely written to Render's ephemeral disk (wiped on every
-            # deploy/restart) because no S3 bucket is configured. Logged so a
-            # missing file can be told apart from an access denial, which stays
-            # a bare 404 above.
-            logger.warning("Protected file missing from storage: %s/%s/%s -> %s",
-                           kind, pk, field, file_field.name)
-            raise NotFound(MISSING_FILE_DETAIL)
-
-        filename = os.path.basename(file_field.name)
-        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        response = FileResponse(handle, content_type=content_type)
-        # inline: these are documents meant to be read in the browser tab the UI
-        # opens. The filename is still offered for an explicit download.
-        response["Content-Disposition"] = f'inline; filename="{filename}"'
-        # Documents are private and permission-dependent — never let a shared
-        # cache hold on to one and hand it to the next caller.
-        response["Cache-Control"] = "private, max-age=0, no-store"
-        response["X-Content-Type-Options"] = "nosniff"
-        return response
+        return serve_file(request, "award", award, "notice_of_award", user=None)
 
 
 def protected_file_url(request, kind, record, field):
-    """Absolute, signed URL for one file, or None when the field is empty.
+    """Address of one file for the frontend, or None when the field is empty.
 
-    Serializers call this instead of `file.url`, so no MEDIA_URL ever reaches
-    the frontend and every document goes through ProtectedFileView. Minting the
-    token here is the authorization decision: this only runs while serializing a
-    response the caller was already permitted to receive.
-    """
+    Deliberately NOT a credential: the URL carries no token, so it can be put in
+    any API response, cached or logged without granting anything. The frontend
+    turns a click on it into a one-time link (see the module docstring)."""
     if not getattr(record, field, None):
         return None
-    path = f"/api/files/{kind}/{record.pk}/{field}/?t={_sign(kind, record.pk, field)}"
+    path = f"/api/files/{kind}/{record.pk}/{field}/"
     return request.build_absolute_uri(path) if request else path

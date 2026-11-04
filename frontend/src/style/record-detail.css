@@ -1,0 +1,91 @@
+/* Record details page (components/AnchorDetail.jsx). Uses the shared tokens so
+   it reads the same in every dashboard and on the public page. */
+.rd { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.rd-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.rd-select { display: flex; align-items: center; gap: 8px; font-size: var(--fs-small); color: var(--text-subtle); min-width: 0; }
+.rd-select select {
+  max-width: min(520px, 80vw);
+  padding: 6px 10px;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--border-default, #d0d5dd);
+  background: var(--surface-card, #fff);
+  color: var(--text-strong);
+  font: inherit;
+}
+.rd-head { display: flex; flex-direction: column; gap: 6px; }
+.rd-head h3, .rd .rf-card-head h3 { display: flex; align-items: center; gap: 6px; }
+
+.rd-evidence {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 14px 16px; border-radius: var(--radius-lg, 12px); border: 1px solid;
+}
+.rd-evidence svg { flex-shrink: 0; margin-top: 2px; }
+.rd-evidence p { margin: 4px 0 0; font-size: var(--fs-small); }
+.rd-tone-info { background: var(--tone-info-bg);    color: var(--tone-info-fg);    border-color: var(--tone-info-border); }
+.rd-tone-warn { background: var(--tone-warning-bg); color: var(--tone-warning-fg); border-color: var(--tone-warning-border); }
+.rd-tone-bad  { background: var(--tone-danger-bg);  color: var(--tone-danger-fg);  border-color: var(--tone-danger-border); }
+.rd-warn { display: flex; gap: 6px; align-items: center; font-weight: var(--fw-medium); }
+
+.rd-dl { margin: 0; display: flex; flex-direction: column; }
+.rd-dl-row {
+  display: grid; grid-template-columns: minmax(130px, 34%) 1fr; gap: 10px;
+  padding: 8px 0; border-bottom: 1px solid var(--border-subtle, #eef0f3); font-size: var(--fs-small);
+}
+.rd-dl-row:last-child { border-bottom: 0; }
+.rd-dl-row dt { color: var(--text-subtle); display: flex; gap: 5px; align-items: flex-start; }
+.rd-dl-row dd { margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; color: var(--text-strong); }
+.rd-fp { margin: 6px 0 12px; border-top: 1px solid var(--border-subtle, #eef0f3); }
+.rd-mono { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; overflow-wrap: anywhere; }
+.rd-missing { color: var(--text-subtle); font-style: italic; }
+.rd-explain { color: var(--text-subtle); font-size: 11.5px; line-height: 1.4; }
+.rd-type { margin-left: 6px; }
+.rd-here { margin-left: 6px; }
+
+.rd-note {
+  display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius-md, 8px);
+  background: var(--tone-warning-bg); color: var(--tone-warning-fg); border: 1px solid var(--tone-warning-border);
+  font-size: var(--fs-small);
+}
+.rd-note svg { flex-shrink: 0; margin-top: 1px; }
+.rd-note-bad { background: var(--tone-danger-bg); color: var(--tone-danger-fg); border-color: var(--tone-danger-border); }
+
+.rd-file {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer;
+  border: 1px dashed var(--border-default, #d0d5dd); border-radius: var(--radius-md, 8px);
+  color: var(--text-strong); font-size: var(--fs-small); min-width: 0;
+}
+.rd-file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.rd-file:focus-within { outline: 2px solid var(--c-primary-600); outline-offset: 2px; }
+.rd-file span { overflow-wrap: anywhere; }
+
+.rd-table-wrap { overflow-x: auto; }
+.rd-table { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+.rd-table th { text-align: left; color: var(--text-subtle); font-weight: var(--fw-medium); padding: 6px 8px; border-bottom: 1px solid var(--border-subtle, #eef0f3); white-space: nowrap; }
+.rd-table td { padding: 8px; border-bottom: 1px solid var(--border-subtle, #eef0f3); vertical-align: top; color: var(--text-strong); }
+.rd-table tr.is-here td { background: var(--tone-info-bg); }
+
+/* PacketCheck, re-themed with the shared tokens on this page. */
+.rd .pc-ok      { background: var(--tone-success-bg); color: var(--tone-success-fg); border-color: var(--tone-success-border); }
+.rd .pc-bad     { background: var(--tone-danger-bg);  color: var(--tone-danger-fg);  border-color: var(--tone-danger-border); }
+.rd .pc-pending { background: var(--tone-warning-bg); color: var(--tone-warning-fg); border-color: var(--tone-warning-border); }
+.rd .pc-amber   { background: var(--tone-warning-bg); color: var(--tone-warning-fg); border-color: var(--tone-warning-border); }
+.rd .pc-legacy  { background: var(--tone-info-bg);    color: var(--tone-info-fg);    border-color: var(--tone-info-border); }
+.rd-checks { display: grid; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
+/* Explicit colours: these cards also sit on the dark public page, whose light text
+   colour would otherwise be inherited onto their white background. */
+.rd-check { display: grid; gap: 2px; font-size: var(--fs-caption, 12px); color: var(--text-default, #344054); }
+.rd-history { margin: 10px 0 0; font-size: var(--fs-caption, 12px); color: var(--text-default, #344054); }
+.rd-history dt { font-weight: 600; color: var(--text-strong); }
+.rd-history dd { margin: 0 0 6px; }
+.rd-checked-note { margin: 14px 0 0; color: var(--text-strong); }
+.rd-check strong { font-weight: 600; }
+.rd-unverified { margin: 4px 0 0; padding-left: 18px; font-size: var(--fs-caption, 12px); color: var(--text-default, #344054); }
+.rd-check-pass strong { color: var(--tone-info-fg); }
+.rd-check-fail strong { color: var(--tone-danger-fg); }
+.rd-check-missing strong, .rd-check-unavailable strong { color: var(--tone-warning-fg); }
+.rd .pc-head p, .rd .pc-step { color: var(--text-default, #344054); }
+.rd .pc-step-fail { color: var(--tone-danger-fg); }
+
+@media (max-width: 640px) {
+  .rd-dl-row { grid-template-columns: 1fr; gap: 2px; }
+}

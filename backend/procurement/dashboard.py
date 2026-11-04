@@ -26,7 +26,9 @@ from accounts.models import AuditLog
 from .blockchain import ETHERSCAN_TX_URL, anchor_summary
 from .document_requirements import approved_categories, expiring_documents, missing_documents
 from .models import Award, Bid, BlockchainAnchor, Project, Supplier
+from .payload_v3_reader import completeness
 from .permissions import IsAdminRole, IsHeadRole
+from .verification import INCOMPLETE_STATES
 from .views import close_expired_published_projects
 
 # Stages a Head decision is anchored under.
@@ -68,6 +70,13 @@ def _waiting_since(projects):
     return {p.id: max(p.created_at, latest.get(str(p.id), p.created_at)) for p in projects}
 
 
+def incomplete_evidence_count():
+    """v3 anchors that recorded a missing or unreadable document. Counted apart from
+    every other figure: such a record can verify, and is still not complete."""
+    v3 = BlockchainAnchor.objects.filter(payload__v=3).only("payload")
+    return sum(1 for a in v3 if completeness(a.payload)["status"] in INCOMPLETE_STATES)
+
+
 class AdminSummaryView(APIView):
     """Everything the Admin dashboard home shows, in one request."""
 
@@ -102,9 +111,19 @@ class AdminSummaryView(APIView):
                 or expiring_documents(s, approved_categories(s)))
         ]
 
-        anchors_pending = BlockchainAnchor.objects.filter(tx_hash="")
+        # Four states, never collapsed into "anchored": a stored tx hash is a
+        # REPORTED transaction until the server has read it back and found this
+        # exact fingerprint (blockchain.confirm_anchor). A mismatching one needs
+        # signing again, so it is listed with the never-signed ones.
+        Chain = BlockchainAnchor.ChainStatus
+        anchors_pending = BlockchainAnchor.objects.filter(
+            Q(tx_hash="") | Q(chain_status=Chain.MISMATCH))
         pending_anchor_count = anchors_pending.count()
-        anchored_count = BlockchainAnchor.objects.exclude(tx_hash="").count()
+        reported = BlockchainAnchor.objects.exclude(tx_hash="")
+        verified_count = reported.filter(chain_status=Chain.CONFIRMED).count()
+        mismatch_count = reported.filter(chain_status=Chain.MISMATCH).count()
+        anchored_count = reported.count()
+        unchecked_count = anchored_count - verified_count - mismatch_count
 
         # ── Needs your attention ─────────────────────────────────────────────
         attention = []
@@ -241,8 +260,12 @@ class AdminSummaryView(APIView):
             "categories": categories,
             "activity": activity,
             "chain": {
-                "anchored": anchored_count,
-                "pending": pending_anchor_count,
+                "anchored": anchored_count,          # transactions reported (any state)
+                "verified": verified_count,          # confirmed by the server on Sepolia
+                "unchecked": unchecked_count,        # reported, not yet confirmed
+                "mismatch": mismatch_count,          # reported tx does not record the anchor
+                "pending": pending_anchor_count,     # need a signature (never signed, or mismatch)
+                "incomplete": incomplete_evidence_count(),  # v3: recorded with documents missing
                 # Full anchor shape, so "Anchor now" can reuse runAnchor().
                 "pending_items": [anchor_summary(a) for a in anchors_pending.order_by("-created_at", "-id")[:8]],
             },
@@ -318,10 +341,14 @@ class PublicSummaryView(APIView):
         won = Award.objects.filter(status=Award.Status.WON)
 
         recent = list(won.select_related("project", "supplier").order_by("-awarded_at", "-id")[:LIST_LIMIT])
+        # Only awards whose AWARDED transaction the server has read back and
+        # confirmed (blockchain.confirm_anchor) may be labelled "verified" — a
+        # stored tx hash on its own is just a reported transaction.
         award_tx = {}
         for a in BlockchainAnchor.objects.filter(
                 entity_type=BlockchainAnchor.EntityType.AWARD, stage=BlockchainAnchor.Stage.AWARDED,
-                entity_id__in=[str(a.id) for a in recent]).exclude(tx_hash=""):
+                entity_id__in=[str(a.id) for a in recent],
+                chain_status=BlockchainAnchor.ChainStatus.CONFIRMED).exclude(tx_hash=""):
             award_tx[a.entity_id] = a.tx_hash
 
         return Response({
@@ -333,10 +360,13 @@ class PublicSummaryView(APIView):
                  "deadline": p.deadline, "published_at": p.published_at, "bids": p.num_bids}
                 for p in published.annotate(num_bids=Count("bids")).order_by("deadline", "code")[:LIST_LIMIT]
             ],
+            # Public award shape: winner and date only. The contract amount is
+            # NOT published (project decision D2, 2026-11) — the public sees who
+            # won, the ABC, and the on-chain fingerprints, never an amount.
             "awards": [
                 {"code": a.project.code, "name": a.project.name, "category": a.project.category,
-                 "winner": a.supplier.company, "amount": _money(a.amount), "awarded_at": a.awarded_at,
-                 "anchored": str(a.id) in award_tx,
+                 "winner": a.supplier.company, "awarded_at": a.awarded_at,
+                 "verified_on_chain": str(a.id) in award_tx,
                  "explorer_url": (ETHERSCAN_TX_URL + award_tx[str(a.id)]) if str(a.id) in award_tx else ""}
                 for a in recent
             ],

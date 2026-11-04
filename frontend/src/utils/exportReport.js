@@ -3,6 +3,7 @@
 // and hand it to one of these so the export logic isn't duplicated per tab.
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import { csvCell } from './csv'
 
 const today = () => new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
 
@@ -17,14 +18,10 @@ function triggerDownload(blob, filename) {
   URL.revokeObjectURL(url)
 }
 
-// Escape a value for a CSV cell (wrap in quotes, double up any embedded quotes).
-function csvCell(value) {
-  const s = String(value ?? '')
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
-
+// Every cell — including titles and headings — goes through csvCell, which
+// also neutralises spreadsheet formulas (see utils/csv.js).
 export function exportReportCSV({ title, stats = [], sections = [] }, filename) {
-  const lines = [title, `Generated ${today()}`, '']
+  const lines = [csvCell(title), `Generated ${today()}`, '']
 
   if (stats.length) {
     lines.push(...stats.map(({ label, value }) => `${csvCell(label)},${csvCell(value)}`))
@@ -32,7 +29,7 @@ export function exportReportCSV({ title, stats = [], sections = [] }, filename) 
   }
 
   for (const { heading, columns, rows } of sections) {
-    lines.push(heading)
+    lines.push(csvCell(heading))
     lines.push(columns.map(csvCell).join(','))
     if (rows.length === 0) {
       lines.push('No data.')

@@ -82,6 +82,9 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Security headers — see the "Security headers" block below.
+    'django.middleware.csp.ContentSecurityPolicyMiddleware',
+    'config.middleware.PermissionsPolicyMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -181,6 +184,12 @@ else:
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
+# Tests create and log in hundreds of users; PBKDF2's deliberate slowness made
+# the suite take over ten minutes. A fast hasher is used ONLY under
+# `manage.py test` — real accounts are always hashed with Django's default.
+if RUNNING_TESTS:
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
@@ -251,15 +260,38 @@ if AWS_STORAGE_BUCKET_NAME:
     AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL') or None
     AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'us-east-1')
     AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN') or None
-    AWS_DEFAULT_ACL = None          # bucket policy controls access, not per-object ACLs
-    AWS_QUERYSTRING_AUTH = False    # serve plain URLs, no expiring signed query string
+    AWS_DEFAULT_ACL = None          # objects inherit the private bucket's access; never public-read
+    # The app never hands out storage URLs (every file goes through
+    # procurement/files.py). Should anything ever call .url by mistake, it gets
+    # a pre-signed link that dies in 60 seconds instead of a permanent one.
+    AWS_QUERYSTRING_AUTH = True
+    AWS_QUERYSTRING_EXPIRE = 60
     AWS_S3_FILE_OVERWRITE = False   # never silently clobber a same-named upload
     STORAGES['default'] = {'BACKEND': 'storages.backends.s3.S3Storage'}
+
+# Encryption at rest for supplier registration documents (Fernet). Generate a
+# key with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Rotation keeps retired keys in FILE_ENCRYPTION_OLD_KEYS (comma-separated)
+# until `manage.py encrypt_supplier_documents --apply` has re-encrypted every
+# file. See procurement/storage_crypto.py. Never commit these values.
+FILE_ENCRYPTION_KEY = os.environ.get('FILE_ENCRYPTION_KEY', '')
+FILE_ENCRYPTION_OLD_KEYS = os.environ.get('FILE_ENCRYPTION_OLD_KEYS', '')
+
+# Encrypts commitment openings (procurement/openings.py). Deliberately separate
+# from FILE_ENCRYPTION_KEY: a leak of one must not expose the other. Old keys are
+# comma-separated and decrypt only. Never commit these values.
+COMMITMENT_KEY = os.environ.get('COMMITMENT_KEY', '')
+COMMITMENT_OLD_KEYS = os.environ.get('COMMITMENT_OLD_KEYS', '')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Custom user model
 AUTH_USER_MODEL = 'accounts.User'
+
+# Reverse proxies in front of the app (Render's load balancer = 1). Locally
+# there is none, so the socket address is used. If the audit log shows the same
+# proxy IP for every user after deploying, raise this (see SECURITY.md).
+TRUSTED_PROXY_COUNT = int(os.environ.get('TRUSTED_PROXY_COUNT', '1' if RENDER_HOST else '0'))
 
 # Django REST Framework
 REST_FRAMEWORK = {
@@ -269,6 +301,8 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    # Audit-logs every 403 a signed-in user receives (accounts/exceptions.py).
+    'EXCEPTION_HANDLER': 'accounts.exceptions.audit_exception_handler',
     # Rate limiting (throttling) applied to EVERY endpoint:
     #  - anonymous callers are limited by IP, authenticated users by account.
     # The login route additionally enforces a much stricter 5-per-15-minutes
@@ -280,10 +314,17 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
     ),
+    # How many proxies sit in front of Django and append to X-Forwarded-For.
+    # Without this DRF keyed rate limits on the WHOLE header, which the client
+    # controls — sending a different fake X-Forwarded-For per request bypassed
+    # the 5-per-15-minutes login limit completely. With N proxies, the client
+    # IP is the Nth address from the right (the one Render itself appended).
+    'NUM_PROXIES': TRUSTED_PROXY_COUNT,
     'DEFAULT_THROTTLE_RATES': {
         'anon': '60/min',
         'user': '240/min',
         'login': '5/15m',
+        'mfa': '10/15m',
         'register': '10/h',
         'password_reset': '5/h',
         'email_verify': '5/h',
@@ -293,9 +334,18 @@ REST_FRAMEWORK = {
 # JWT lifetimes
 from datetime import timedelta  # noqa: E402
 
+# Access tokens live in localStorage (see SECURITY.md for why not cookies), so
+# they are kept short: a stolen one is useful for 15 minutes at most. The
+# frontend renews them silently. Every refresh returns a NEW refresh token and
+# blacklists the old one, so a stolen refresh token stops working as soon as
+# the real user's tab refreshes — and the session slides: it ends after a day
+# of inactivity, not mid-task.
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=12),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'UPDATE_LAST_LOGIN': True,
 }
 
 # CORS — allow the Vite dev frontend to call the API. In production add the
@@ -363,7 +413,46 @@ if not DEBUG:
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True  # admin login session cookie, HTTPS only
     CSRF_COOKIE_SECURE = True     # admin login CSRF cookie, HTTPS only
-    # Start conservative (1 day) rather than the usual 1-year recommendation —
-    # HSTS is cached by the browser, so a mistake here is hard to undo quickly.
-    # Raise this once the HTTPS setup has been running smoothly for a while.
-    SECURE_HSTS_SECONDS = 60 * 60 * 24
+    # One year, subdomains included. Both the API (Render) and the SPA (Vercel)
+    # are HTTPS-only, so there is nothing for HSTS to break.
+    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 365
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+
+# The Django admin lives at a non-default, unguessable path (ADMIN_URL, e.g.
+# "staff-7f3k2q/"). In production it is only mounted when ADMIN_URL is set;
+# locally it stays at admin/ for convenience.
+ADMIN_URL = os.environ.get('ADMIN_URL', 'admin/' if DEBUG else '').strip().strip('/')
+ADMIN_URL = f'{ADMIN_URL}/' if ADMIN_URL else ''
+
+# Two-factor authentication (TOTP) for Admin and Head accounts and the Django
+# admin, see accounts/mfa.py. On by default in production; off locally and in
+# tests unless MFA_REQUIRED=True is set explicitly.
+MFA_REQUIRED = os.environ.get(
+    'MFA_REQUIRED', 'False' if (DEBUG or RUNNING_TESTS) else 'True').lower() == 'true'
+
+# ── Security headers ─────────────────────────────────────────────────────────
+# This backend serves JSON, file downloads and the Django admin; the SPA's own
+# headers are set by Vercel (frontend/vercel.json). Django's defaults already
+# send X-Content-Type-Options: nosniff and Cross-Origin-Opener-Policy.
+X_FRAME_OPTIONS = 'DENY'
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+
+from django.utils.csp import CSP  # noqa: E402
+
+# Strict policy for everything Django renders. No inline scripts are allowed;
+# inline styles are, because the Django admin templates use style attributes.
+# File downloads set their own, stricter "default-src 'none'; sandbox" policy
+# (procurement/files.py), which this middleware leaves alone.
+SECURE_CSP = {
+    'default-src': [CSP.SELF],
+    'script-src': [CSP.SELF],
+    'style-src': [CSP.SELF, CSP.UNSAFE_INLINE],
+    'img-src': [CSP.SELF, 'data:'],
+    'font-src': [CSP.SELF],
+    'connect-src': [CSP.SELF],
+    'object-src': [CSP.NONE],
+    'base-uri': [CSP.NONE],
+    'form-action': [CSP.SELF],
+    'frame-ancestors': [CSP.NONE],
+}
