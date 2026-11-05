@@ -348,18 +348,16 @@ def server_submit_anchor(request, anchor):
     same role checks and record scoping apply — nobody can trigger a server
     transaction for a record they couldn't already anchor themselves.
 
-    The row is locked while the transaction is sent, so a double-click (or two
-    admins at once) can't pay for the same hash twice."""
+    Deliberately not in transaction.atomic(): the hash must be committed before
+    the transaction is sent, or a worker dying mid-send would erase the only trace
+    of it. A double-click (or two admins at once) can't send twice because only
+    one request can claim the anchor (blockchain._claim_transaction)."""
     if not chain.SERVER_SIGNING_ENABLED:
         return Response(
             {"detail": "Server-side signing is not enabled on this deployment."},
             status=http_status.HTTP_409_CONFLICT)
 
-    with transaction.atomic():
-        locked = BlockchainAnchor.objects.select_for_update().get(pk=anchor.pk)
-        if locked.anchored and locked.chain_status != BlockchainAnchor.ChainStatus.MISMATCH:
-            return Response(anchor_summary(locked))
-        submitted = chain.submit_anchor_server_side(locked)
+    submitted = chain.submit_anchor_server_side(anchor)
 
     if submitted is None:
         # The record itself is untouched and still retryable; the reason is in
@@ -368,6 +366,11 @@ def server_submit_anchor(request, anchor):
             {"detail": "The server could not anchor this record right now. "
                        "It is still saved — try again in a moment."},
             status=http_status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    # An uncertain send has its own audit entry, and a request that lost the claim
+    # sent nothing: neither may be logged as anchored.
+    if getattr(submitted, "send_state", chain.SEND_SENT) != chain.SEND_SENT:
+        return Response(anchor_summary(submitted))
 
     log_action(
         request, "blockchain.anchored",

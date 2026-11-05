@@ -1019,8 +1019,11 @@ class ServerSideSigningTests(APITestCase):
 
     def test_a_failed_submission_leaves_the_record_valid_and_retryable(self):
         # Same contract as a declined MetaMask prompt: no exception escapes, the
-        # record stands, and the UI offers "Anchor now".
-        Web3, _, _ = self._fake_web3(send_raises=RuntimeError("insufficient funds"))
+        # record stands, and the UI offers "Anchor now". A real node refusal: any
+        # other error may mean it was sent (ServerSendNeverRepeatsTests).
+        from web3.exceptions import Web3RPCError
+        Web3, _, _ = self._fake_web3(send_raises=Web3RPCError(
+            "{'code': -32000, 'message': 'insufficient funds for gas * price + value'}"))
         result, anchor = self._submit(Web3)
         self.assertIsNone(result)
         self.assertEqual(anchor.tx_hash, "")

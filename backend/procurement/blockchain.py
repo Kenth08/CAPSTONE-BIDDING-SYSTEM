@@ -945,26 +945,134 @@ def _fee_fields(w3):
     return {"maxPriorityFeePerGas": tip, "maxFeePerGas": base_fee * 2 + tip}
 
 
+# What a send attempt turned out to mean, set as `anchor.send_state` on the
+# returned anchor. Not stored: on a later read the record is simply "reported"
+# until confirm_anchor() has checked it.
+SEND_SENT = "sent"
+SEND_UNCERTAIN = "uncertain"              # kept: it may be on the network
+SEND_CLAIMED_ELSEWHERE = "claimed_elsewhere"   # another request got there first
+
+# The only node answers that prove a transaction was refused, so sending again
+# can't duplicate it. Everything else is uncertain, because guessing wrong that
+# way costs a delay while guessing wrong the other way costs a second permanent
+# record.
+#
+# "nonce too low" is deliberately NOT here. web3's HTTP provider re-sends
+# eth_sendRawTransaction after a connection error, so if the first attempt got
+# through and was mined, the node answers "nonce too low" about our OWN
+# transaction.
+NODE_REFUSALS = (
+    "insufficient funds",
+    "replacement transaction underpriced",
+    "transaction underpriced",
+    "intrinsic gas too low",
+    "exceeds block gas limit",
+    "max fee per gas less than block base fee",
+)
+NODE_ALREADY_HAS_IT = ("already known", "known transaction")
+
+# Everything a transaction hash on an anchor describes, restored together if the
+# node refuses the replacement.
+TRANSACTION_FIELDS = (
+    "tx_hash", "block_number", "actor_address", "anchored_at", "chain_status", "chain_checked_at",
+)
+
+
+def _send_error_outcome(exc):
+    """SEND_SENT, SEND_UNCERTAIN, or None when the node refused the transaction.
+
+    Matched by class name so web3 stays an optional import. Only an answer from
+    the node itself can prove anything: a timeout or a dropped connection says
+    nothing about whether the transaction arrived."""
+    if exc.__class__.__name__ != "Web3RPCError":
+        return SEND_UNCERTAIN
+    text = str(exc).lower()
+    if any(phrase in text for phrase in NODE_ALREADY_HAS_IT):
+        return SEND_SENT
+    if any(phrase in text for phrase in NODE_REFUSALS):
+        return None
+    return SEND_UNCERTAIN
+
+
+def _claim_transaction(anchor, tx_hash, actor_address):
+    """Record `tx_hash` on the anchor, only if no other request has changed it
+    since this one read it. True when this request won and may send.
+
+    One conditional UPDATE, so two requests can't both win, and no row lock is
+    held across the network calls around it."""
+    claimed = BlockchainAnchor.objects.filter(pk=anchor.pk, tx_hash=anchor.tx_hash).update(
+        tx_hash=tx_hash,
+        block_number=None,
+        actor_address=(actor_address or "")[:42],
+        anchored_at=timezone.now(),
+        # A newly reported transaction has not been checked by anyone yet.
+        chain_status=BlockchainAnchor.ChainStatus.UNCHECKED,
+        chain_checked_at=None,
+        **{field: anchor._meta.get_field(field).get_default() for field in CHAIN_IDENTITY_FIELDS},
+    )
+    return bool(claimed)
+
+
+def _broadcast(anchor, tx_hash, raw, w3, previous):
+    """Send a transaction whose hash is already saved on `anchor`.
+
+    Returns the anchor, or None if the node refused it, which restores `previous`
+    so the record can be anchored again. An uncertain result keeps the hash, and
+    with it the record stays closed to any further send until confirm_anchor()
+    has read the chain."""
+    from accounts.audit import log_action  # noqa: PLC0415 — avoid an import cycle
+
+    try:
+        w3.eth.send_raw_transaction(raw)
+        outcome = SEND_SENT
+    except Exception as exc:  # noqa: BLE001 — decided below, never raised into the request
+        outcome = _send_error_outcome(exc)
+        if outcome is None:
+            logger.warning("The node refused the transaction for anchor %s: %s", anchor.id, str(exc)[:200])
+            BlockchainAnchor.objects.filter(pk=anchor.pk, tx_hash=tx_hash).update(**previous)
+            anchor.refresh_from_db()
+            return None
+        if outcome == SEND_UNCERTAIN:
+            # The class name only: a transport error's text can carry the RPC URL.
+            logger.warning("Sending anchor %s (tx %s) ended uncertain: %s",
+                           anchor.id, tx_hash, exc.__class__.__name__)
+            log_action(
+                None, "blockchain.send_uncertain",
+                entity_type=anchor.entity_type, entity_id=anchor.entity_id,
+                description=(
+                    f"{anchor.entity_ref} {anchor.stage}: no clear answer sending transaction {tx_hash}. "
+                    "It may be on the network, so it will not be sent again until the chain has been checked."
+                ),
+            )
+    anchor.send_state = outcome
+    return anchor
+
+
 def submit_anchor_server_side(anchor):
     """Sign and submit `anchor` from the server with web3.py (no wallet).
 
     Enabled with BLOCKCHAIN_SERVER_SIGNING=True plus BLOCKCHAIN_PRIVATE_KEY and
-    LEDGER_CONTRACT_ADDRESS in the environment. Best-effort by design: any
-    failure (no funds, RPC down, package missing) just leaves the anchor
+    LEDGER_CONTRACT_ADDRESS in the environment. Best-effort by design: a failure
+    before sending (no funds, RPC down, package missing) just leaves the anchor
     un-anchored and retryable, exactly like a declined MetaMask prompt.
+
+    The hash is saved BEFORE the transaction is sent. A signed transaction's hash
+    is known without asking anyone, so if the reply is lost or the worker dies
+    mid-send the record still names the transaction, and it is never sent blind a
+    second time, which would add a second permanent record to the ledger. Must not
+    be called inside transaction.atomic(), or that save isn't durable.
 
     Deliberately does NOT wait for the transaction to be mined. This runs inside
     the request that approved/published/awarded something, and a Sepolia block
     takes ~12-30s — longer than gunicorn's 30s worker timeout, so waiting would
-    get the worker killed and turn a successful approval into a 502. Broadcasting
-    is enough: the transaction is signed, accepted by the network and final in
-    the next block or two, and its hash is what proves the anchor. The trade-off
-    is that `block_number` stays NULL until confirm_anchor() reads the receipt
-    (the `confirm_anchors` command runs on every deploy). Until then the record
-    has been SENT but not yet CONFIRMED — and a transaction that later fails
-    on-chain is cleared there, so it can never keep showing as anchored.
+    get the worker killed and turn a successful approval into a 502. The
+    trade-off is that `block_number` stays NULL until confirm_anchor() reads the
+    receipt. Until then the record has been REPORTED but not CONFIRMED — and a
+    transaction that fails on-chain or never arrives is cleared there, so it can
+    never keep showing as anchored.
 
-    Returns the updated anchor, or None if nothing was submitted."""
+    Returns the anchor (see `send_state`), or None if nothing was sent and it may
+    be retried."""
     if not WALLET_SIGNING_ENABLED:
         return None  # read-only deployment: nothing is ever sent
     if not (SERVER_SIGNING_ENABLED and BLOCKCHAIN_PRIVATE_KEY and LEDGER_CONTRACT_ADDRESS):
@@ -980,7 +1088,7 @@ def submit_anchor_server_side(anchor):
         return None
 
     try:
-        w3 = Web3(Web3.HTTPProvider(SEPOLIA_RPC_URL))
+        w3 = web3_client()
         account = w3.eth.account.from_key(BLOCKCHAIN_PRIVATE_KEY)
         ledger = w3.eth.contract(
             address=Web3.to_checksum_address(LEDGER_CONTRACT_ADDRESS), abi=_ledger_abi(),
@@ -1009,23 +1117,31 @@ def submit_anchor_server_side(anchor):
         signed = account.sign_transaction(tx)
         # web3.py v6 exposes .rawTransaction, v7 renamed it to .raw_transaction.
         raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
-        tx_hash = w3.eth.send_raw_transaction(raw)
-        # Web3.to_hex, not tx_hash.hex(): hexbytes >= 1.0 (what web3 v7 pins)
-        # dropped the "0x" prefix from .hex(), which attach_transaction rejects.
-        # to_hex is prefixed on every version.
-        return attach_transaction(
-            anchor, Web3.to_hex(tx_hash), actor_address=account.address,
-        )
-    except Exception:  # pragma: no cover — never break the request
+        # Web3.to_hex, not hash.hex(): hexbytes >= 1.0 (what web3 v7 pins)
+        # dropped the "0x" prefix from .hex(). to_hex is prefixed on every version.
+        tx_hash = Web3.to_hex(signed.hash)
+        if not _is_hex32(tx_hash):
+            raise ValueError("Signing produced a malformed transaction hash.")
+
+        previous = {field: getattr(anchor, field) for field in (*TRANSACTION_FIELDS, *CHAIN_IDENTITY_FIELDS)}
+        if not _claim_transaction(anchor, tx_hash, account.address):
+            anchor.refresh_from_db()
+            anchor.send_state = SEND_CLAIMED_ELSEWHERE
+            return anchor
+        anchor.refresh_from_db()
+    except Exception:  # noqa: BLE001 — nothing has been sent, so it can be retried
         logger.exception("Server-side anchoring failed for anchor %s", anchor.id)
         return None
+
+    return _broadcast(anchor, tx_hash, raw, w3, previous)
 
 
 # ── Confirmation: is the reported transaction really on-chain? ───────────────
 # A tx_hash on an anchor is only ever a CLAIM until the server reads it back:
-#   * server-signed anchors are recorded when the transaction is broadcast,
-#     because waiting for a block would outlast gunicorn's worker timeout (see
-#     submit_anchor_server_side) — it can still revert or be dropped;
+#   * server-signed anchors are recorded just before the transaction is sent, and
+#     nobody waits for a block because that would outlast gunicorn's worker
+#     timeout (see submit_anchor_server_side) — it can still revert, be dropped or
+#     never have arrived;
 #   * MetaMask anchors are attached with whatever tx hash the browser posted,
 #     and attach_transaction only checks that it is well-formed.
 # confirm_anchor() closes both gaps. It only reports CONFIRMED when
@@ -1360,6 +1476,15 @@ def confirm_anchor(anchor, *, w3, apply=True):
             # read at all — leave the anchor alone and report UNKNOWN.
             if _ledger_holds(anchor, w3) is not False:
                 return UNKNOWN
+            # Clearing makes the record sendable again, so the old transaction
+            # must not be able to mine beside the new one. With nothing pending,
+            # its nonce is either used (it can never mine) or the retry takes that
+            # same nonce (only one of the two can mine).
+            pending = _wallet_has_pending(anchor, w3)
+            if pending is None:
+                return UNKNOWN
+            if pending:
+                return PENDING
             outcome = DROPPED
 
         if apply:
@@ -1368,6 +1493,26 @@ def confirm_anchor(anchor, *, w3, apply=True):
     except Exception:  # noqa: BLE001 — a confirmation pass must never break anything
         logger.warning("Could not confirm anchor %s (tx %s)", anchor.id, tx_hash, exc_info=True)
         return UNKNOWN
+
+
+def _wallet_has_pending(anchor, w3):
+    """Does the wallet that sent this anchor have transactions waiting to mine?
+
+    True / False, or None when it could not be read, which must never be read as
+    "nothing pending". An anchor with no usable sender (older or browser-reported
+    rows) has nothing to check, so it keeps the earlier rules."""
+    address = anchor.actor_address or ""
+    if len(address) != 42 or not address.startswith("0x"):
+        return False
+    try:
+        wallet = _load_web3().to_checksum_address(address)
+    except Exception:  # noqa: BLE001 — not a real address
+        return False
+    try:
+        return int(w3.eth.get_transaction_count(wallet, "pending")) > int(w3.eth.get_transaction_count(wallet, "latest"))
+    except Exception:  # noqa: BLE001 — can't tell
+        logger.warning("Could not read the pending nonce for anchor %s", anchor.id, exc_info=True)
+        return None
 
 
 def _flag_mismatched_transaction(anchor, reason=""):
