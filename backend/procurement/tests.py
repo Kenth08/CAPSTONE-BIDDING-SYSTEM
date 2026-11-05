@@ -1348,7 +1348,7 @@ class AnchorConfirmationTests(APITestCase):
 
 class AnchorEventDecodingTests(APITestCase):
     """anchor_events() against a REAL ABI-encoded AnchorRecorded log, decoded by
-    web3 with contracts/ProcurementLedger.abi.json and no network involved. The
+    web3 with procurement/ProcurementLedger.abi.json and no network involved. The
     mocked tests above stand in for this function; this proves it reads the
     actual event layout the deployed contract emits."""
 

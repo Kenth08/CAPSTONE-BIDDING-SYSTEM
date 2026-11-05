@@ -909,11 +909,14 @@ def _load_web3():
 
 
 def _ledger_abi():
-    """The contract ABI, read from contracts/ProcurementLedger.abi.json at the
-    repo root — one copy, shared with the frontend, never duplicated here."""
-    from django.conf import settings  # noqa: PLC0415 — avoid an import cycle at module load
+    """The contract ABI, read from the copy next to this module.
 
-    path = os.path.join(os.path.dirname(settings.BASE_DIR), "contracts", "ProcurementLedger.abi.json")
+    It lives inside the backend because Heroku deploys backend/ on its own, so
+    the repo's contracts/ folder doesn't exist in production. Looking there made
+    every server write and receipt check fail. Tests keep it identical to the
+    copies in contracts/ and frontend/ (LedgerAbiLocationTests in
+    test_regressions.py, and frontend/src/blockchain/ledgerAbi.test.js)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ProcurementLedger.abi.json")
     with open(path, "r", encoding="utf-8") as fh:
         return json.load(fh)
 

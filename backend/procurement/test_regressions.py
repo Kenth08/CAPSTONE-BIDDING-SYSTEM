@@ -7,12 +7,16 @@ assertion.
 """
 import contextlib
 import io
+import json
 import re
+import tempfile
 from datetime import datetime
 from datetime import timezone as dt_timezone
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from unittest import mock
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
@@ -32,6 +36,7 @@ from accounts.models import AuditLog
 from accounts.serializers import RoleTokenObtainPairSerializer
 from accounts.tests import registration_payload
 
+from . import blockchain
 from .management.commands import seed as seed_cmd
 from .models import Award, Bid, BidAttachment, BlockchainAnchor, Project, Supplier, SupplierCategoryDocument
 from .blockchain import hash_payload, verify_anchor
@@ -44,6 +49,31 @@ def qualified_bid(project, supplier, amount=1000):
     return Bid.objects.create(
         project=project, supplier=supplier, amount=amount, status=Bid.Status.QUALIFIED,
     )
+
+
+class LedgerAbiLocationTests(TestCase):
+    """Heroku deploys backend/ alone, so the ABI must not be read from the repo's
+    contracts/ folder, which doesn't exist there. Reading it from that path made
+    every server write and receipt check fail."""
+
+    def test_abi_is_found_without_the_repo_around_the_backend(self):
+        # Where production's BASE_DIR is: nothing beside it, so nothing above it
+        # may be needed.
+        with tempfile.TemporaryDirectory() as empty, override_settings(BASE_DIR=Path(empty) / "app"):
+            abi = blockchain._ledger_abi()
+        self.assertIn("recordEvent", {entry.get("name") for entry in abi})
+
+    def test_abi_file_ships_inside_the_backend(self):
+        module_dir = Path(blockchain.__file__).resolve().parent
+        self.assertTrue((module_dir / "ProcurementLedger.abi.json").is_file())
+        self.assertTrue(module_dir.is_relative_to(Path(settings.BASE_DIR).resolve()))
+
+    def test_backend_abi_matches_the_contract_source(self):
+        # Parsed, not byte-compared: git may check text out with other line endings.
+        source = Path(settings.BASE_DIR).parent / "contracts" / "ProcurementLedger.abi.json"
+        if not source.is_file():
+            self.skipTest("contracts/ isn't here: running from a backend-only deploy.")
+        self.assertEqual(blockchain._ledger_abi(), json.loads(source.read_text(encoding="utf-8")))
 
 
 class ProjectCodeGenerationTests(APITestCase):
