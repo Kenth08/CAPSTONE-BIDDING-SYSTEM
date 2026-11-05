@@ -2563,6 +2563,65 @@ class SendIsNeverRepeatedByWeb3Tests(ServerSendTestBase, TestCase):
         self.assertLess(blockchain.RPC_TIMEOUT_SECONDS * blockchain.RPC_READ_ATTEMPTS, 30)
 
 
+class DeadNodeDuringAnAwardTests(APITestCase):
+    """Three anchors at 16 seconds each outlast the 30-second request limit. A
+    killed request would leave the later anchors uncreated and unretryable."""
+
+    def setUp(self):
+        for name, value in {
+            "SERVER_SIGNING_ENABLED": True,
+            "BLOCKCHAIN_PRIVATE_KEY": "0x" + "22" * 32,
+            "LEDGER_CONTRACT_ADDRESS": "0x" + "12" * 20,
+            "_node_down_until": 0.0,
+        }.items():
+            patcher = mock.patch(f"procurement.blockchain.{name}", value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _award_with_a_dead_node(self):
+        import requests
+
+        project = make_project(status=Project.Status.PUBLISHED)
+        bid = qualified_bid(project, make_supplier(), 1000)
+        self.client.force_authenticate(user=make_admin())
+        with mock.patch("requests.Session.post", side_effect=requests.exceptions.ReadTimeout("no reply")) as post:
+            res = self.client.post(f"/api/bids/{bid.pk}/select-winner/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return project, post
+
+    def test_only_the_first_anchor_waits_and_all_three_are_created_and_retryable(self):
+        project, post = self._award_with_a_dead_node()
+        self.assertEqual(post.call_count, blockchain.RPC_READ_ATTEMPTS)
+        anchors = BlockchainAnchor.objects.filter(entity_ref=project.code)
+        self.assertEqual(
+            {a.stage for a in anchors},
+            {"EVALUATION_COMPLETED", "BID_SUBMITTED", "AWARDED"})
+        for anchor in anchors:
+            self.assertEqual(anchor.tx_hash, "")
+            self.assertTrue(blockchain.anchor_summary(anchor)["can_reanchor"])
+
+    def test_without_the_pause_every_anchor_would_wait(self):
+        with mock.patch("procurement.blockchain.NODE_DOWN_PAUSE_SECONDS", -1):
+            _, post = self._award_with_a_dead_node()
+        self.assertEqual(post.call_count, 3 * blockchain.RPC_READ_ATTEMPTS)
+
+    def test_a_contract_rejection_is_not_a_dead_node(self):
+        blockchain._pause_if_node_unreachable(ValueError("execution reverted"))
+        self.assertEqual(blockchain._node_down_until, 0.0)
+
+    def test_sending_resumes_once_the_pause_is_over(self):
+        self._award_with_a_dead_node()
+        self.assertGreater(blockchain._node_down_until, 0)
+        anchor = BlockchainAnchor.objects.first()
+        with mock.patch("procurement.blockchain.web3_client") as client:
+            client.side_effect = ValueError("reached the send path")
+            self.assertIsNone(blockchain.submit_anchor_server_side(anchor))
+            client.assert_not_called()
+            with mock.patch("procurement.blockchain._node_down_until", 0.0):
+                blockchain.submit_anchor_server_side(anchor)
+            client.assert_called_once()
+
+
 class StaleResultCanNotTouchANewerTransactionTests(ServerSendTestBase, APITestCase):
     """A chain check takes seconds. If the record was re-anchored meanwhile, what
     it found out is about the OLD hash. Clearing or flagging the new one would

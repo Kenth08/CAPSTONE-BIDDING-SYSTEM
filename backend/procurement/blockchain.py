@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
 from urllib.parse import urlsplit
@@ -1087,6 +1088,23 @@ def _broadcast(anchor, tx_hash, raw, w3, previous):
     return anchor
 
 
+# After the node stops answering, sends are skipped for this long, in this worker.
+# Awarding writes three anchors in one request. At 16 seconds each a dead node
+# would outlast Heroku's and gunicorn's 30-second limit, and the killed request
+# would never create the later anchors, which then could not be retried at all.
+# A skipped anchor exists, shows as not anchored, and can be sent later.
+NODE_DOWN_PAUSE_SECONDS = 60
+_node_down_until = 0.0
+
+
+def _pause_if_node_unreachable(exc):
+    global _node_down_until  # noqa: PLW0603 — per-worker memory, on purpose
+    import requests  # noqa: PLC0415 — only present alongside the optional web3
+
+    if isinstance(exc, (requests.ConnectionError, requests.HTTPError, requests.Timeout)):
+        _node_down_until = time.monotonic() + NODE_DOWN_PAUSE_SECONDS
+
+
 def submit_anchor_server_side(anchor):
     """Sign and submit `anchor` from the server with web3.py (no wallet).
 
@@ -1124,6 +1142,9 @@ def submit_anchor_server_side(anchor):
 
     Web3 = _load_web3()
     if Web3 is None:
+        return None
+    if time.monotonic() < _node_down_until:
+        logger.warning("Not sending anchor %s: the node was unreachable moments ago.", anchor.id)
         return None
 
     try:
@@ -1168,8 +1189,9 @@ def submit_anchor_server_side(anchor):
             anchor.send_state = SEND_CLAIMED_ELSEWHERE
             return anchor
         anchor.refresh_from_db()
-    except Exception:  # noqa: BLE001 — nothing has been sent, so it can be retried
+    except Exception as exc:  # noqa: BLE001 — nothing has been sent, so it can be retried
         logger.exception("Server-side anchoring failed for anchor %s", anchor.id)
+        _pause_if_node_unreachable(exc)
         return None
 
     return _broadcast(anchor, tx_hash, raw, w3, previous)
