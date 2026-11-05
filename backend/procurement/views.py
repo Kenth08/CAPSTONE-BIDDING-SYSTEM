@@ -333,6 +333,10 @@ def attach_anchor_transaction(request, *, entity_ref, entity_type, entity_id):
     except ValueError as exc:
         return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
 
+    # Another request recorded a transaction first: this hash was not saved.
+    if getattr(anchor, "send_state", None) == chain.SEND_CLAIMED_ELSEWHERE:
+        return Response(anchor_summary(anchor))
+
     log_action(
         request, "blockchain.anchored",
         entity_type=anchor.entity_type, entity_id=anchor.entity_id,

@@ -48,7 +48,8 @@ class Command(BaseCommand):
         try:
             self._run(apply=apply, limit=limit)
         except Exception as exc:  # noqa: BLE001 — must never fail a deploy
-            self.stderr.write(f"confirm_anchors skipped: {exc}")
+            # The class only: an error's text can carry a connection URL.
+            self.stderr.write(f"confirm_anchors skipped: {exc.__class__.__name__}")
 
     def _run(self, *, apply, limit):
         # Every REPORTED transaction the server has not confirmed itself —

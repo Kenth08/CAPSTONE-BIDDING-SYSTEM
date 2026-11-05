@@ -24,6 +24,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
@@ -67,6 +68,47 @@ SEPOLIA_RPC_URL = os.environ.get("SEPOLIA_RPC_URL", "https://ethereum-sepolia-rp
 SEPOLIA_CHAIN_ID = int(os.environ.get("SEPOLIA_CHAIN_ID", "11155111"))
 # Only read when SERVER_SIGNING_ENABLED is on. Never hardcode this, never commit it.
 BLOCKCHAIN_PRIVATE_KEY = os.environ.get("BLOCKCHAIN_PRIVATE_KEY", "")
+
+
+def _log_secrets():
+    """What must never reach a log line, longest first. An RPC provider's API key
+    sits in the URL's path or query, and a transport error prints those on their
+    own ("Max retries exceeded with url: /v3/<key>"), not just the whole URL."""
+    url = urlsplit(SEPOLIA_RPC_URL)
+    path_and_query = url.path + (f"?{url.query}" if url.query else "")
+    has_path = bool(path_and_query.strip("/"))
+    key = BLOCKCHAIN_PRIVATE_KEY
+    found = {
+        SEPOLIA_RPC_URL if has_path or url.password else "",
+        path_and_query if has_path else "",
+        url.path if url.path.strip("/") else "",
+        url.query, url.password or "",
+        key, key[2:] if key.startswith("0x") else "",
+    }
+    return sorted(filter(None, found), key=len, reverse=True)
+
+
+class _NoSecretsInLogs(logging.Filter):
+    """Removes the RPC URL's secrets and the signing key from everything this
+    module logs, tracebacks included. Done here rather than at each call site so
+    a new logging line can't forget it, and tracebacks stay useful."""
+
+    def filter(self, record):
+        secrets = _log_secrets()
+
+        def clean(text):
+            for secret in secrets:
+                text = text.replace(secret, "[hidden]")
+            return text
+
+        record.msg, record.args = clean(record.getMessage()), ()
+        if record.exc_info:
+            record.exc_text = clean(logging.Formatter().formatException(record.exc_info))
+            record.exc_info = None
+        return True
+
+
+logger.addFilter(_NoSecretsInLogs())
 
 ETHERSCAN_TX_URL = "https://sepolia.etherscan.io/tx/"
 
@@ -745,20 +787,15 @@ def attach_transaction(anchor, tx_hash, block_number=None, actor_address=""):
     tx_hash = (tx_hash or "").strip()
     if not _is_hex32(tx_hash):
         raise ValueError("tx_hash must be a 0x-prefixed 32-byte hex string.")
-    anchor.tx_hash = tx_hash
-    # The block number the BROWSER reports is kept for display only; the
-    # server overwrites it from the receipt when it confirms the transaction.
-    anchor.block_number = int(block_number) if str(block_number or "").strip().isdigit() else None
-    anchor.actor_address = (actor_address or "").strip()[:42]
-    anchor.anchored_at = timezone.now()
-    # A newly reported transaction has not been checked by anyone yet.
-    anchor.chain_status = BlockchainAnchor.ChainStatus.UNCHECKED
-    anchor.chain_checked_at = None
-    _reset_chain_identity(anchor)    # it described the previous transaction
-    anchor.save(update_fields=[
-        "tx_hash", "block_number", "actor_address", "anchored_at", "chain_status", "chain_checked_at",
-        *CHAIN_IDENTITY_FIELDS,
-    ])
+    won = _claim_transaction(
+        anchor, tx_hash, (actor_address or "").strip(),
+        # The block number the BROWSER reports is kept for display only; the
+        # server overwrites it from the receipt when it confirms the transaction.
+        block_number=int(block_number) if str(block_number or "").strip().isdigit() else None,
+    )
+    anchor.refresh_from_db()
+    if not won:
+        anchor.send_state = SEND_CLAIMED_ELSEWHERE
     return anchor
 
 
@@ -957,10 +994,9 @@ SEND_CLAIMED_ELSEWHERE = "claimed_elsewhere"   # another request got there first
 # way costs a delay while guessing wrong the other way costs a second permanent
 # record.
 #
-# "nonce too low" is deliberately NOT here. web3's HTTP provider re-sends
-# eth_sendRawTransaction after a connection error, so if the first attempt got
-# through and was mined, the node answers "nonce too low" about our OWN
-# transaction.
+# "nonce too low" is deliberately NOT here: it says the nonce is used, not by
+# what. It can be our OWN mined transaction, if anything between us and the node
+# re-sent it. web3_client() stops web3 doing that, but an RPC gateway can too.
 NODE_REFUSALS = (
     "insufficient funds",
     "replacement transaction underpriced",
@@ -994,7 +1030,7 @@ def _send_error_outcome(exc):
     return SEND_UNCERTAIN
 
 
-def _claim_transaction(anchor, tx_hash, actor_address):
+def _claim_transaction(anchor, tx_hash, actor_address, *, block_number=None):
     """Record `tx_hash` on the anchor, only if no other request has changed it
     since this one read it. True when this request won and may send.
 
@@ -1002,7 +1038,7 @@ def _claim_transaction(anchor, tx_hash, actor_address):
     held across the network calls around it."""
     claimed = BlockchainAnchor.objects.filter(pk=anchor.pk, tx_hash=anchor.tx_hash).update(
         tx_hash=tx_hash,
-        block_number=None,
+        block_number=block_number,
         actor_address=(actor_address or "")[:42],
         anchored_at=timezone.now(),
         # A newly reported transaction has not been checked by anyone yet.
@@ -1029,8 +1065,11 @@ def _broadcast(anchor, tx_hash, raw, w3, previous):
         outcome = _send_error_outcome(exc)
         if outcome is None:
             logger.warning("The node refused the transaction for anchor %s: %s", anchor.id, str(exc)[:200])
-            BlockchainAnchor.objects.filter(pk=anchor.pk, tx_hash=tx_hash).update(**previous)
-            anchor.refresh_from_db()
+            try:
+                BlockchainAnchor.objects.filter(pk=anchor.pk, tx_hash=tx_hash).update(**previous)
+                anchor.refresh_from_db()
+            except Exception:  # noqa: BLE001 — stays closed until the chain is checked, which is safe
+                logger.exception("Could not reopen anchor %s after a refused send", anchor.id)
             return None
         if outcome == SEND_UNCERTAIN:
             # The class name only: a transport error's text can carry the RPC URL.
@@ -1174,6 +1213,10 @@ DROPPED_AFTER = timedelta(hours=1)
 # UNKNOWN quickly rather than holding a gunicorn worker.
 RPC_TIMEOUT_SECONDS = 8
 
+# Tries per read. web3's default of 5 at 8 seconds each outlasts gunicorn's 30s
+# worker timeout, so a dead node would kill the request instead of failing it.
+RPC_READ_ATTEMPTS = 2
+
 # Every field confirm_anchor fills from the chain; cleared together whenever
 # the transaction they describe stops being this anchor's.
 CHAIN_IDENTITY_FIELDS = (
@@ -1188,11 +1231,30 @@ def _reset_chain_identity(anchor):
 
 
 def web3_client():
-    """A read-only Sepolia connection, or None when web3.py isn't installed."""
+    """A Sepolia connection, or None when web3.py isn't installed.
+
+    Reads get a second try, but eth_sendRawTransaction is sent exactly once per
+    call. By default web3 sends it up to 5 times after a timeout or an HTTP error.
+    The same bytes can't mine twice, but the reply to a re-send can look like a
+    refusal of the first attempt ("insufficient funds" once the first one has spent
+    the balance), which would reopen a record whose transaction is on the network."""
     Web3 = _load_web3()
     if Web3 is None:
         return None
-    return Web3(Web3.HTTPProvider(SEPOLIA_RPC_URL, request_kwargs={"timeout": RPC_TIMEOUT_SECONDS}))
+    import requests  # noqa: PLC0415 — only present alongside the optional web3
+    from web3.providers.rpc.utils import (  # noqa: PLC0415
+        REQUEST_RETRY_ALLOWLIST, ExceptionRetryConfiguration,
+    )
+
+    return Web3(Web3.HTTPProvider(
+        SEPOLIA_RPC_URL,
+        request_kwargs={"timeout": RPC_TIMEOUT_SECONDS},
+        exception_retry_configuration=ExceptionRetryConfiguration(
+            errors=(requests.ConnectionError, requests.HTTPError, requests.Timeout),
+            retries=RPC_READ_ATTEMPTS,
+            method_allowlist=[m for m in REQUEST_RETRY_ALLOWLIST if m != "eth_sendRawTransaction"],
+        ),
+    ))
 
 
 def network_check(w3):
@@ -1205,7 +1267,7 @@ def network_check(w3):
     try:
         chain_id = int(w3.eth.chain_id)
     except Exception:  # noqa: BLE001 — unreachable node / bad URL
-        logger.warning("Could not read the chain id from %s", SEPOLIA_RPC_URL, exc_info=True)
+        logger.warning("Could not read the chain id", exc_info=True)
         return None, None
     return chain_id == SEPOLIA_CHAIN_ID, chain_id
 
@@ -1445,10 +1507,12 @@ def confirm_anchor(anchor, *, w3, apply=True):
                     anchor.chain_finalized = final
                     try:
                         with transaction.atomic():
-                            anchor.save(update_fields=[
+                            saved = _save_if_same_transaction(anchor, tx_hash, [
                                 "block_number", "chain_status", "chain_checked_at", "actor_address",
                                 *CHAIN_IDENTITY_FIELDS,
                             ])
+                        if not saved:
+                            return UNKNOWN
                     except IntegrityError:
                         # Another check claimed the same on-chain record a
                         # moment ago (the unique constraint): decide next run.
@@ -1487,8 +1551,8 @@ def confirm_anchor(anchor, *, w3, apply=True):
                 return PENDING
             outcome = DROPPED
 
-        if apply:
-            _clear_failed_transaction(anchor, outcome)
+        if apply and not _clear_failed_transaction(anchor, outcome):
+            return UNKNOWN
         return outcome
     except Exception:  # noqa: BLE001 — a confirmation pass must never break anything
         logger.warning("Could not confirm anchor %s (tx %s)", anchor.id, tx_hash, exc_info=True)
@@ -1515,6 +1579,18 @@ def _wallet_has_pending(anchor, w3):
         return None
 
 
+def _save_if_same_transaction(anchor, tx_hash, fields):
+    """Save a check's result only if the anchor still has the transaction that was
+    checked. Otherwise a check that started before a re-anchor could clear or flag
+    the NEW hash, reopening a record whose transaction is on the network, and the
+    next send would be a duplicate. False, with `anchor` re-read, when it had moved on."""
+    saved = BlockchainAnchor.objects.filter(pk=anchor.pk, tx_hash=tx_hash).update(
+        **{field: getattr(anchor, field) for field in fields})
+    if not saved:
+        anchor.refresh_from_db()
+    return bool(saved)
+
+
 def _flag_mismatched_transaction(anchor, reason=""):
     """Mark a reported transaction that doesn't record this anchor, and log it."""
     from accounts.audit import log_action  # noqa: PLC0415 — avoid an import cycle
@@ -1523,8 +1599,9 @@ def _flag_mismatched_transaction(anchor, reason=""):
     anchor.chain_status = BlockchainAnchor.ChainStatus.MISMATCH
     anchor.chain_checked_at = timezone.now()
     _reset_chain_identity(anchor)
-    anchor.save(update_fields=["chain_status", "chain_checked_at", *CHAIN_IDENTITY_FIELDS])
-    if already:
+    moved_on = not _save_if_same_transaction(
+        anchor, anchor.tx_hash, ["chain_status", "chain_checked_at", *CHAIN_IDENTITY_FIELDS])
+    if already or moved_on:
         return
     log_action(
         None, "blockchain.mismatch",
@@ -1538,7 +1615,8 @@ def _flag_mismatched_transaction(anchor, reason=""):
 
 
 def _clear_failed_transaction(anchor, outcome):
-    """Undo a transaction that never made it on-chain, and say so in the audit log."""
+    """Undo a transaction that never made it on-chain, and say so in the audit log.
+    False if the anchor has since moved on to another transaction."""
     from accounts.audit import log_action  # noqa: PLC0415 — avoid an import cycle
 
     failed_hash = anchor.tx_hash
@@ -1549,10 +1627,8 @@ def _clear_failed_transaction(anchor, outcome):
     anchor.chain_status = outcome      # REVERTED / DROPPED: what happened last time
     anchor.chain_checked_at = timezone.now()
     _reset_chain_identity(anchor)
-    anchor.save(update_fields=[
-        "tx_hash", "block_number", "actor_address", "anchored_at", "chain_status", "chain_checked_at",
-        *CHAIN_IDENTITY_FIELDS,
-    ])
+    if not _save_if_same_transaction(anchor, failed_hash, [*TRANSACTION_FIELDS, *CHAIN_IDENTITY_FIELDS]):
+        return False
     reason = "failed on-chain" if outcome == REVERTED else "was never mined"
     log_action(
         None, f"blockchain.{outcome}",
@@ -1562,6 +1638,7 @@ def _clear_failed_transaction(anchor, outcome):
             "cleared so the record can be anchored again."
         ),
     )
+    return True
 
 
 def read_chain_anchors(entity_ref):

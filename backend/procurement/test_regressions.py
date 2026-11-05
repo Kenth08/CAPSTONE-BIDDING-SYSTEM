@@ -14,7 +14,7 @@ from datetime import datetime
 from datetime import timezone as dt_timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-from unittest import mock
+from unittest import mock, skipUnless
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -2445,3 +2445,323 @@ class RetryOnlyAfterTheChainHasBeenCheckedTests(ServerSendTestBase, APITestCase)
                 w3 = self._node(99, 16)
                 self.assertEqual(blockchain.confirm_anchor(anchor, w3=w3), blockchain.DROPPED)
                 w3.eth.get_transaction_count.assert_not_called()
+
+
+class AwardSendsCommitFirstTests(ServerSendTestBase, APITransactionTestCase):
+    """Awarding writes three anchors in a row, after a long transaction of its own."""
+
+    def test_every_award_anchor_commits_its_hash_before_sending(self):
+        self._use_node()
+        seen = []
+
+        def record(_raw):
+            seen.append((connection.in_atomic_block, BlockchainAnchor.objects.order_by("-id").first().tx_hash))
+
+        self.node.on_send = record
+        project = make_project(status=Project.Status.PUBLISHED)
+        bid = qualified_bid(project, make_supplier(), 1000)
+        self.client.force_authenticate(user=make_admin())
+        res = self.client.post(f"/api/bids/{bid.pk}/select-winner/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(seen), 3)
+        for in_transaction, saved_hash in seen:
+            self.assertFalse(in_transaction)
+            self.assertTrue(saved_hash.startswith("0x"))
+
+
+class SendIsNeverRepeatedByWeb3Tests(ServerSendTestBase, TestCase):
+    """The real HTTP provider with only the socket replaced. By default web3 sends
+    eth_sendRawTransaction up to 5 times after a timeout or an HTTP error, and the
+    reply to a re-send can read like a refusal of the first attempt."""
+
+    def _post(self, on_send):
+        """Stands in for requests.Session.post; answers reads like a Sepolia node."""
+        import requests
+        from web3 import Web3
+
+        self.posts = []
+
+        def post(_session, _url, data=None, **_kwargs):
+            call = json.loads(data)
+            self.posts.append(call["method"])
+            if call["method"] == "eth_sendRawTransaction":
+                outcome = on_send(call["params"][0])
+                if isinstance(outcome, Exception):
+                    raise outcome
+                body = outcome
+            else:
+                body = {"result": {
+                    "eth_chainId": hex(11155111), "eth_getTransactionCount": hex(16),
+                    "eth_estimateGas": hex(1_267_576), "eth_maxPriorityFeePerGas": hex(3),
+                    "eth_gasPrice": hex(23),
+                    "eth_getBlockByNumber": {"number": hex(12_070_000), "baseFeePerGas": hex(20)},
+                }[call["method"]]}
+            response = requests.Response()
+            response.status_code = 200
+            response._content = json.dumps({"jsonrpc": "2.0", "id": call["id"], **body}).encode()
+            return response
+
+        self.web3 = Web3
+        return mock.patch("requests.Session.post", new=post)
+
+    def _sign_with_real_provider(self):
+        for name, value in {
+            "SERVER_SIGNING_ENABLED": True,
+            "BLOCKCHAIN_PRIVATE_KEY": "0x" + "22" * 32,
+            "LEDGER_CONTRACT_ADDRESS": "0x" + "12" * 20,
+        }.items():
+            patcher = mock.patch(f"procurement.blockchain.{name}", value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_any_lost_reply_is_one_attempt_and_stays_uncertain(self):
+        import requests
+
+        self._sign_with_real_provider()
+        for error in (requests.exceptions.ReadTimeout("no reply"), requests.HTTPError("502"),
+                      requests.ConnectionError("reset")):
+            with self.subTest(error.__class__.__name__):
+                anchor = self._anchor()
+                with self._post(lambda _raw, failure=error: failure):
+                    result = blockchain.submit_anchor_server_side(anchor)
+                self.assertEqual(self.posts.count("eth_sendRawTransaction"), 1)
+                self.assertEqual(result.send_state, blockchain.SEND_UNCERTAIN)
+                anchor.refresh_from_db()
+                self.assertTrue(anchor.tx_hash.startswith("0x"))
+
+    def test_a_retried_send_can_not_be_mistaken_for_a_refusal(self):
+        # The scenario web3's re-send made possible: first attempt lost its reply
+        # but got through, the re-send is answered "insufficient funds".
+        import requests
+
+        replies = [requests.exceptions.ReadTimeout("no reply"),
+                   {"error": {"code": -32000, "message": "insufficient funds"}}]
+        self._sign_with_real_provider()
+        anchor = self._anchor()
+        with self._post(lambda _raw: replies.pop(0)):
+            blockchain.submit_anchor_server_side(anchor)
+        anchor.refresh_from_db()
+        self.assertTrue(anchor.tx_hash.startswith("0x"))
+        self.assertFalse(blockchain.anchor_summary(anchor)["can_reanchor"])
+
+    def test_a_real_node_error_through_the_real_provider_reopens_the_record(self):
+        self._sign_with_real_provider()
+        anchor = self._anchor()
+        with self._post(lambda _raw: {"error": {"code": -32000, "message": "insufficient funds"}}):
+            self.assertIsNone(blockchain.submit_anchor_server_side(anchor))
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.tx_hash, "")
+
+    def test_reads_still_get_a_second_try_but_fit_inside_the_worker_timeout(self):
+        import requests
+
+        w3 = blockchain.web3_client()
+        with mock.patch("requests.Session.post", side_effect=requests.ConnectionError("reset")) as post:
+            with self.assertRaises(requests.ConnectionError):
+                w3.eth.get_transaction_count("0x" + "11" * 20)
+        self.assertEqual(post.call_count, blockchain.RPC_READ_ATTEMPTS)
+        self.assertLess(blockchain.RPC_TIMEOUT_SECONDS * blockchain.RPC_READ_ATTEMPTS, 30)
+
+
+class StaleResultCanNotTouchANewerTransactionTests(ServerSendTestBase, APITestCase):
+    """A chain check takes seconds. If the record was re-anchored meanwhile, what
+    it found out is about the OLD hash. Clearing or flagging the new one would
+    reopen a record whose transaction is on the network: the next send would be a
+    permanent duplicate."""
+
+    OLD = "0x" + "aa" * 32
+    NEW = "0x" + "bb" * 32
+
+    def setUp(self):
+        patcher = mock.patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", "0x" + "12" * 20)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        anchor = self._anchor(tx_hash=self.OLD, actor_address="0x" + "33" * 20)
+        self.stale = BlockchainAnchor.objects.get(pk=anchor.pk)
+        BlockchainAnchor.objects.filter(pk=anchor.pk).update(tx_hash=self.NEW)
+        self.pk = anchor.pk
+
+    def _assert_new_hash_untouched(self):
+        fresh = BlockchainAnchor.objects.get(pk=self.pk)
+        self.assertEqual(fresh.tx_hash, self.NEW)
+        self.assertEqual(fresh.chain_status, BlockchainAnchor.ChainStatus.UNCHECKED)
+        self.assertFalse(blockchain.anchor_summary(fresh)["can_reanchor"])
+
+    def test_a_revert_found_for_the_old_hash_does_not_clear_the_new_one(self):
+        from .tests import sepolia_node
+        outcome = blockchain.confirm_anchor(self.stale, w3=sepolia_node({"status": 0, "blockNumber": 1}))
+        self.assertEqual(outcome, blockchain.UNKNOWN)
+        self._assert_new_hash_untouched()
+        self.assertFalse(AuditLog.objects.filter(action="blockchain.reverted").exists())
+
+    def test_a_mismatch_found_for_the_old_hash_does_not_flag_the_new_one(self):
+        from .tests import sepolia_node
+        with mock.patch("procurement.blockchain.anchor_events", return_value=[]):
+            blockchain.confirm_anchor(self.stale, w3=sepolia_node({"status": 1, "blockNumber": 1}))
+        self._assert_new_hash_untouched()
+        self.assertFalse(AuditLog.objects.filter(action="blockchain.mismatch").exists())
+
+    def test_a_confirmation_of_the_old_hash_is_not_saved_on_the_new_one(self):
+        from .tests import sepolia_node
+        event = {"id": 5, "logIndex": 0, "timestamp": 1_800_000_000, "actor": "0x" + "33" * 20}
+        with mock.patch("procurement.blockchain._matching_event", return_value=(event, "")), \
+                mock.patch("procurement.blockchain._state_agrees", return_value=True):
+            outcome = blockchain.confirm_anchor(self.stale, w3=sepolia_node({"status": 1, "blockNumber": 1}))
+        self.assertEqual(outcome, blockchain.UNKNOWN)
+        self._assert_new_hash_untouched()
+
+    def test_a_browser_report_can_not_replace_a_hash_saved_after_it_was_read(self):
+        result = blockchain.attach_transaction(self._empty_read(), "0x" + "cc" * 32)
+        self.assertEqual(result.send_state, blockchain.SEND_CLAIMED_ELSEWHERE)
+        self.assertEqual(result.tx_hash, self.NEW)
+
+    def _empty_read(self):
+        return BlockchainAnchor(pk=self.pk, tx_hash="", entity_type=self.stale.entity_type)
+
+    def test_a_browser_report_that_lost_the_race_is_not_logged_as_anchored(self):
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        anchor = self._anchor(entity_id=str(project.pk), entity_ref=project.code)
+        real = blockchain.attach_transaction
+
+        def server_saves_first(row, *args, **kwargs):
+            BlockchainAnchor.objects.filter(pk=row.pk).update(tx_hash=self.NEW)
+            return real(row, *args, **kwargs)
+
+        self.client.force_authenticate(user=make_head())
+        with mock.patch("procurement.views.attach_transaction", side_effect=server_saves_first):
+            res = self.client.post(f"/api/projects/{project.pk}/anchor/",
+                                   {"anchor_id": anchor.pk, "tx_hash": "0x" + "cc" * 32}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["tx_hash"], self.NEW)
+        self.assertFalse(AuditLog.objects.filter(action="blockchain.anchored").exists())
+
+
+class RefusedSendWithTheDatabaseDownTests(ServerSendTestBase, TestCase):
+    def test_it_does_not_raise_into_the_request(self):
+        # AGENTS.md rule 3. Staying closed is the safe side: nothing is re-sent.
+        from django.db import OperationalError
+        from django.db.models.query import QuerySet
+
+        self._use_node(on_send=node_says("insufficient funds"))
+        anchor = self._anchor(tx_hash="0x" + "ab" * 32)
+        with mock.patch.object(QuerySet, "update", side_effect=OperationalError("gone")):
+            result = blockchain._broadcast(anchor, anchor.tx_hash, b"\x01", self.w3, {"tx_hash": ""})
+        self.assertIsNone(result)
+
+
+class SecretsStayOutOfTheLogsTests(TestCase):
+    """A hosted RPC URL carries its API key, and a transport error prints it."""
+
+    KEY = "abcdef0123456789secretkey"
+    SIGNING_KEY = "0x" + "22" * 32
+
+    def _logged(self, url):
+        import requests
+
+        with mock.patch("procurement.blockchain.SEPOLIA_RPC_URL", url), \
+                mock.patch("procurement.blockchain.BLOCKCHAIN_PRIVATE_KEY", self.SIGNING_KEY), \
+                self.assertLogs("procurement.blockchain", level="WARNING") as logs:
+            try:
+                raise requests.ConnectionError(
+                    f"HTTPSConnectionPool(host='rpc.example'): Max retries exceeded with url: "
+                    f"{url.split('rpc.example')[1]} key {self.SIGNING_KEY}")
+            except requests.ConnectionError:
+                blockchain.logger.warning("Could not read %s", url, exc_info=True)
+        return "\n".join(logs.output)
+
+    def test_a_key_in_the_path_is_hidden_and_the_traceback_kept(self):
+        output = self._logged(f"https://rpc.example/v3/{self.KEY}")
+        self.assertNotIn(self.KEY, output)
+        self.assertNotIn(self.SIGNING_KEY, output)
+        self.assertNotIn("22" * 32, output)
+        self.assertIn("ConnectionError", output)
+        self.assertIn("Traceback", output)
+
+    def test_a_key_in_the_query_is_hidden(self):
+        self.assertNotIn(self.KEY, self._logged(f"https://rpc.example/rpc?apikey={self.KEY}"))
+
+    def test_a_url_with_no_secret_part_stays_readable(self):
+        with mock.patch("procurement.blockchain.SEPOLIA_RPC_URL", "https://rpc.example"), \
+                mock.patch("procurement.blockchain.BLOCKCHAIN_PRIVATE_KEY", ""), \
+                self.assertLogs("procurement.blockchain", level="WARNING") as logs:
+            blockchain.logger.warning("Asked %s", "https://rpc.example")
+        self.assertIn("https://rpc.example", logs.output[0])
+
+    def test_the_real_transport_error_text_is_hidden_end_to_end(self):
+        import requests
+
+        with mock.patch("procurement.blockchain.SEPOLIA_RPC_URL", f"https://rpc.example/v3/{self.KEY}"), \
+                mock.patch("requests.Session.post", side_effect=requests.ConnectionError(
+                    f"Max retries exceeded with url: /v3/{self.KEY}")), \
+                self.assertLogs("procurement.blockchain", level="WARNING") as logs:
+            self.assertEqual(blockchain.network_check(blockchain.web3_client()), (None, None))
+        self.assertNotIn(self.KEY, "\n".join(logs.output))
+
+
+@skipUnless(connection.vendor == "postgresql", "needs real row concurrency: run against a local PostgreSQL")
+class ConcurrentSendsOnPostgresTests(ServerSendTestBase, APITransactionTestCase):
+    """Real threads and real connections. SQLite serialises every write, so it can
+    only show the logic, never the race."""
+
+    THREADS = 12
+
+    def setUp(self):
+        self._use_node()
+
+    def _together(self, work):
+        import threading
+
+        barrier = threading.Barrier(self.THREADS)
+        results = []
+
+        def run():
+            try:
+                barrier.wait()
+                results.append(work())
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=run) for _ in range(self.THREADS)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        return results
+
+    def test_one_anchor_is_sent_once_however_many_requests_arrive(self):
+        anchor = self._anchor()
+        copies = iter([BlockchainAnchor.objects.get(pk=anchor.pk) for _ in range(self.THREADS)])
+        results = self._together(lambda: blockchain.submit_anchor_server_side(next(copies)))
+        self.assertEqual(len(self.node.sent), 1)
+        states = sorted(r.send_state for r in results)
+        self.assertEqual(states.count(blockchain.SEND_SENT), 1)
+        self.assertEqual(states.count(blockchain.SEND_CLAIMED_ELSEWHERE), self.THREADS - 1)
+        anchor.refresh_from_db()
+        self.assertEqual({r.tx_hash for r in results}, {anchor.tx_hash})
+
+    def test_the_anchor_now_endpoint_sends_once_under_concurrent_clicks(self):
+        from rest_framework.test import APIClient
+
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        anchor = self._anchor(entity_id=str(project.pk), entity_ref=project.code)
+        head = make_head()
+
+        def click():
+            client = APIClient()
+            client.force_authenticate(user=head)
+            return client.post(f"/api/projects/{project.pk}/anchor/",
+                               {"anchor_id": anchor.pk, "server_submit": True}, format="json").status_code
+
+        self.assertEqual(self._together(click), [status.HTTP_200_OK] * self.THREADS)
+        self.assertEqual(len(self.node.sent), 1)
+        self.assertEqual(AuditLog.objects.filter(action="blockchain.anchored").count(), 1)
+
+    def test_a_refused_send_and_concurrent_retries_never_leave_two_on_the_network(self):
+        # Every send refused: each may be followed by another, but the record ends
+        # open and nothing was accepted, so this only checks nothing is lost or stuck.
+        self.node.on_send = node_says("insufficient funds")
+        anchor = self._anchor()
+        copies = iter([BlockchainAnchor.objects.get(pk=anchor.pk) for _ in range(self.THREADS)])
+        self._together(lambda: blockchain.submit_anchor_server_side(next(copies)))
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.tx_hash, "")
