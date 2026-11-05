@@ -25,6 +25,7 @@ import CategoryDocumentFields, {
   useCategoryDocState, useCategoryRequirements,
 } from '../components/CategoryDocuments'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
+import { dropCached, getCached, loadCached, updateCached } from '../utils/sessionCache'
 import AppSidebar from '../components/shell/AppSidebar'
 import AppHeader, { storedUser } from '../components/shell/AppHeader'
 import StatusBadge from '../components/ui/StatusBadge'
@@ -984,9 +985,9 @@ const SUP_STATUS_CLS = {
   rejected: 'badge-red', pending: 'badge-yellow',
 }
 
-// Module-level cache: the supplier list survives navigating away and back, so
-// returning to this page shows data instantly instead of a full "Loading…" pass.
-let supplierCache = null
+// Cached: the supplier list survives navigating away and back, so returning to
+// this page shows data instantly instead of a full "Loading…" pass.
+const SUPPLIERS_CACHE = 'admin:suppliers'
 
 // Placeholder row shown while the supplier list loads (matches the 8 columns).
 function SupplierRowSkeleton() {
@@ -1001,9 +1002,9 @@ function SupplierRowSkeleton() {
 }
 
 function SuppliersPage() {
-  const [suppliers, setSuppliers] = useState(supplierCache || [])
+  const [suppliers, setSuppliers] = useState(() => getCached(SUPPLIERS_CACHE) || [])
   // Only show the loader on the very first load (when we have nothing cached yet).
-  const [loading, setLoading] = useState(supplierCache === null)
+  const [loading, setLoading] = useState(() => getCached(SUPPLIERS_CACHE) === undefined)
   const [error, setError] = useState('')
   const [filterTab, setFilterTab] = useState('All')
   const [search, setSearch] = useState('')
@@ -1068,15 +1069,15 @@ function SuppliersPage() {
   // and after a review action, since we already have data to show).
   const load = ({ background = false } = {}) => {
     if (!background) setLoading(true)
-    apiListSuppliers()
-      .then(data => { supplierCache = data; setSuppliers(data); setError('') })
+    loadCached(SUPPLIERS_CACHE, apiListSuppliers)
+      .then(data => { setSuppliers(data); setError('') })
       // A failed background refresh must NOT wipe data we're already showing —
       // only surface the error when the table is empty (i.e. the first load).
-      .catch(err => { if (!supplierCache) setError(err.message) })
+      .catch(err => { if (getCached(SUPPLIERS_CACHE) === undefined) setError(err.message) })
       .finally(() => setLoading(false))
   }
   // First visit: show the loader. Revisit (cache present): refresh in background.
-  useEffect(() => { load({ background: supplierCache !== null }) }, [])
+  useEffect(() => { load({ background: getCached(SUPPLIERS_CACHE) !== undefined }) }, [])
 
   const showToast = (type, message) => setToast({ type, message })
 
@@ -1486,7 +1487,7 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
 // ── Supplier detail / review modal ────────────────────────────────────────────
 
 // Per-supplier detail cache so reopening the same supplier's profile is instant.
-const supplierDetailCache = new Map()
+const supplierDetailCache = (id) => `admin:supplier:${id}`
 
 // Placeholder layout shown while a supplier's profile loads in the modal.
 function SupplierDetailSkeleton() {
@@ -1581,7 +1582,7 @@ const initFlagsFrom = (data) => {
 }
 
 function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
-  const cached = supplierDetailCache.get(supplierId)
+  const cached = getCached(supplierDetailCache(supplierId))
   const [supplier, setSupplier] = useState(cached || null)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState('')
@@ -1592,11 +1593,11 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    const hadCache = supplierDetailCache.has(supplierId)
+    const key = supplierDetailCache(supplierId)
+    const hadCache = getCached(key) !== undefined
     if (!hadCache) setLoading(true)
-    apiGetSupplier(supplierId)
+    loadCached(key, () => apiGetSupplier(supplierId))
       .then(data => {
-        supplierDetailCache.set(supplierId, data)
         setSupplier(data)
         // Only seed the editable fields on the first load — don't overwrite the
         // admin's in-progress edits when a background refresh resolves.
@@ -1606,7 +1607,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
         }
       })
       // A failed background refresh keeps the cached profile on screen.
-      .catch(err => { if (!supplierDetailCache.has(supplierId)) setError(err.message) })
+      .catch(err => { if (getCached(key) === undefined) setError(err.message) })
       .finally(() => setLoading(false))
   }, [supplierId])
 
@@ -1627,7 +1628,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
       await fn()
       // The action changed this supplier — drop the stale detail cache so a
       // reopen reloads fresh (the list refresh is handled by onReviewed).
-      supplierDetailCache.delete(supplierId)
+      dropCached(supplierDetailCache(supplierId))
       onReviewed(successMsg)
       onClose()
     } catch (err) {
@@ -3349,14 +3350,17 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
   )
 }
 
+const AWARDS_CACHE = 'admin:awards'
+
 function AwardsPage() {
-  const [awards, setAwards] = useState([])
-  const [loading, setLoading] = useState(true)
+  // A revisit shows the last list at once; the effect below refreshes it.
+  const [awards, setAwards] = useState(() => getCached(AWARDS_CACHE) || [])
+  const [loading, setLoading] = useState(() => getCached(AWARDS_CACHE) === undefined)
   const [search, setSearch] = useState('')
   const [busyDoc, setBusyDoc] = useState(null)   // `${awardId}:${key}` while uploading
   const [toast, setToast] = useState(null)
 
-  const load = () => apiListAwards().then(setAwards).catch(() => {})
+  const load = () => loadCached(AWARDS_CACHE, apiListAwards).then(setAwards).catch(() => {})
 
   useEffect(() => {
     load().finally(() => setLoading(false))
@@ -3369,7 +3373,10 @@ function AwardsPage() {
     setBusyDoc(`${award.id}:${doc.key}`)
     try {
       const updated = await run()
-      setAwards(prev => prev.map(a => (a.id === updated.id ? updated : a)))
+      const merge = (list) => list.map(a => (a.id === updated.id ? updated : a))
+      setAwards(merge)
+      // Coming back to this page must not show the document as still missing.
+      updateCached(AWARDS_CACHE, merge)
       setToast({ type: 'success', message: `${doc.label} issued for ${award.project_name}.` })
       if (updated.anchor) {
         runAnchor(updated.anchor, { label: `${updated.project_code} · ${doc.label}` })

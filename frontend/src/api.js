@@ -1,4 +1,5 @@
 import { protectedFilePath } from './utils/fileUrls'
+import { resetSessionCache } from './utils/sessionCache'
 
 // Central API layer for talking to the Django backend.
 // In production set VITE_API_URL (e.g. https://api.yourdomain.com/api); locally
@@ -11,6 +12,7 @@ export function saveSession({ access, refresh, user }) {
   localStorage.setItem('refresh', refresh)
   localStorage.setItem('role', user.role)
   localStorage.setItem('user', JSON.stringify(user))
+  resetSessionCache()
 }
 
 export function clearSession() {
@@ -18,6 +20,7 @@ export function clearSession() {
   localStorage.removeItem('refresh')
   localStorage.removeItem('role')
   localStorage.removeItem('user')
+  resetSessionCache()
 }
 
 // Logs out instantly from the user's point of view (local session is cleared

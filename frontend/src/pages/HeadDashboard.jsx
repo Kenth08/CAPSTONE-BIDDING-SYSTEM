@@ -13,6 +13,7 @@ import {
   isReviewed, decisionOf, deadlineLabel, deliveryLabel,
 } from '../store/projectsStore'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
+import { getCached, loadCached } from '../utils/sessionCache'
 import AppSidebar from '../components/shell/AppSidebar'
 import AppHeader, { storedUser } from '../components/shell/AppHeader'
 import StatusBadge from '../components/ui/StatusBadge'
@@ -406,10 +407,13 @@ const DECISION_BADGE = {
   approved: ['success', 'Approved'], rejected: ['danger', 'Rejected'], revision: ['warning', 'Revision requested'],
 }
 
+const SUMMARY_CACHE = 'head:summary'
+
 function HeadHome() {
   const { projects, loading } = useProjects()
-  const [summary, setSummary] = useState(null)
-  const [sumLoading, setSumLoading] = useState(true)
+  // A revisit shows the last summary at once; the effect below refreshes it.
+  const [summary, setSummary] = useState(() => getCached(SUMMARY_CACHE) ?? null)
+  const [sumLoading, setSumLoading] = useState(() => getCached(SUMMARY_CACHE) === undefined)
   const [sumError, setSumError] = useState('')
   const [decide, setDecide] = useState(null)     // { type: 'approve'|'reject', project }
   const [reason, setReason] = useState('')
@@ -418,7 +422,7 @@ function HeadHome() {
 
   const loadSummary = useCallback(() => {
     setSumError('')
-    return apiHeadSummary().then(setSummary)
+    return loadCached(SUMMARY_CACHE, apiHeadSummary).then(setSummary)
       .catch(e => setSumError(e instanceof TypeError ? 'Cannot reach the server. Check your connection and try again.' : e.message || 'Could not load your summary.'))
       .finally(() => setSumLoading(false))
   }, [])

@@ -14,6 +14,7 @@ import {
   apiProjectRequestRevision, apiResubmitProjectDocuments,
 } from '../api'
 import { runAnchor } from '../blockchain/anchorStore'
+import { onSessionReset, sessionGeneration } from '../utils/sessionCache'
 
 // ── Internal state ────────────────────────────────────────────────────────────
 let projects = []
@@ -37,6 +38,17 @@ let snapshot = { projects, loading, error, loaded }
 const rebuild = () => { snapshot = { projects, loading, error, loaded } }
 const getSnapshot = () => snapshot
 const emit = () => { rebuild(); listeners.forEach(l => l()) }
+
+// The cached list belongs to whoever fetched it, so it goes when they sign out.
+onSessionReset(() => {
+  projects = []
+  loaded = false
+  loading = false
+  error = ''
+  inflight = null
+  lastLoaded = 0
+  emit()
+})
 
 // ── Mapping between the API shape and the shape the UI components expect ────────
 const fmtDate = (v) =>
@@ -88,9 +100,11 @@ function doFetch({ background }) {
   if (inflight) return inflight        // de-dupe concurrent loads
   loading = true
   if (!background) emit()              // first load: show the loading state
+  const startedIn = sessionGeneration()
   inflight = (async () => {
     try {
       const data = await apiListProjects()
+      if (startedIn !== sessionGeneration()) return  // answer for the previous user
       projects = data.map(fromApi)
       loaded = true
       lastLoaded = Date.now()
@@ -99,8 +113,11 @@ function doFetch({ background }) {
       // A failed background refresh keeps the data already on screen.
       if (!loaded) error = e.message || 'Failed to load projects.'
     } finally {
-      loading = false
-      inflight = null
+      // After a reset these flags may already describe the next user's request.
+      if (startedIn === sessionGeneration()) {
+        loading = false
+        inflight = null
+      }
       emit()
     }
   })()

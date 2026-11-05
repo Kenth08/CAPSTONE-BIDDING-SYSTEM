@@ -17,6 +17,7 @@ import RelativeTime from '../../components/ui/RelativeTime'
 import { toast } from '../../components/ui/Toaster'
 import { ListSkeleton, Skeleton } from '../../components/Skeleton'
 import { amount, greeting, peso, pesoCompact, todayLong } from '../../utils/format'
+import { getCached, loadCached } from '../../utils/sessionCache'
 
 const ATTN_ICON = {
   evaluate: Gavel, revision: FileWarning, verify: UserCheck, category: Users,
@@ -152,16 +153,19 @@ function ChainHealth({ chain, loading, onAnchored }) {
   )
 }
 
+const SUMMARY_CACHE = 'admin:summary'
+
 export default function AdminHome() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
+  // A revisit shows the last summary at once; the effect below refreshes it.
+  const [data, setData] = useState(() => getCached(SUMMARY_CACHE) ?? null)
+  const [loading, setLoading] = useState(() => getCached(SUMMARY_CACHE) === undefined)
   const [error, setError] = useState('')
   const loc = useLocation()
   const u = storedUser()
 
   const load = useCallback(() => {
     setError('')
-    return apiAdminSummary()
+    return loadCached(SUMMARY_CACHE, apiAdminSummary)
       .then(setData)
       .catch((e) => setError(e instanceof TypeError ? 'Cannot reach the server. Check your connection and try again.' : e.message || 'Could not load the dashboard.'))
       .finally(() => setLoading(false))

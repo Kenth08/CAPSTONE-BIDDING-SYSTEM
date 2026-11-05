@@ -19,6 +19,7 @@ import CategoryDocumentFields, {
   useCategoryDocState, useCategoryRequirements,
 } from '../components/CategoryDocuments'
 import { Skeleton, TableSkeleton, ListSkeleton } from '../components/Skeleton'
+import { getCached, loadCached } from '../utils/sessionCache'
 import AnchorActivity from '../components/AnchorActivity'
 import AppSidebar from '../components/shell/AppSidebar'
 import AppHeader, { storedUser } from '../components/shell/AppHeader'
@@ -2652,16 +2653,16 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 
-// Module-level cache so the supplier's profile shows instantly on revisit
-// instead of flashing empty while it refetches.
-let myProfileCache = null
+// Cached so the supplier's profile shows instantly on revisit instead of
+// flashing empty while it refetches.
+const MY_PROFILE_CACHE = 'supplier:profile'
 
 export default function SupplierDashboard() {
   const loc = useLocation()
   const navigate = useNavigate()
-  const [profile, setProfile] = useState(myProfileCache)
+  const [profile, setProfile] = useState(() => getCached(MY_PROFILE_CACHE) ?? null)
   const [profileError, setProfileError] = useState('')
-  const [loadingProfile, setLoadingProfile] = useState(!myProfileCache)
+  const [loadingProfile, setLoadingProfile] = useState(() => getCached(MY_PROFILE_CACHE) === undefined)
   const [projects, setProjects] = useState([])   // eligible (published + category match)
   const [bids, setBids] = useState([])
   const [awards, setAwards] = useState([])       // this supplier's own awards only
@@ -2680,12 +2681,12 @@ export default function SupplierDashboard() {
   const loadProfile = () => {
     setProfileError('')
     setLoadingProfile(true)
-    return apiGetMySupplier()
-      .then(p => { myProfileCache = p; setProfile(p) })
+    return loadCached(MY_PROFILE_CACHE, apiGetMySupplier)
+      .then(setProfile)
       .catch(err => {
         // Keep showing the cached profile if a background refresh fails; only
         // report the error when there is nothing to fall back on.
-        if (!myProfileCache) {
+        if (getCached(MY_PROFILE_CACHE) === undefined) {
           setProfile(null)
           setProfileError(err?.message || 'Could not load your profile.')
         }
