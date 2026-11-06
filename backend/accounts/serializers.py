@@ -282,7 +282,7 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
         # transaction: neither should be able to roll back a completed
         # registration, and on_commit semantics don't apply to work that is
         # allowed to fail silently.
-        send_verification_email(user)
+        self.verification_email_sent = send_verification_email(user)
 
         uploaded = getattr(self, "_category_uploads", [])
         if uploaded:

@@ -1146,7 +1146,7 @@ function EmailVerifyBanner({ profile, setToast }) {
     setSending(true)
     try {
       await apiResendVerification()
-      setToast({ type: 'success', message: 'Verification email sent. Check your inbox.' })
+      setToast({ type: 'success', message: `Verification email sent${profile.email ? ` to ${profile.email}` : ''}. Check your inbox and spam folder.` })
     } catch (err) {
       setToast({ type: 'error', message: err.message || 'Could not send the verification email.' })
     } finally {
@@ -1160,7 +1160,7 @@ function EmailVerifyBanner({ profile, setToast }) {
       <div className="sd-verify-text">
         <span className="sd-bold">Verify your email</span>
         <span className="sd-muted sd-small">
-          Confirm your email address so we can reach you with bid results and account updates.
+          The BAC office can't approve your registration until you open the link we emailed{profile.email ? ` to ${profile.email}` : ' you'}. Didn't get it? Check your spam folder, or resend it.
         </span>
       </div>
       <button type="button" className="sd-btn-back" disabled={sending} onClick={resend}>

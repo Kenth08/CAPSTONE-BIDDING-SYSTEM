@@ -18,7 +18,7 @@ from procurement.permissions import IsAdminRole
 
 from . import lockout, mfa
 from .audit import log_action
-from .emails import send_verification_email
+from .emails import mail_service_ready, send_verification_email
 from .serializers import (
     ChangePasswordSerializer,
     EmailVerifyConfirmSerializer,
@@ -86,7 +86,13 @@ class SupplierRegisterView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         return Response(
-            {"detail": "Registration submitted. Your account is pending admin verification."},
+            {
+                "detail": "Registration submitted. Your account is pending admin verification.",
+                # A failed send must not undo the registration, but the applicant
+                # needs to know: approval waits on this email (see the sign-in
+                # dashboard's Resend Email button).
+                "verification_email_sent": serializer.verification_email_sent,
+            },
             status=201,
         )
 
@@ -108,7 +114,10 @@ class AdminAssistedSupplierRegisterView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         return Response(
-            {"detail": "Supplier registered. Their account is pending admin verification."},
+            {
+                "detail": "Supplier registered. Their account is pending admin verification.",
+                "verification_email_sent": serializer.verification_email_sent,
+            },
             status=201,
         )
 
@@ -168,20 +177,35 @@ class ChangePasswordView(APIView):
 class PasswordResetRequestView(APIView):
     """POST {email} -> emails a one-time reset link if that address has an account.
 
-    Always returns the same generic response whether or not the email matches
-    an account, and never lets an SMTP failure surface to the caller — both on
-    purpose, so this endpoint can't be used to enumerate registered emails or
-    be broken by a misconfigured mail server."""
+    Returns the same generic response whether or not the email matches an
+    account, so this endpoint can't be used to enumerate registered emails.
+
+    A mail failure is a 503, not that generic response: answering "link sent"
+    during an outage left people waiting for an email that was never coming
+    (production ran that way, with SMTP refusing every login). The check runs
+    before the account lookup, so an outage answers the same for every address.
+    A send that fails after the check passed (e.g. the provider refuses the
+    sender) is also a 503; that is the one case where the answer depends on the
+    account existing, and it can't be triggered at will. Accurate failure
+    reporting is worth that narrow exposure."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [PasswordResetRateThrottle]
 
     GENERIC_RESPONSE = {"detail": "If an account exists for that email, a password reset link has been sent."}
+    MAIL_UNAVAILABLE = {
+        "detail": "We can't send email right now, so no reset link was sent. Your password has "
+                  "not changed. Please try again later, or contact the procurement office if "
+                  "this keeps happening."
+    }
 
     def post(self, request):
         serializer = PasswordResetRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"]
+
+        if not mail_service_ready():
+            return Response(self.MAIL_UNAVAILABLE, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         user = User.objects.filter(email__iexact=email, is_active=True).first()
         if user:
@@ -207,9 +231,8 @@ class PasswordResetRequestView(APIView):
             fail_silently=False,
                 )
             except Exception:
-                # Never let an email/SMTP problem surface to the caller or
-                # change the response — log it and move on.
                 logger.exception("Failed to send password reset email")
+                return Response(self.MAIL_UNAVAILABLE, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         return Response(self.GENERIC_RESPONSE)
 

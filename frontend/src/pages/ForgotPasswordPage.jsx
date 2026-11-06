@@ -26,8 +26,9 @@ export default function ForgotPasswordPage() {
     setLoading(true)
     try {
       await apiRequestPasswordReset(email.trim())
-      // Always show the same success state — the backend deliberately never
-      // reveals whether the email matched an account.
+      // The same success state for every address: the backend never reveals
+      // whether the email matched an account. If mail can't be sent it answers
+      // 503 instead, and the catch below shows that message.
       setSent(true)
       setCooldown(30) // a link was just sent — block an instant resend
     } catch (err) {
@@ -70,12 +71,12 @@ export default function ForgotPasswordPage() {
 
           {sent ? (
             <>
-              <div className="login-success">
+              <div className="login-success" role="status">
                 <p>If an account exists for <b>{email.trim()}</b>, a password reset link has been sent.</p>
-                <p>Check your inbox (and spam folder) — the link expires in 3 days.</p>
+                <p>Check your inbox (and spam folder) — the link expires in 3 days. It can take a few minutes to arrive.</p>
               </div>
-              {resendMsg && <div className="login-resend-msg" style={{ marginTop: 12 }}>{resendMsg}</div>}
-              {error && <div className="login-error" style={{ marginTop: 12 }}><span>{error}</span></div>}
+              {resendMsg && <div className="login-resend-msg" role="status" style={{ marginTop: 12 }}>{resendMsg}</div>}
+              {error && <div className="login-error" role="alert" style={{ marginTop: 12 }}><span>{error}</span></div>}
               <p className="login-resend">
                 Didn't get the email?{' '}
                 <button
@@ -95,7 +96,7 @@ export default function ForgotPasswordPage() {
                 <input type="email" placeholder="you@example.com" value={email}
                   onChange={e => setEmail(e.target.value)} required />
               </div>
-              {error && <div className="login-error"><span>{error}</span></div>}
+              {error && <div className="login-error" role="alert"><span>{error}</span></div>}
               <button type="submit" className="login-submit" disabled={loading}>
                 {loading ? 'Sending…' : 'Send Reset Link'}
               </button>

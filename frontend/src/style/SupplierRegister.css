@@ -452,7 +452,15 @@
   display: flex; align-items: center; justify-content: center; margin: 0 auto 20px;
 }
 .sr-success-card h2 { font-size: 22px; font-weight: 800; color: var(--text-strong); margin-bottom: 10px; }
-.sr-success-card p { font-size: 14px; color: var(--text-subtle); line-height: 1.6; margin-bottom: 24px; }
+.sr-success-card p { font-size: 14px; color: var(--text-subtle); line-height: 1.6; margin-bottom: 16px; }
+.sr-success-card .sr-alert { text-align: left; margin-bottom: 16px; }
+.sr-next-steps {
+  text-align: left; padding-left: 20px; margin: 0 0 24px;
+  font-size: 14px; color: var(--text-subtle); line-height: 1.6;
+}
+.sr-next-steps li + li { margin-top: 8px; }
+.sr-next-steps b { color: var(--text-strong); }
+.sr-next-steps li { overflow-wrap: anywhere; }
 
 /* ── Field-level errors ──────────────────────────────────────────────────── */
 .sr-error-text {

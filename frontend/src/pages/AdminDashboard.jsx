@@ -1054,9 +1054,13 @@ function SuppliersPage() {
       fd.append('business_types', JSON.stringify(regTypes))
       Object.entries(regFiles).forEach(([k, file]) => fd.append(k, file))
       appendCategoryDocs(fd, regCatReq.docs, regCatDocs.files, regCatDocs.expiries)
-      await apiAdminRegisterSupplier(fd)
+      const result = await apiAdminRegisterSupplier(fd)
       resetRegForm()
-      showToast('success', 'Supplier registered. Pending admin verification.')
+      if (result?.verification_email_sent === false) {
+        showToast('error', "Supplier registered, but the verification email couldn't be sent. They can sign in and resend it from their dashboard.")
+      } else {
+        showToast('success', 'Supplier registered. They must open the emailed verification link before you can approve them.')
+      }
       load({ background: true })
     } catch (err) {
       setRegErr(err.message || 'Could not register the supplier. Please try again.')
@@ -1710,7 +1714,8 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
               {!decided && !supplier.email_verified && (
                 <div className="ad-modal-error" role="status">
                   <AlertTriangle size={15} /> Email not verified yet — this supplier can't be approved
-                  until they open the verification link sent to {supplier.email}.
+                  until they open the verification link sent to {supplier.email}. If they didn't get it, they can
+                  sign in and select Resend Email on their dashboard.
                 </div>
               )}
 
