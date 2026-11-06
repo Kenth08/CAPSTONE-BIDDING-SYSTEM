@@ -37,7 +37,6 @@
 .rd-fp { margin: 6px 0 12px; border-top: 1px solid var(--border-subtle, #eef0f3); }
 .rd-mono { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; overflow-wrap: anywhere; }
 .rd-missing { color: var(--text-subtle); font-style: italic; }
-.rd-explain { color: var(--text-subtle); font-size: 11.5px; line-height: 1.4; }
 .rd-type { margin-left: 6px; }
 .rd-here { margin-left: 6px; }
 

@@ -143,7 +143,7 @@ function ChainHealth({ chain, loading, onAnchored }) {
   const canAnchorAll = waiting > 1 && items.some((a) => a.server_signing && !signingBlocked(a))
   const running = allProgress !== null
   if (anchored + pending === 0) {
-    return <EmptyState compact icon={Link2} title="Nothing recorded yet" description="Each procurement step is hashed and listed here once it happens." />
+    return <EmptyState compact icon={Link2} title="Nothing recorded yet" description="Procurement steps are listed here as they happen." />
   }
   return (
     <>
@@ -253,7 +253,7 @@ export default function AdminHome() {
       <div className="rf-greeting">
         <div>
           <h2>{greeting()}, {u.full_name || u.username || 'Administrator'}</h2>
-          <p>{todayLong()} · BAC Secretariat workspace</p>
+          <p>{todayLong()}</p>
         </div>
         <div className="rf-greeting-actions">
           <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => { setLoading(true); load() }}>
@@ -280,7 +280,7 @@ export default function AdminHome() {
         <KpiCard label="Open biddings" icon={Gavel} tone="info" loading={loading}
           value={k.open_biddings ?? 0} to="/admin/projects?stage=published"
           context={k.closing_this_week ? `${k.closing_this_week} closing this week` : 'None closing this week'} />
-        <KpiCard label="Bids awaiting evaluation" icon={ClipboardCheck} loading={loading}
+        <KpiCard label="Bids to evaluate" icon={ClipboardCheck} loading={loading}
           tone={k.bids_awaiting_on_closed ? 'danger' : k.bids_awaiting_evaluation ? 'warning' : 'neutral'}
           value={k.bids_awaiting_evaluation ?? 0} to="/admin/bids"
           context={k.bids_awaiting_on_closed ? `${k.bids_awaiting_on_closed} on closed biddings` : 'Undecided bids'} />
@@ -289,14 +289,15 @@ export default function AdminHome() {
           value={k.suppliers_awaiting_verification ?? 0} to="/admin/suppliers"
           context={k.category_requests ? `+${k.category_requests} category request${k.category_requests === 1 ? '' : 's'}` : 'Registrations waiting'} />
         <KpiCard label="Incomplete documents" icon={FileWarning} loading={loading}
+          title="Suppliers with documents missing, expired or expiring within 30 days"
           tone={k.suppliers_incomplete_documents ? 'danger' : 'neutral'}
           value={k.suppliers_incomplete_documents ?? 0} to="/admin/suppliers"
-          context="Suppliers missing, expired or expiring ≤30 days" />
+          context="Missing or expiring ≤30 days" />
         <KpiCard label="Not yet on-chain" icon={Link2} loading={loading}
           tone={k.anchors_pending ? 'warning' : 'neutral'}
           value={k.anchors_pending ?? 0} to="/admin#chain"
-          context={k.anchors_pending ? 'Steps waiting for a signature' : data?.chain?.anchored ? 'Every step has a reported transaction' : 'Nothing recorded yet'} />
-        <KpiCard label="ABC of open biddings" icon={Wallet} loading={loading}
+          context={k.anchors_pending ? 'Waiting for a signature' : data?.chain?.anchored ? 'All steps reported' : 'Nothing recorded yet'} />
+        <KpiCard label="Open budgets (ABC)" icon={Wallet} loading={loading}
           value={pesoCompact(k.open_abc)} title={peso(k.open_abc)} to="/admin/projects?stage=published"
           context={`Across ${k.open_biddings ?? 0} open bidding${k.open_biddings === 1 ? '' : 's'}`} />
       </KpiRow>
@@ -304,7 +305,7 @@ export default function AdminHome() {
       <div className="rf-grid-2">
         <section className="rf-card" aria-labelledby="attn-h">
           <div className="rf-card-head">
-            <div><h3 id="attn-h">Needs your attention</h3><p>Most urgent first — each item opens the screen where you act</p></div>
+            <div><h3 id="attn-h">Needs your attention</h3><p>Most urgent first</p></div>
             {!loading && data?.attention?.length > 0 && <span className="ui-badge ui-badge--warning">{data.attention.length}</span>}
           </div>
           <AttentionList items={data?.attention || []} loading={loading}
@@ -313,7 +314,7 @@ export default function AdminHome() {
 
         <section className="rf-card" aria-labelledby="closing-h">
           <div className="rf-card-head">
-            <div><h3 id="closing-h">Closing soon</h3><p>Published biddings by deadline</p></div>
+            <div><h3 id="closing-h">Closing soon</h3></div>
             <Link to="/admin/projects?stage=published" className="rf-card-link">All open <ChevronRight size={13} /></Link>
           </div>
           {loading ? <div className="rf-card-body"><ListSkeleton rows={3} height={44} /></div>
@@ -344,7 +345,7 @@ export default function AdminHome() {
 
       <section className="rf-card" aria-labelledby="pipe-h">
         <div className="rf-card-head">
-          <div><h3 id="pipe-h">Procurement pipeline</h3><p>How many procurements are at each stage — select a stage to see them</p></div>
+          <div><h3 id="pipe-h">Procurement pipeline</h3><p>Select a stage to see its procurements</p></div>
         </div>
         <Pipeline stages={data?.pipeline || []} loading={loading} />
       </section>
@@ -390,7 +391,7 @@ export default function AdminHome() {
 
         <section className="rf-card" aria-labelledby="cat-h">
           <div className="rf-card-head">
-            <div><h3 id="cat-h">By category</h3><p>Number of procurements · total ABC</p></div>
+            <div><h3 id="cat-h">By category</h3><p>Procurements · total ABC</p></div>
           </div>
           {loading ? <div className="rf-card-body"><ListSkeleton rows={4} height={18} /></div>
             : cats.length === 0 ? <EmptyState compact icon={FolderOpen} title="No procurements yet" description="Categories appear as procurements are created." />
@@ -401,7 +402,7 @@ export default function AdminHome() {
       <div className="rf-grid-2-even">
         <section className="rf-card" aria-labelledby="act-h">
           <div className="rf-card-head">
-            <div><h3 id="act-h">Recent activity</h3><p>From the audit log — who did what, when</p></div>
+            <div><h3 id="act-h">Recent activity</h3></div>
           </div>
           {loading ? <div className="rf-card-body"><ListSkeleton rows={4} height={36} /></div>
             : <ActivityFeed items={data?.activity || []} />}
@@ -409,7 +410,7 @@ export default function AdminHome() {
 
         <section className="rf-card" id="chain" aria-labelledby="chain-h" style={{ scrollMarginTop: 80 }}>
           <div className="rf-card-head">
-            <div><h3 id="chain-h">Blockchain health</h3><p>Lifecycle steps anchored on Ethereum Sepolia</p></div>
+            <div><h3 id="chain-h">Blockchain health</h3><p>Steps anchored on Ethereum Sepolia</p></div>
             <Link to="/public" className="rf-card-link">Public verifier <ArrowRight size={13} /></Link>
           </div>
           <ChainHealth chain={data?.chain} loading={loading} onAnchored={load} />

@@ -8,6 +8,9 @@ html { scroll-behavior: smooth; }
 /* Never let the page scroll sideways — wide content scrolls inside its own
    container, not the whole document. */
 html, body { overflow-x: hidden; max-width: 100%; }
+/* `clip`, where supported: `hidden` here makes body a scroll container that never
+   scrolls, and position: sticky then has nothing to stick to. */
+body { overflow-x: clip; }
 
 :root {
   --primary: #10b981;

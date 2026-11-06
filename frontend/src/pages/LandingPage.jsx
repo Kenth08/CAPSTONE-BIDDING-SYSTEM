@@ -18,21 +18,21 @@ import '../style/LandingPage.css'
 
 // What actually happens at each lifecycle stage in this system.
 const STAGE_NOTES = [
-  ['Draft', 'The BAC Secretariat files the procurement with its ABC and the five required documents.'],
-  ['Head Review', 'The Approving Authority approves it, rejects it, or flags documents for revision.'],
-  ['Published', 'Bidding opens to verified suppliers in the matching category; the deadline is set.'],
-  ['Evaluation', 'Each bid is qualified or disqualified against the published evaluation criteria.'],
-  ['Awarded', 'A qualified bid is selected and every bidder is notified.'],
-  ['BAC Resolution · NOA · NTP', 'The post-award documents are issued, each with its own issue date.'],
+  ['Draft', 'Filed with its ABC and five required documents.'],
+  ['Head Review', 'Approved, rejected, or sent back for revision.'],
+  ['Published', 'Open to verified suppliers in the matching category.'],
+  ['Evaluation', 'Each bid is qualified or disqualified.'],
+  ['Awarded', 'A qualified bid wins; every bidder is notified.'],
+  ['BAC Resolution · NOA · NTP', 'Post-award documents are issued.'],
 ]
 
 const FEATURES = [
-  { icon: Link2, title: 'Tamper-evident records', desc: 'Filing, the Head’s decision, publication, the evaluation (one salted commitment to every bid), the award and the award documents are fingerprinted on Ethereum Sepolia. Changing a record afterwards breaks its fingerprint.' },
-  { icon: ClipboardCheck, title: 'Head approval before bidding', desc: 'Nothing is published until the Approving Authority has reviewed the procurement and its documents.' },
-  { icon: Users, title: 'Category-matched suppliers', desc: 'Verified suppliers only see and bid on procurements in the categories they registered for.' },
-  { icon: Scale, title: 'Documented evaluation', desc: 'Bids are compared against the ABC and qualified or disqualified with every document on record.' },
-  { icon: FileCheck2, title: 'Post-award documents', desc: 'BAC Resolution, Notice of Award and Notice to Proceed are issued and anchored in order.' },
-  { icon: Globe, title: 'Public verification', desc: 'Anyone can replay a procurement’s trail from the blockchain and check a document’s hash — no account needed.' },
+  { icon: Link2, title: 'Tamper-evident records', desc: 'Key steps are fingerprinted on Ethereum Sepolia. Changing a record afterwards breaks its fingerprint.' },
+  { icon: ClipboardCheck, title: 'Head approval before bidding', desc: 'Nothing is published until the Approving Authority has reviewed it.' },
+  { icon: Users, title: 'Category-matched suppliers', desc: 'Verified suppliers bid only in the categories they registered for.' },
+  { icon: Scale, title: 'Documented evaluation', desc: 'Bids are compared against the ABC, with every document on record.' },
+  { icon: FileCheck2, title: 'Post-award documents', desc: 'BAC Resolution, NOA and NTP are issued and anchored in order.' },
+  { icon: Globe, title: 'Public verification', desc: 'Anyone can replay a procurement’s trail and check a document’s hash.' },
 ]
 
 const ROLES = [
@@ -170,8 +170,8 @@ export default function LandingPage() {
               <span className="lp-accent">Secured by Blockchain</span>
             </h1>
             <p>
-              Every step of a public procurement — from filing and approval to bidding, award and the
-              Notice to Proceed — is recorded as a tamper-evident hash on Ethereum, so anyone can check it.
+              Public procurement from filing to Notice to Proceed, recorded as tamper-evident hashes on
+              Ethereum so anyone can check it.
             </p>
             <div className="lp-hero-btns">
               <Link to="/login" className="btn-primary lp-hero-login"><Shield size={16} /> Login</Link>
@@ -206,7 +206,7 @@ export default function LandingPage() {
         ) : error || !data?.open?.length ? (
           <div className="lpx-empty">
             <EmptyState icon={Gavel} title={error ? 'Open biddings could not load' : 'No procurements are open for bidding right now'}
-              description={error ? 'Please try again in a moment.' : 'New biddings appear here the moment they are published. Register now so you are ready to bid.'}
+              description={error ? 'Please try again in a moment.' : 'New biddings appear here when published. Register to be ready to bid.'}
               action={<Link to="/register" className="ui-btn ui-btn--secondary ui-btn--sm">Register as a supplier</Link>} />
           </div>
         ) : (
@@ -250,7 +250,7 @@ export default function LandingPage() {
         ) : error || !data?.awards?.length ? (
           <div className="lpx-empty">
             <EmptyState icon={Trophy} title={error ? 'Awards could not load' : 'No contracts awarded yet'}
-              description={error ? 'Please try again in a moment.' : 'Awarded contracts, their winners and amounts are published here.'} />
+              description={error ? 'Please try again in a moment.' : 'Awarded contracts and their winners appear here.'} />
           </div>
         ) : (
           <ul className="lpx-awards">
@@ -278,7 +278,7 @@ export default function LandingPage() {
       <section className="lp-section lp-hiw lpx-section" id="how-it-works" aria-labelledby="hiw-h">
         <div className="lp-section-label">PROCESS</div>
         <h2 className="lp-section-title" id="hiw-h">How a procurement moves</h2>
-        <p className="lp-section-sub">The same eight stages every procurement in this system goes through. Every stage after the draft leaves a fingerprint on the blockchain — the evaluation is fixed as a whole when the winner is selected.</p>
+        <p className="lp-section-sub">Eight stages. Every stage after the draft leaves a fingerprint on the blockchain.</p>
         <div className="lpx-stepper"><ProcurementStepper label="Procurement lifecycle stages" /></div>
         <ol className="lpx-stage-notes">
           {STAGE_NOTES.map(([title, desc]) => (
@@ -306,7 +306,7 @@ export default function LandingPage() {
       <section className="lp-section lp-roles-sec" id="roles">
         <div className="lp-section-label">ACCESS</div>
         <h2 className="lp-section-title">Who uses it</h2>
-        <p className="lp-section-sub">Three signed-in roles, plus the public — who can check everything without an account.</p>
+        <p className="lp-section-sub">Three signed-in roles, plus the public.</p>
         <div className="lp-roles-grid lpx-roles">
           {ROLES.map(({ icon: Icon, title, subtitle, perks, cta, to, variant }) => (
             <div className={`lp-role-card lp-role-${variant}`} key={title}>
@@ -325,7 +325,7 @@ export default function LandingPage() {
       <section className="lp-cta">
         <div className="lp-cta-badge"><span className="lp-dot" />Ready to bid?</div>
         <h2>Join the Platform</h2>
-        <p>Register your company as a supplier to bid on procurements in your categories, or log in to your workspace.</p>
+        <p>Register your company as a supplier, or log in to your workspace.</p>
         <div className="lp-cta-btns">
           <Link to="/register" className="btn-primary"><Building2 size={16} /> Register as Supplier</Link>
           <Link to="/login" className="btn-outline">Login</Link>

@@ -190,8 +190,8 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultE
                     <span className="hd-section-count">{project.documents.length}</span>
                   </div>
                   <p className="hd-muted hd-small" style={{ margin: '2px 0 10px' }}>
-                    Tick a document with a problem, add a note, then click Request Revision below — this does not reject
-                    the whole project, the Admin just fixes that one file.
+                    Tick a document with a problem, add a note, then click Request Revision. The project is not
+                    rejected; the Admin fixes that file.
                   </p>
                   <div className="hd-doc-review-list">
                     {project.documents.map(d => {
@@ -241,8 +241,8 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultE
           <div className="hd-decision-bar">
             <span className="hd-decision-hint">
               {flaggedCount > 0
-                ? `${flaggedCount} document${flaggedCount > 1 ? 's' : ''} flagged — send back for revision, or decide on the whole project.`
-                : 'Decide on this project, or flag documents above to request a revision.'}
+                ? `${flaggedCount} document${flaggedCount > 1 ? 's' : ''} flagged. Request a revision, or decide on the project.`
+                : 'Decide on this project, or flag documents to request a revision.'}
             </span>
             <div className="hd-decision-actions">
               {project.documents?.length > 0 && (
@@ -460,7 +460,7 @@ function HeadHome() {
       <div className="rf-greeting">
         <div>
           <h2>{greeting()}, {u.full_name || u.username || 'Head'}</h2>
-          <p>{todayLong()} · Approving Authority</p>
+          <p>{todayLong()}</p>
         </div>
       </div>
 
@@ -491,7 +491,7 @@ function HeadHome() {
         <div className="rf-card-head">
           <div>
             <h3 id="queue-h">Approval queue</h3>
-            <p>Longest waiting first · check the five required documents before you decide</p>
+            <p>Longest waiting first</p>
           </div>
           <Link to="/head/pending" className="rf-card-link">Full review <ChevronRight size={13} /></Link>
         </div>
@@ -499,7 +499,7 @@ function HeadHome() {
           <div className="rf-card-body"><ListSkeleton rows={2} height={84} /></div>
         ) : pending.length === 0 ? (
           <EmptyState icon={CheckCircle2} title="All caught up"
-            description="No procurements are waiting for your approval. New submissions from the Admin appear here." />
+            description="No procurements are waiting for your approval." />
         ) : (
           <ul className="rf-queue">
             {pending.map(p => (
@@ -511,13 +511,13 @@ function HeadHome() {
 
       <section className="rf-card" aria-labelledby="hist-h">
         <div className="rf-card-head">
-          <div><h3 id="hist-h">My decision history</h3><p>Your latest decisions and whether each is recorded on-chain</p></div>
+          <div><h3 id="hist-h">My decision history</h3></div>
           <Link to="/head/approved" className="rf-card-link">All reviewed <ChevronRight size={13} /></Link>
         </div>
         {sumLoading ? (
           <div className="rf-card-body"><ListSkeleton rows={3} height={40} /></div>
         ) : !summary?.history?.length ? (
-          <EmptyState compact icon={FolderOpen} title="No decisions yet" description="Procurements you approve, reject or return will be listed here." />
+          <EmptyState compact icon={FolderOpen} title="No decisions yet" description="Your decisions will be listed here." />
         ) : (
           <div className="rf-table-scroll">
             <table className="rf-table">
@@ -604,15 +604,15 @@ function PendingPage() {
       <div className="hd-card">
         <div className="hd-card-header">
           <div>
-            <h2>Pending Approval</h2>
-            <p>Review each project carefully. Approved projects will go back to Admin to be published for supplier bidding.</p>
+            <h2>Projects to review</h2>
+            <p>Approved projects go back to the Admin to publish for bidding.</p>
           </div>
           <StatusBadge tone={pending.length > 0 ? 'warning' : 'success'} label={pending.length > 0 ? `${pending.length} pending` : 'All clear'} />
         </div>
         {loading && pending.length === 0 ? (
           <div style={{ padding: '16px 20px' }}><ListSkeleton rows={2} height={70} /></div>
         ) : pending.length === 0 ? (
-          <EmptyState icon={CheckCircle2} title="All caught up!" description="No projects are waiting for your approval right now." />
+          <EmptyState icon={CheckCircle2} title="All caught up!" description="No projects are waiting for your approval." />
         ) : (
           <div className="hd-pending-list">
             {pending.map(p => (
@@ -640,15 +640,15 @@ function ResultsPage() {
       <div className="hd-card">
         <div className="hd-card-header">
           <div>
-            <h2>Results</h2>
-            <p>Awarded and closed procurements — open one to see every bid, the outcome and its blockchain evidence</p>
+            <h2>Awarded and closed</h2>
+            <p>Open one to see its bids, outcome and blockchain evidence.</p>
           </div>
         </div>
         {loading && done.length === 0 ? (
           <div className="hd-table-wrap"><table className="hd-table"><tbody><TableSkeleton rows={4} cols={6} /></tbody></table></div>
         ) : done.length === 0 ? (
           <EmptyState icon={Trophy} title="No results yet"
-            description="Procurements appear here once their bidding closes or a winner is selected." />
+            description="Procurements appear here once bidding closes or a winner is selected." />
         ) : (
           <div className="hd-table-wrap">
             <table className="hd-table">
@@ -702,8 +702,7 @@ function ApprovedPage() {
       <div className="hd-card">
         <div className="hd-card-header">
           <div>
-            <h2>Reviewed Projects</h2>
-            <p>All projects you have approved or rejected</p>
+            <h2>Your decisions</h2>
           </div>
           <StatusBadge tone="success" label={`${approvedCount} approved`} />
         </div>

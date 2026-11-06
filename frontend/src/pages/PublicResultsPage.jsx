@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  AlertCircle, ArrowLeft, Eye, Gavel, LayoutDashboard, Lock, MapPin, Search, Shield, ShieldCheck, Trophy,
+  AlertCircle, ArrowLeft, Eye, Gavel, Lock, MapPin, Search, ShieldCheck, Trophy,
 } from 'lucide-react'
 import { apiPublicProcurement, apiGetMySupplier, getToken, getRole } from '../api'
+import { PublicBackBar, PublicNav } from '../components/PublicShell'
 import PublicVerifier from '../components/PublicVerifier'
 import { normalizeProcurementCode } from '../utils/procurementCode'
 import { readLedgerTotal } from '../blockchain/anchor'
@@ -16,9 +17,7 @@ import { publicDate } from '../blockchain/recordView'
 import { fmtDate, peso, pesoCompact } from '../utils/format'
 import '../style/PublicResultsPage.css'
 
-const PENDING_MSG =
-  'Your supplier account is pending admin approval. You can view this procurement, ' +
-  'but you cannot submit a bid until your account is approved.'
+const PENDING_MSG = 'Your supplier account is pending approval. You can bid once it is approved.'
 
 export default function PublicResultsPage() {
   const navigate = useNavigate()
@@ -163,29 +162,15 @@ export default function PublicResultsPage() {
 
   return (
     <div className="pub">
-      <nav className="pub-nav">
-        <Link to="/" className="lp-logo">
-          <span className="lp-logo-icon"><Shield size={18} /></span>
-          <div>
-            <div className="lp-logo-name">E-Procurement</div>
-            <div className="lp-logo-sub">Blockchain System</div>
-          </div>
-        </Link>
-        <div className="pub-nav-right">
-          <Link to="/" className="pub-back"><ArrowLeft size={15} /> Back to Home</Link>
-          {role
-            ? <Link to={`/${role}`} className="btn-primary pub-login-btn"><LayoutDashboard size={15} /> My Dashboard</Link>
-            : <Link to="/login" className="btn-primary pub-login-btn">Login</Link>}
-        </div>
-      </nav>
+      <PublicNav>
+        <Link to="/" className="pub-back"><ArrowLeft size={15} /> Home</Link>
+      </PublicNav>
+      {/* Arrived to verify one procurement: the listing is above this view. */}
+      {verifyCode && <PublicBackBar />}
 
       <header className="pub-header">
-        <div className="pub-badge"><Eye size={14} /> Public View</div>
         <h1>Public Procurement Results</h1>
-        <p>
-          Every procurement open for bidding, closed, or awarded — no account required.
-          Check any of them against the blockchain with the verifier below.
-        </p>
+        <p>Open, closed and awarded procurements. No account needed.</p>
       </header>
 
       <main className="pub-main rf-home">
@@ -196,14 +181,14 @@ export default function PublicResultsPage() {
 
         <KpiRow cols={onChain != null ? 4 : undefined}>
           <KpiCard label="Open for bidding" icon={Gavel} tone="info" loading={loading} value={biddings.length}
-            context={biddings.length ? `${biddings.filter((b) => b.bids === 0).length} still without bids` : 'None right now'} />
-          <KpiCard label="ABC open for bidding" icon={Search} loading={loading}
-            value={pesoCompact(openAbc)} title={peso(openAbc)} context="Approved budgets of open biddings" />
+            context={biddings.length ? `${biddings.filter((b) => b.bids === 0).length} with no bids yet` : 'None right now'} />
+          <KpiCard label="Open budgets (ABC)" icon={Search} loading={loading}
+            value={pesoCompact(openAbc)} title={peso(openAbc)} context={`Across ${biddings.length} bidding${biddings.length === 1 ? '' : 's'}`} />
           <KpiCard label="Contracts awarded" icon={Trophy} tone="success" loading={loading} value={winners.length}
             context={winners[0] ? `Latest ${publicDate(winners[0].awarded_at)}` : 'None yet'} />
           {onChain != null && (
-            <KpiCard label="Steps on Ethereum Sepolia" icon={ShieldCheck} to="/public#verify" value={onChain}
-              context="Read live from the ledger contract" />
+            <KpiCard label="Steps on-chain" icon={ShieldCheck} to="/public#verify" value={onChain}
+              context="Live from Ethereum Sepolia" />
           )}
         </KpiRow>
 
@@ -217,7 +202,7 @@ export default function PublicResultsPage() {
             loading={loading}
             initialSort={{ key: 'status', dir: 'desc' }}
             search={(r) => `${r.code} ${r.name} ${r.category || ''} ${r.winner || ''}`}
-            searchPlaceholder="Search reference, title or winner"
+            searchPlaceholder="Search procurements"
             filters={[
               { key: 'all', label: 'All', test: () => true },
               { key: 'open', label: 'Open for bidding', test: (r) => r.state === 'open' },
@@ -235,7 +220,7 @@ export default function PublicResultsPage() {
             )}
             empty={{
               icon: Gavel, title: error ? 'Results could not load' : 'No public procurements yet',
-              description: error ? 'Please try again in a moment.' : 'Procurements appear here once they are published for bidding.',
+              description: error ? 'Please try again in a moment.' : 'Procurements appear here once published.',
               action: !role && <Link to="/register" className="ui-btn ui-btn--secondary ui-btn--sm">Register as a supplier</Link>,
             }}
           />
@@ -247,8 +232,8 @@ export default function PublicResultsPage() {
         <PublicVerifier key={verifyCode} initialCode={verifyCode} />
 
         {!role && <section className="pub-cta">
-          <h2>Ready to compete for these contracts?</h2>
-          <p>Register as a supplier to submit bids, or log in if you already have an account.</p>
+          <h2>Want to bid on these contracts?</h2>
+          <p>Register as a supplier, or log in if you have an account.</p>
           <div className="pub-cta-btns">
             <Link to="/register" className="btn-primary">Register as Supplier</Link>
             <Link to="/login" className="btn-outline">Login</Link>

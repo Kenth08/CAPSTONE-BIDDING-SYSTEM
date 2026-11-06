@@ -288,6 +288,8 @@
 
 /* ── Awards ──────────────────────────────────────────────────────────────── */
 .ad-stat-value-sm { font-size: 20px !important; }
+.ad-cell-name { margin-bottom: 4px; }
+.ad-award-callout .ad-award-more { margin-top: 0; flex: 1; min-width: 0; }
 .ad-stat-of { font-size: 15px !important; font-weight: 600 !important; color: var(--text-faint) !important; margin-left: 2px; }
 .ad-awards-table td { vertical-align: top !important; }
 .ad-doc-btns { display: flex !important; flex-direction: column; align-items: stretch !important; gap: 6px !important; min-width: 300px; }

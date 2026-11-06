@@ -10,7 +10,6 @@
 .pr-title { margin: 0; font-size: var(--fs-page-title); font-weight: var(--fw-bold); color: var(--text-strong); }
 .pr-meta { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-top: var(--sp-2); font-size: var(--fs-small); color: var(--text-subtle); }
 .pr-meta strong { color: var(--text-strong); }
-.pr-viewer { margin: var(--sp-2) 0 0; font-size: var(--fs-caption); color: var(--text-subtle); }
 .pr-head-actions { display: flex; gap: var(--sp-2); align-items: flex-start; flex-wrap: wrap; }
 
 .pr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--sp-4); }
