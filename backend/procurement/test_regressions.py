@@ -1532,6 +1532,7 @@ class MailOutageIsReportedTests(APITestCase):
         self.assertEqual(known.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertEqual(unknown.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertEqual(known.data, unknown.data)
+        self.assertIn("wait a few minutes", known.data["detail"])
         self.assertEqual(len(mail.outbox), 0)
 
     def test_healthy_mail_keeps_the_generic_answer_for_both(self):
