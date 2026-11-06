@@ -617,6 +617,9 @@ export const apiAnchorAward = (awardId, payload) =>
 // ── Dashboard summaries (read-only) ─────────────────────────────────────────
 export const apiAdminSummary = () => apiFetch('/dashboard/admin-summary/')
 export const apiHeadSummary = () => apiFetch('/dashboard/head-summary/')
+// "Anchor all": the server signs and sends the oldest waiting step, one per call.
+export const apiAnchorNextPending = () =>
+  apiFetch('/anchors/send-next/', { method: 'POST', body: '{}' })
 
 // ── Notifications ──────────────────────────────────────────────────────────────
 export const apiListNotifications = () => apiFetch('/notifications/')

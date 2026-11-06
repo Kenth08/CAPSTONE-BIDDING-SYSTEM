@@ -4,13 +4,14 @@ import {
   AlertTriangle, ArrowRight, Award, ChevronRight, ClipboardCheck, FileWarning, FolderOpen, Gavel,
   Link2, Loader2, Lock, PiggyBank, RefreshCw, RotateCw, Send, ShieldCheck, UserCheck, Users, Wallet,
 } from 'lucide-react'
-import { apiAdminSummary } from '../../api'
+import { apiAdminSummary, apiAnchorNextPending } from '../../api'
 import { signingBlocked } from '../../blockchain/anchor'
 import { runAnchor, isAnchorBusy, useAnchorActivity } from '../../blockchain/anchorStore'
 import { storedUser } from '../../components/shell/AppHeader'
 import KpiCard, { KpiRow } from '../../components/ui/KpiCard'
 import Countdown from '../../components/ui/Countdown'
 import ActivityFeed from '../../components/ui/ActivityFeed'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { BarChart, Donut } from '../../components/ui/Charts'
 import EmptyState from '../../components/ui/EmptyState'
 import RelativeTime from '../../components/ui/RelativeTime'
@@ -95,10 +96,52 @@ function ChainHealth({ chain, loading, onAnchored }) {
     if (ok) { toast.success(`${a.entity_ref} · ${a.stage_label}: transaction submitted. It is confirmed once the server has checked it.`); onAnchored() }
     else toast.error(`${a.entity_ref} · ${a.stage_label} was not anchored. The record is saved — you can retry.`)
   }
+
+  const [confirmAll, setConfirmAll] = useState(false)
+  const [allProgress, setAllProgress] = useState(null) // { sent, remaining } while running
+
+  // Sends one step at a time and stops at the first problem. Each step is
+  // independent, so leaving the page just stops the run; press again to continue.
+  const anchorAll = async () => {
+    setConfirmAll(false)
+    setAllProgress({ sent: 0, remaining: null })
+    let sent = 0
+    let skipped = 0
+    let problem = ''
+    try {
+      for (;;) {
+        const res = await apiAnchorNextPending()
+        skipped = res.skipped ?? skipped
+        if (!res.anchor) break
+        if (res.send_state === 'uncertain') {
+          problem = `${res.anchor.entity_ref} · ${res.anchor.stage_label}: no clear answer from the network, so it won't be sent again until it has been checked. Stopped here.`
+          break
+        }
+        if (res.send_state === 'sent') sent += 1
+        setAllProgress({ sent, remaining: res.remaining })
+        if (res.remaining === 0) break
+        // Let the node see this transaction before the next one reads its nonce.
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+      }
+    } catch (err) {
+      problem = err.message || 'Anchoring stopped. Your records are saved. Try again in a moment.'
+    }
+    setAllProgress(null)
+    if (sent > 0) toast.success(`${sent} step${sent === 1 ? '' : 's'} sent to Sepolia. Each is confirmed once the server has checked it.`)
+    if (skipped > 0) toast.error(`${skipped} step${skipped === 1 ? ' is' : 's are'} already recorded on the blockchain, so ${skipped === 1 ? 'it was' : 'they were'} not sent again.`)
+    if (problem) toast.error(problem)
+    if (sent === 0 && skipped === 0 && !problem) toast.success('Nothing is waiting to be anchored.')
+    onAnchored()
+  }
+
   if (loading) return <div className="rf-card-body"><Skeleton width={132} height={132} radius={66} /></div>
   const { anchored = 0, pending = 0, verified = 0, unchecked = 0, mismatch = 0, incomplete = 0 } = chain || {}
   const items = (chain?.pending_items || []).slice(0, 5)
   const blockedNote = items.map(signingBlocked).find(Boolean) || ''
+  const waiting = Math.max(pending - mismatch, 0)
+  // Only where the server signs: with MetaMask this would be one popup per step.
+  const canAnchorAll = waiting > 1 && items.some((a) => a.server_signing && !signingBlocked(a))
+  const running = allProgress !== null
   if (anchored + pending === 0) {
     return <EmptyState compact icon={Link2} title="Nothing recorded yet" description="Each procurement step is hashed and listed here once it happens." />
   }
@@ -117,6 +160,28 @@ function ChainHealth({ chain, loading, onAnchored }) {
           {incomplete} recorded step{incomplete === 1 ? '' : 's'} with incomplete five-document evidence.
         </p>
       )}
+      {canAnchorAll && (
+        <button type="button" className="ui-btn ui-btn--primary" onClick={() => setConfirmAll(true)}
+          disabled={running || busy !== null || isAnchorBusy(activity)} aria-busy={running}>
+          {running
+            ? <><Loader2 size={14} className="ui-spin" aria-hidden="true" /> Anchoring… {allProgress.sent} sent{allProgress.remaining !== null ? `, ${allProgress.remaining} left` : ''}</>
+            : <><Link2 size={14} aria-hidden="true" /> Anchor all {waiting} steps</>}
+        </button>
+      )}
+      {confirmAll && (
+        <ConfirmDialog
+          title={`Anchor all ${waiting} steps?`}
+          points={[
+            'The server signs and sends them one at a time, oldest first. No MetaMask needed.',
+            'Blockchain entries are permanent and can\'t be removed afterwards.',
+            'It stops at the first problem. Your records stay saved, and you can press it again to continue.',
+          ]}
+          onChain
+          confirmLabel="Anchor all"
+          onConfirm={anchorAll}
+          onCancel={() => setConfirmAll(false)}
+        />
+      )}
       {items.length > 0 && (
         <ul className="rf-anchor-list">
           {items.map((a) => (
@@ -131,7 +196,7 @@ function ChainHealth({ chain, loading, onAnchored }) {
                 </div>
               </div>
               <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={() => anchorNow(a)}
-                disabled={!!signingBlocked(a) || busy === a.id || isAnchorBusy(activity)}
+                disabled={!!signingBlocked(a) || busy === a.id || running || isAnchorBusy(activity)}
                 title={signingBlocked(a) || undefined}>
                 {busy === a.id ? <><Loader2 size={13} className="ui-spin" /> Anchoring…</>
                   : signingBlocked(a) ? <><Lock size={13} /> Signing disabled</>
@@ -144,7 +209,7 @@ function ChainHealth({ chain, loading, onAnchored }) {
           )}
           {pending > items.length && (
             <li className="rf-muted" style={{ fontSize: 'var(--fs-caption)' }}>
-              {pending - items.length} more — open a procurement's blockchain trail to anchor older steps.
+              {pending - items.length} more{canAnchorAll ? ' — included in Anchor all.' : " — open a procurement's blockchain trail to anchor older steps."}
             </li>
           )}
         </ul>
