@@ -1505,7 +1505,76 @@ class MissingFileAndMailLoggingTests(APITestCase):
             with self.assertLogs("accounts.views", level="ERROR"):
                 res = self.client.post("/api/auth/password/reset/",
                                        {"email": self.supplier.user.email})
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        # Not 200: answering "link sent" here is what hid the production outage.
+        self.assertEqual(res.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class MailOutageIsReportedTests(APITestCase):
+    """Production answered "a reset link has been sent" while Brevo refused every
+    SMTP login (535), so the failure was visible only in the server log."""
+
+    REFUSED = "django.core.mail.backends.locmem.EmailBackend.open"
+
+    def setUp(self):
+        cache.clear()
+        self.supplier = make_supplier(verified=False)
+
+    def _reset(self, email):
+        return self.client.post("/api/auth/password/reset/", {"email": email})
+
+    def test_outage_gets_the_same_answer_for_known_and_unknown_addresses(self):
+        with mock.patch(self.REFUSED, side_effect=OSError("535 Authentication failed")):
+            with self.assertLogs("accounts.emails", level="ERROR"):
+                known = self._reset(self.supplier.user.email)
+            cache.clear()
+            with self.assertLogs("accounts.emails", level="ERROR"):
+                unknown = self._reset("nobody-here@example.com")
+        self.assertEqual(known.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(unknown.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(known.data, unknown.data)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_healthy_mail_keeps_the_generic_answer_for_both(self):
+        known = self._reset(self.supplier.user.email)
+        unknown = self._reset("nobody-here@example.com")
+        self.assertEqual(known.status_code, status.HTTP_200_OK)
+        self.assertEqual(known.data, unknown.data)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.supplier.user.email])
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.console.EmailBackend")
+    def test_console_backend_in_production_is_not_treated_as_sent(self):
+        with self.assertLogs("accounts.emails", level="ERROR"):
+            res = self._reset(self.supplier.user.email)
+        self.assertEqual(res.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    def test_registration_survives_a_failed_verification_email_and_says_so(self):
+        payload = {
+            "full_name": "Jane Dela Cruz", "email": "new.supplier@example.com",
+            "password": "Sup3rSecret!9", "confirm_password": "Sup3rSecret!9",
+            "company_name": "Acme Trading Corp.", "company_address": "123 Rizal St, Manila",
+            "phone_number": "09171234567", "tin": "123-456-789",
+            "representative_name": "Jane Dela Cruz", "business_types": '["IT Equipment"]',
+            "declaration_accepted": "true",
+        }
+        for key in ("sec_dti_certificate", "mayors_permit", "philgeps_certificate", "valid_id",
+                    "tax_clearance_certificate", "audited_financial_statements",
+                    "bank_reference_letter", "authorization_letter"):
+            payload[key] = dummy_pdf(f"{key}.pdf")
+        with mock.patch("accounts.emails.send_mail", side_effect=OSError("smtp blocked")):
+            with self.assertLogs("accounts.emails", level="ERROR"):
+                res = self.client.post("/api/auth/register/supplier/", payload, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertIs(res.data["verification_email_sent"], False)
+        self.assertTrue(Supplier.objects.filter(user__email="new.supplier@example.com").exists())
+
+    def test_rate_limit_message_is_readable(self):
+        for _ in range(5):
+            self._reset("nobody-here@example.com")
+        res = self._reset("nobody-here@example.com")
+        self.assertEqual(res.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertIn("Too many attempts", res.data["detail"])
+        self.assertNotIn("throttled", res.data["detail"])
 
 
 class SupplierResubmitGuardTests(APITestCase):

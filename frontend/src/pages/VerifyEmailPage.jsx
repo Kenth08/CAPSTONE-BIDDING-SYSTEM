@@ -45,15 +45,20 @@ export default function VerifyEmailPage() {
           {status === 'done' && (
             <>
               <p className="login-subtitle">Your email address has been confirmed.</p>
-              <div className="login-success">
-                You're verified. <Link to="/login">Sign in</Link> to continue.
+              <div className="login-success" role="status">
+                <p>You're verified. The BAC office can now review your registration, and you'll be emailed when they decide.</p>
+                <p><Link to="/login">Sign in</Link> to check your status on your dashboard.</p>
               </div>
             </>
           )}
           {status === 'error' && (
             <>
               <p className="login-subtitle">We couldn't verify your email.</p>
-              <div className="login-error"><span>{error}</span></div>
+              <div className="login-error" role="alert">
+                <span>{error}</span>
+                <span>To get a new link, sign in and select <b>Resend Email</b> on your dashboard.</span>
+                <Link to="/login" className="login-error-cta">Go to sign in →</Link>
+              </div>
             </>
           )}
         </div>

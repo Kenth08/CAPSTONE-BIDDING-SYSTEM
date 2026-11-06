@@ -60,7 +60,7 @@ export default function ResetPasswordPage() {
           ) : done ? (
             <>
               <p className="login-subtitle">Choose a new password for your account.</p>
-              <div className="login-success">
+              <div className="login-success" role="status">
                 Your password has been reset. Redirecting you to sign in…
               </div>
             </>
@@ -93,7 +93,14 @@ export default function ResetPasswordPage() {
                     required
                   />
                 </div>
-                {error && <div className="login-error"><span>{error}</span></div>}
+                {error && (
+                  <div className="login-error" role="alert">
+                    <span>{error}</span>
+                    {/reset link/i.test(error) && (
+                      <Link to="/forgot-password" className="login-error-cta">Request a new link →</Link>
+                    )}
+                  </div>
+                )}
                 <button type="submit" className="login-submit" disabled={loading}>
                   {loading ? 'Saving…' : 'Reset Password'}
                 </button>

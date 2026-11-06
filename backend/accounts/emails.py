@@ -10,7 +10,7 @@ import logging
 
 from django.conf import settings
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
-from django.core.mail import send_mail
+from django.core.mail import get_connection, send_mail
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 
@@ -34,6 +34,27 @@ class EmailVerificationTokenGenerator(PasswordResetTokenGenerator):
 
 
 email_verification_token = EmailVerificationTokenGenerator()
+
+
+def mail_service_ready():
+    """Can outgoing mail be sent right now? Opens a connection (for SMTP that
+    includes logging in) and closes it, sending nothing.
+
+    The password reset request calls this before it looks up the account, so
+    wrong credentials or an unreachable server get the same answer for every
+    address and can't reveal which ones have accounts. In production the console
+    backend counts as "not ready": it only prints the message to the server log."""
+    if not settings.DEBUG and settings.EMAIL_BACKEND.endswith("console.EmailBackend"):
+        logger.error("Email is not configured: set EMAIL_HOST or BREVO_API_KEY.")
+        return False
+    try:
+        connection = get_connection(fail_silently=False)
+        connection.open()
+        connection.close()
+    except Exception:
+        logger.exception("The mail service is not available")
+        return False
+    return True
 
 
 def send_verification_email(user):

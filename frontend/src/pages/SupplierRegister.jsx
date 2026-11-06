@@ -108,6 +108,7 @@ export default function SupplierRegister() {
   const [loading, setLoading] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [done, setDone] = useState(false)
+  const [emailSent, setEmailSent] = useState(true)
   const submittingRef = useRef(false)
   const headingRef = useRef(null)
 
@@ -287,7 +288,8 @@ export default function SupplierRegister() {
       fd.append('business_types', JSON.stringify(businessTypes))
       Object.entries(files).forEach(([k, file]) => fd.append(k, file))
       appendCategoryDocs(fd, catReq.docs, catDocs.files, catDocs.expiries)
-      await apiRegisterSupplier(fd)
+      const result = await apiRegisterSupplier(fd)
+      setEmailSent(result?.verification_email_sent !== false)
       setDone(true)
       window.scrollTo({ top: 0 })
     } catch (err) {
@@ -316,7 +318,7 @@ export default function SupplierRegister() {
     }
   }
 
-  if (done) return <SuccessScreen onContinue={() => navigate('/login')} />
+  if (done) return <SuccessScreen email={form.email.trim()} emailSent={emailSent} onContinue={() => navigate('/login')} />
 
   const current = STEPS[step]
   const isLast = step === STEPS.length - 1
@@ -802,13 +804,30 @@ function EditBtn({ onClick, label }) {
   )
 }
 
-function SuccessScreen({ onContinue }) {
+function SuccessScreen({ email, emailSent, onContinue }) {
   return (
     <div className="sr-success">
       <div className="sr-success-card" role="status">
         <span className="sr-success-icon"><CheckCircle2 size={40} aria-hidden="true" /></span>
         <h2>Registration Submitted</h2>
-        <p>Your supplier account has been created and is now <b>pending admin verification</b>. You'll be able to bid once an admin approves your documents.</p>
+        <p>Your supplier account has been created. Here's what happens next:</p>
+        {!emailSent && (
+          <div className="sr-alert" role="alert">
+            <AlertCircle size={16} aria-hidden="true" />
+            <span><b>We couldn't send your verification email to {email}.</b> Your registration is saved. Sign in and select <b>Resend Email</b> on your dashboard.</span>
+          </div>
+        )}
+        <ol className="sr-next-steps">
+          <li>
+            <b>Confirm your email.</b>{' '}
+            {emailSent
+              ? <>Open the link we sent to <b>{email}</b>. Check your spam folder if you don't see it.</>
+              : 'Open the link in the email once it arrives.'}
+            {' '}Your registration can't be approved until this is done.
+          </li>
+          <li><b>Wait for the BAC office.</b> They review your documents and you'll be emailed their decision.</li>
+          <li><b>Start bidding.</b> You can submit bids once your account is verified.</li>
+        </ol>
         <button type="button" className="sr-btn" onClick={onContinue}>Go to Login</button>
       </div>
     </div>

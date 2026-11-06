@@ -362,6 +362,9 @@ export async function apiFetch(path, options = {}) {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...options.headers,
       },
+    }).catch(() => {
+      // Otherwise the browser's bare "Failed to fetch" reaches the user.
+      throw new Error('Cannot reach the server. Please check your connection and try again.')
     })
 
   let res = await send(getToken())
@@ -420,6 +423,8 @@ async function apiUpload(path, formData, method = 'POST') {
       method,
       body: formData,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).catch(() => {
+      throw new Error('Cannot reach the server. Please check your connection and try again.')
     })
 
   let res = await send(getToken())
