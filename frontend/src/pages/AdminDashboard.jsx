@@ -44,6 +44,8 @@ import { runAnchor, runAnchorSequence } from '../blockchain/anchorStore'
 import { ANCHOR_STATES, anchorState } from '../blockchain/anchorState'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import AdminHome from './admin/AdminHome'
+import InfoTip from '../components/ui/InfoTip'
+import MoreInfo from '../components/ui/MoreInfo'
 import Toaster from '../components/ui/Toaster'
 import Thumbnail from '../components/ui/Thumbnail'
 import Lightbox from '../components/ui/Lightbox'
@@ -108,7 +110,7 @@ function RefCode({ code, size = 'sm' }) {
       type="button"
       className={`ad-ref ad-ref-${size}${copied ? ' ad-ref-copied' : ''}`}
       onClick={copy}
-      title={copied ? 'Copied!' : `${code} — click to copy. Use this reference in the Public Verifier.`}
+      title={copied ? 'Copied!' : `${code}: click to copy`}
     >
       <span className="ad-ref-text">{code}</span>
       {copied ? <Check size={11} /> : <Copy size={11} className="ad-ref-copy" />}
@@ -210,7 +212,7 @@ function ProjectsPage() {
             <label className="ad-search-inline">
               <Search size={14} aria-hidden="true" />
               <span className="sr-only">Search projects</span>
-              <input placeholder="Search by title or ref code" value={search} onChange={e => setSearch(e.target.value)} />
+              <input placeholder="Search title or reference" value={search} onChange={e => setSearch(e.target.value)} />
             </label>
             <button className="ad-btn-history" onClick={() => navigate('/admin/projects/history')}>
               <Clock size={13} /> History{historyCount > 0 ? ` (${historyCount})` : ''}
@@ -223,15 +225,15 @@ function ProjectsPage() {
           <thead>
             <tr>
               <th><span className="sr-only">Image</span></th>
-              <th>Ref Code</th><th>Title</th><th className="ad-num">Budget</th><th>Deadline</th><th>Type</th>
+              <th>Project</th><th className="ad-num">Budget</th><th>Deadline</th><th>Type</th>
               <th>Eligible Types</th><th>Status</th><th className="ad-actions-col">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading && filtered.length === 0
-              ? <TableSkeleton rows={4} cols={9} />
+              ? <TableSkeleton rows={4} cols={8} />
               : filtered.length === 0
-              ? <TableEmpty colSpan={9} icon={FolderOpen}
+              ? <TableEmpty colSpan={8} icon={FolderOpen}
                   title={search || filterTab !== 'All' ? 'No projects match your filters' : 'No approved projects yet'}
                   description={search || filterTab !== 'All'
                     ? 'Try a different search or filter.'
@@ -242,8 +244,7 @@ function ProjectsPage() {
                     <Thumbnail src={p.referenceImage} size={48} category={p.category}
                       alt={`Reference image for ${p.code} ${p.name}`} onOpen={() => setPreview(p)} />
                   </td>
-                  <td><RefCode code={p.code} /></td>
-                  <td className="ad-bold ad-cell-title">{p.name}</td>
+                  <td className="ad-cell-title"><div className="ad-bold ad-cell-name">{p.name}</div><RefCode code={p.code} /></td>
                   <td className="ad-num">{p.budget}</td>
                   <td><DeadlineCell project={p} /></td>
                   <td className="ad-nowrap">{p.type}</td>
@@ -320,7 +321,7 @@ function ProjectHistoryPage() {
             <label className="ad-search-inline">
               <Search size={14} aria-hidden="true" />
               <span className="sr-only">Search closed biddings</span>
-              <input placeholder="Search closed biddings by title or ref code" value={search} onChange={e => setSearch(e.target.value)} />
+              <input placeholder="Search title or reference" value={search} onChange={e => setSearch(e.target.value)} />
             </label>
           </div>
         </div>
@@ -329,21 +330,20 @@ function ProjectHistoryPage() {
         <table className="ad-table">
           <thead>
             <tr>
-              <th>Ref Code</th><th>Title</th><th className="ad-num">Budget</th><th>Closed On</th><th>Type</th>
+              <th>Project</th><th className="ad-num">Budget</th><th>Closed On</th><th>Type</th>
               <th>Eligible Types</th><th>Status</th><th className="ad-actions-col">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading && sorted.length === 0
-              ? <TableSkeleton rows={4} cols={8} />
+              ? <TableSkeleton rows={4} cols={7} />
               : sorted.length === 0
-              ? <TableEmpty colSpan={8} icon={Clock}
+              ? <TableEmpty colSpan={7} icon={Clock}
                   title={search ? 'No closed biddings match your search' : 'No closed biddings yet'}
-                  description="Projects move here automatically once their bid deadline passes." />
+                  description="Projects move here once their bid deadline passes." />
               : sorted.map(p => (
                 <tr key={p.id}>
-                  <td><RefCode code={p.code} /></td>
-                  <td className="ad-bold ad-cell-title">{p.name}</td>
+                  <td className="ad-cell-title"><div className="ad-bold ad-cell-name">{p.name}</div><RefCode code={p.code} /></td>
                   <td className="ad-num">{p.budget}</td>
                   <td className="ad-nowrap">{deadlineLabel(p)}</td>
                   <td className="ad-nowrap">{p.type}</td>
@@ -494,8 +494,7 @@ function ReferenceImageUploader({ file, existingUrl, onFile, onRemove }) {
         Reference Image <span className="ad-opt-tag" style={{ marginLeft: 6 }}>Optional</span>
       </label>
       <div className="ad-muted ad-small" style={{ marginBottom: 10 }}>
-        Upload a photo or image showing the exact product, model, color, or design you require.
-        This helps suppliers understand exactly what to bid for.
+        A photo of the exact product, model, color or design you require.
       </div>
 
       {shown ? (
@@ -612,8 +611,8 @@ function ProjectDetailModal({ project, onClose, setToast }) {
 
           {needsRevision && (
             <div className="ad-modal-error" style={{ background: 'rgba(249,115,22,0.08)', borderColor: 'rgba(249,115,22,0.3)', color: '#c2410c' }}>
-              <AlertTriangle size={15} /> The Head flagged {flaggedDocs.length} document(s) below — re-upload the
-              fixed file(s) and resubmit. The project will go back to the Head's queue automatically.
+              <AlertTriangle size={15} /> The Head flagged {flaggedDocs.length} document(s). Re-upload them and
+              resubmit; the project returns to the Head's queue.
             </div>
           )}
 
@@ -818,7 +817,7 @@ function PlanningPage() {
                   {BIDDING_PERIOD_OPTIONS.map(n => <option key={n} value={n}>{n} days</option>)}
                 </select>
                 <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
-                  The actual deadline is set automatically when you publish — suppliers always get the full window.
+                  The deadline is set when you publish, so suppliers get the full period.
                 </span>
               </div>
               <div className="ad-form-group">
@@ -828,7 +827,7 @@ function PlanningPage() {
                   {DELIVERY_PERIOD_OPTIONS.map(n => <option key={n} value={n}>{n} days</option>)}
                 </select>
                 <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
-                  Counted from the day a winner is selected, not from today.
+                  Counted from the day a winner is selected.
                 </span>
               </div>
               <div className="ad-form-group ad-form-full">
@@ -841,7 +840,7 @@ function PlanningPage() {
                   Required Procurement Documents
                 </label>
                 <div className="ad-muted ad-small" style={{ marginBottom: 10 }}>
-                  PDF, JPG, or PNG · max 5 MB each. All are required before submitting for approval.
+                  All required. PDF, JPG or PNG, max 5 MB each.
                 </div>
                 <div className="ad-doc-grid">
                   {REQUIRED_PROCUREMENT_DOCS.map(d => (
@@ -869,7 +868,7 @@ function PlanningPage() {
                   <span>
                     <strong>Require product images from bidders</strong>
                     <span className="ad-muted ad-small">
-                      Each supplier must attach at least one photo (up to 5) of the exact product they are offering.
+                      Each supplier must attach 1 to 5 photos of the exact product offered.
                     </span>
                   </span>
                 </label>
@@ -920,7 +919,7 @@ function PlanningPage() {
                   title={search ? 'No planning requests match your search' : 'No planning requests yet'}
                   description={search
                     ? 'Try a different title, type, or ref code.'
-                    : 'Create a procurement project to start the approval workflow. It goes to the Head for review before it can be published.'}
+                    : 'Create a project to send it to the Head for review.'}
                   action={!search && !showForm && (
                     <button className="ad-btn-primary" onClick={() => setShowForm(true)}>
                       <Plus size={14} /> Create Project
@@ -1179,7 +1178,7 @@ function SuppliersPage() {
                     </div>
                   </td>
                   <td><StatusBadge domain="email" status={!!s.email_verified} /></td>
-                  <td className="ad-muted ad-nowrap">{s.registered}</td>
+                  <td className="ad-muted ad-nowrap">{fmtDate(s.registered)}</td>
                   <td className="ad-actions-col">
                     <button className="ad-btn-view-sm" onClick={() => setViewId(s.id)}>
                       <Eye size={13} /> View
@@ -1274,8 +1273,7 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
           <div>
             <h3 id="assisted-reg-title">Assisted Supplier Registration</h3>
             <p className="ad-muted ad-small" style={{ marginTop: 4, maxWidth: 560 }}>
-              For a supplier who came in person with physical documents — their account is created the
-              same way as a self-registration and still needs your approval before they can bid.
+              For a supplier applying in person. The account still needs your approval before they can bid.
             </p>
           </div>
           <button type="button" className="ad-modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
@@ -1296,7 +1294,7 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                   <FormField id="ar-full-name" label="Full Name">
                     <input id="ar-full-name" autoComplete="off" value={form.full_name} onChange={e => set('full_name', e.target.value)} />
                   </FormField>
-                  <FormField id="ar-email" label="Email Address" hint="The supplier signs in with this and receives the verification link.">
+                  <FormField id="ar-email" label="Email Address" hint="Used to sign in and receive the verification link.">
                     <input id="ar-email" type="email" autoComplete="off" inputMode="email" value={form.email} onChange={e => set('email', e.target.value)} />
                   </FormField>
                   <FormField id="ar-password" label="Password" hint="At least 8 characters.">
@@ -1334,7 +1332,7 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                   Business type<span className="ui-req" aria-hidden="true">*</span>
                 </div>
                 <p className="ui-hint" style={{ marginTop: -6, marginBottom: 10 }}>
-                  Select every category the supplier can bid on. At least one is required.
+                  Select at least one category the supplier can bid on.
                 </p>
                 <div className="ad-checks" role="group" aria-label="Business type">
                   {CATEGORIES.map(t => (
@@ -1359,8 +1357,7 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                   />
                 </div>
                 <p className="ui-hint" style={{ marginTop: -6, marginBottom: 12 }}>
-                  Upload a clear scanned copy or photo of the document. Make sure the full document is readable.
-                  PDF, JPG, or PNG · max 5 MB each.
+                  A clear, fully readable scan or photo. PDF, JPG or PNG, max 5 MB each.
                 </p>
                 <div className="ad-doc-grid">
                   {ASSISTED_REQUIRED_DOCS.map(d => (
@@ -1399,7 +1396,7 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                     )}
                   </div>
                   <p className="ui-hint" style={{ marginTop: -6, marginBottom: 12 }}>
-                    Licenses the selected business categories require. Enter each license's expiry date.
+                    Required by the selected categories. Enter each expiry date.
                   </p>
                   <CategoryDocumentFields req={catReq} state={catDocs} onError={setError} idPrefix="ar-catdoc" />
                 </section>
@@ -1428,9 +1425,8 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
             <section className="ui-form-section">
               <div className="ui-form-section-title">Declaration</div>
               <p className="ad-small" style={{ lineHeight: 1.6, color: 'var(--text-body)' }}>
-                Before submitting, confirm with the supplier (present in person) that all information and
-                documents provided are true, accurate, and authentic. Any false statement or falsified
-                document is grounds for disqualification.
+                Confirm with the supplier, in person, that everything provided is true, accurate and authentic.
+                Any false statement or falsified document is grounds for disqualification.
               </p>
               <label className={`ad-declare${form.declaration_accepted ? ' on' : ''}`}>
                 <input type="checkbox" checked={form.declaration_accepted}
@@ -1460,8 +1456,7 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
               <div className="ui-callout ui-callout--neutral" style={{ marginTop: 12 }}>
                 <Info size={16} className="ui-callout-icon" />
                 <span>
-                  The supplier account is created now and queued the same as any self-registration — review
-                  and approve it from this Suppliers list before they can bid.
+                  The account is created now. Approve it from the Suppliers list before they can bid.
                 </span>
               </div>
             </section>
@@ -1743,7 +1738,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                 <Info2 label="TIN" value={supplier.tin} />
                 <Info2 label="Address" value={supplier.company_address} full />
                 <BusinessTypesInfo supplier={supplier} />
-                <Info2 label="Registered" value={supplier.registered} />
+                <Info2 label="Registered" value={fmtDate(supplier.registered)} />
                 <Info2 label="Financial Year" value={supplier.financial_statement_year} />
               </div>
 
@@ -1773,8 +1768,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                 <div className="ad-docs-hint">
                   <Info size={15} />
                   <span>
-                    <strong>Tick the checkbox</strong> next to any document that has a problem to flag it for revision,
-                    then click <strong>Request Revision</strong> to send it back to the supplier.
+                    <strong>Tick</strong> any document with a problem, then click <strong>Request Revision</strong>.
                   </span>
                 </div>
               )}
@@ -2145,8 +2139,7 @@ function BidsPage() {
   return (
     <div className="ad-content ad-bids-page">
       <PageHeader
-        title="Select a Project to Evaluate"
-        description="Click a project below to review and evaluate submitted bids."
+        title="Select a project to evaluate"
       />
 
       {/* Sticky on desktop/tablet (see admin-polish.css) so search and filters
@@ -2691,9 +2684,8 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
               <div className="ad-docs-hint">
                 <Info size={15} />
                 <span>
-                  <strong>Tick the checkbox</strong> next to a document with a problem and add a note, then click
-                  <strong> Request Revision</strong>. The bid stays in this bidding — the supplier just re-uploads
-                  the flagged file.
+                  <strong>Tick</strong> a document with a problem, add a note, then click
+                  <strong> Request Revision</strong>. The bid stays in this bidding.
                 </span>
               </div>
             )}
@@ -2968,30 +2960,30 @@ function BidEvaluationPage() {
   const CONFIRM = {
     qualify: (b) => ({
       title: `Qualify ${b.supplier_name}?`, tone: 'primary', confirmLabel: 'Qualify bid',
-      points: [`The ${peso(b.amount)} bid is marked Qualified for ${project.code}.`, 'The supplier is notified of the result.',
-        'A qualified bid can then be selected as the winner.',
-        'Saved as a database record (audit-logged). It is not written to the blockchain on its own.'],
+      points: [`The ${peso(b.amount)} bid is marked Qualified for ${project.code}.`, 'The supplier is notified.',
+        'It can then be selected as the winner.',
+        'Saved as an audit-logged database record, not written to the blockchain on its own.'],
       run: () => act(b, apiQualifyBid, 'Could not qualify.', `${b.supplier_name}'s bid qualified.`),
     }),
     disqualify: (b) => ({
       title: `Disqualify ${b.supplier_name}?`, tone: 'danger', confirmLabel: 'Disqualify bid',
-      points: [`The ${peso(b.amount)} bid is marked Disqualified for ${project.code}.`, 'The supplier is notified of the result.',
-        'A disqualified bid cannot be selected as the winner.',
-        'Saved as a database record (audit-logged). It is not written to the blockchain on its own.'],
+      points: [`The ${peso(b.amount)} bid is marked Disqualified for ${project.code}.`, 'The supplier is notified.',
+        'It cannot be selected as the winner.',
+        'Saved as an audit-logged database record, not written to the blockchain on its own.'],
       run: () => act(b, apiDisqualifyBid, 'Could not disqualify.', `${b.supplier_name}'s bid disqualified.`),
     }),
     revision: (b, docs) => ({
       title: 'Request a document revision?', tone: 'warning', confirmLabel: 'Send request',
-      points: [`${Object.keys(docs).length} document(s) on ${b.supplier_name}'s bid are flagged and the supplier is asked to re-upload them.`,
-        'The bid stays in this bidding — it is not disqualified.', 'It cannot be selected as the winner until the files are fixed.'],
+      points: [`${b.supplier_name} is asked to re-upload ${Object.keys(docs).length} flagged document(s).`,
+        'The bid stays in this bidding, not disqualified.', 'It cannot win until the files are fixed.'],
       run: () => requestRevision(b, docs),
     }),
     winner: (b) => ({
       title: 'Select the winning bidder?', tone: 'primary', confirmLabel: 'Award contract', onChain: true,
       points: [`${project.name} (${project.code}) is awarded to ${b.supplier_name} for ${peso(b.amount)}.`,
         'The procurement becomes Awarded and every bidder is notified.',
-        'Fingerprints of the evaluation result, the winning bid and the award are recorded on Sepolia — never the amounts or names themselves.',
-        'You then issue the BAC Resolution, Notice of Award and Notice to Proceed from Awards.'],
+        'Fingerprints of the evaluation, winning bid and award go on Sepolia, never amounts or names.',
+        'You then issue the BAC Resolution, NOA and NTP from Awards.'],
       run: () => confirmWinner(b),
     }),
   }
@@ -3157,7 +3149,7 @@ function BidEvaluationPage() {
                   <Clock size={14} /> View Timeline
                 </button>
                 <button className="ad-btn-timeline" onClick={() => navigate(`/admin/record/${project.id}`)}
-                  title="The whole procurement with the blockchain evidence for each step">
+                  title="The whole procurement, with blockchain evidence for each step">
                   <ShieldCheck size={14} /> Procurement record
                 </button>
               </div>
@@ -3172,8 +3164,8 @@ function BidEvaluationPage() {
               <div>
                 <h3 id="bids-h" style={{ margin: 0, fontSize: 'var(--fs-section-title)', color: 'var(--text-strong)' }}>Bid comparison</h3>
                 <p>
-                  {bids.length} bid{bids.length === 1 ? '' : 's'} compared with the ABC of {peso(project.budget)}.
-                  “Lowest bid” labels the data only — it is not an automatic ranking.
+                  {bids.length} bid{bids.length === 1 ? '' : 's'} against the ABC of {peso(project.budget)}.{' '}
+                  <InfoTip label="About the lowest bid label" text="“Lowest bid” labels the data only. It is not an automatic ranking." />
                 </p>
               </div>
             </div>
@@ -3195,7 +3187,7 @@ function BidEvaluationPage() {
               empty={{
                 icon: FileText, title: 'No bids submitted yet',
                 description: project.status === 'published'
-                  ? 'Eligible suppliers can bid until the deadline. New bids appear here.'
+                  ? 'New bids appear here until the deadline.'
                   : 'Bids open once this procurement is published.',
               }}
             />
@@ -3430,14 +3422,14 @@ function AwardsPage() {
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
       <div className="ad-stats">
         {[
-          { label: 'Total Awards', icon: Award, value: awards.length, sub: 'Contracts awarded' },
-          { label: 'Total Awarded Amount', icon: BarChart2, value: peso(totalAmount), sub: 'Sum of winning bids' },
+          { label: 'Contracts awarded', icon: Award, value: awards.length },
+          { label: 'Total awarded', icon: BarChart2, value: peso(totalAmount) },
           {
-            label: 'Documents Issued', icon: FileText,
+            label: 'Documents issued', icon: FileText,
             value: <>{documentsIssued}<span className="ad-stat-of">/{awards.length * 3}</span></>,
             sub: 'BAC Resolution · NOA · NTP',
           },
-          { label: 'Latest Award Date', icon: Calendar, value: fmtDate(awards[0]?.awarded_at), sub: 'Most recent award', small: true },
+          { label: 'Latest award', icon: Calendar, value: fmtDate(awards[0]?.awarded_at), small: true },
         ].map(({ label, icon: Icon, value, sub, small }) => (
           <div className="ad-stat-card" key={label}>
             <div className="ad-stat-top">
@@ -3447,7 +3439,7 @@ function AwardsPage() {
             <div className={`ad-stat-value${small ? ' ad-stat-value-sm' : ''}`}>
               {loading ? <Skeleton width={70} height={24} /> : value}
             </div>
-            <div className="ad-stat-sub">{sub}</div>
+            {sub && <div className="ad-stat-sub">{sub}</div>}
           </div>
         ))}
       </div>
@@ -3456,13 +3448,13 @@ function AwardsPage() {
         <div className="ad-card-header">
           <div>
             <h2>Awarded Contracts</h2>
-            <p>Issue the post-award documents for each winning bid</p>
+            <p>Issue in order: BAC Resolution, NOA, NTP. PDF, JPG or PNG, up to 5 MB.</p>
           </div>
           <label className="ad-search-inline">
             <Search size={14} aria-hidden="true" />
             <span className="sr-only">Search awards</span>
             <input
-              placeholder="Search by supplier, project, or ref code"
+              placeholder="Search awards"
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
@@ -3525,26 +3517,18 @@ function AwardsPage() {
 
       <div className="ui-callout ad-award-callout">
         <Info size={18} className="ui-callout-icon" />
-        <div>
-          <div className="ui-callout-title">About Award Documents</div>
-          <p style={{ marginBottom: 10 }}>
-            Once a winning bid is selected, upload each signed document below. They are issued in this order:
-          </p>
+        <MoreInfo summary="About award documents" className="ad-award-more">
           <ol className="ad-award-steps">
             <li><span className="ad-award-step-n">1</span><div><strong>BAC Resolution</strong><span>Official resolution documenting the award decision</span></div></li>
             <li><span className="ad-award-step-n">2</span><div><strong>NOA</strong><span>Official notification to the winning supplier</span></div></li>
             <li><span className="ad-award-step-n">3</span><div><strong>NTP</strong><span>Authorization for the supplier to begin work</span></div></li>
           </ol>
           <p style={{ marginTop: 10 }}>
-            Each upload is fingerprinted (SHA-256) together with its issue date, and the fingerprint
-            is recorded on the blockchain once signed, so a notice can't be swapped or backdated
-            quietly. Replacing a document adds a new entry to the trail — the earlier one is shown
-            as superseded, not altered.
+            Each upload is fingerprinted (SHA-256) with its issue date and recorded on the blockchain
+            once signed, so a notice can't be quietly swapped or backdated. Replacing a document adds
+            a new entry to the trail; the earlier one is shown as superseded, not altered.
           </p>
-          <p className="ad-muted ad-small" style={{ marginTop: 6 }}>
-            Accepted formats: PDF, JPG or PNG, up to 5 MB. Scan or export the signed document.
-          </p>
-        </div>
+        </MoreInfo>
       </div>
     </div>
   )
@@ -3802,18 +3786,18 @@ export default function AdminDashboard() {
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = 0 }, [loc.pathname])
 
   const PAGE_TITLES = {
-    '/admin':           'Admin Dashboard',
-    '/admin/projects':  'Project Management',
+    '/admin':           'Dashboard',
+    '/admin/projects':  'Projects',
     '/admin/projects/history': 'Bidding History',
-    '/admin/planning':  'Procurement Planning',
-    '/admin/suppliers': 'Supplier Management',
-    '/admin/bids':      'Bid Evaluation',
-    '/admin/awards':    'Awarding',
-    '/admin/reports':   'Reports & Analytics',
+    '/admin/planning':  'Planning',
+    '/admin/suppliers': 'Suppliers',
+    '/admin/bids':      'Bids',
+    '/admin/awards':    'Awards',
+    '/admin/reports':   'Reports',
   }
   const title = PAGE_TITLES[loc.pathname]
     || (loc.pathname.startsWith('/admin/bids/') ? 'Bid Evaluation'
-      : loc.pathname.startsWith('/admin/record/') ? 'Procurement Record' : 'Admin Dashboard')
+      : loc.pathname.startsWith('/admin/record/') ? 'Procurement Record' : 'Dashboard')
 
   // Breadcrumbs: Admin › Section › (sub-page)
   const CRUMB_SECTIONS = {

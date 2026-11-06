@@ -15,9 +15,9 @@ import '../style/SupplierRegister.css'
 // ── Static config ─────────────────────────────────────────────────────────────
 const STEPS = [
   { label: 'Basic Info', title: 'Basic information', desc: 'Your sign-in details, company profile and the categories you supply.' },
-  { label: 'Documents', title: 'Company documents', desc: 'Upload scanned copies for admin verification. Files are sent only when you submit on the last step.' },
-  { label: 'Declaration', title: 'Declaration', desc: 'Read and confirm the statements below before reviewing your registration.' },
-  { label: 'Review & Submit', title: 'Review and submit', desc: 'Check everything below. You can go back to any step to make changes.' },
+  { label: 'Documents', title: 'Company documents', desc: 'Scanned copies for admin verification. Files are sent when you submit on the last step.' },
+  { label: 'Declaration', title: 'Declaration', desc: 'Read and confirm the statements below.' },
+  { label: 'Review & Submit', title: 'Review and submit', desc: 'You can go back to any step to make changes.' },
 ]
 
 // Shared with the procurement category list so eligibility matching lines up.
@@ -336,7 +336,7 @@ export default function SupplierRegister() {
         </div>
         <div className="sr-aside-mid">
           <h1>Join as a<br />Supplier</h1>
-          <p>Register your company and start bidding on procurement projects with full transparency.</p>
+          <p>Register your company and start bidding.</p>
           <ul className="sr-perks">
             <li><Check size={15} aria-hidden="true" /> Fair evaluation process</li>
             <li><Check size={15} aria-hidden="true" /> Blockchain-verified results</li>
@@ -505,7 +505,7 @@ function StepBasic({ form, set, businessTypes, toggleType, showPass, setShowPass
       </Section>
 
       <Section title="Business categories"
-        desc="Select every category your company supplies. You can only bid on projects in these categories."
+        desc="You can only bid on projects in the categories you select."
         status={<span className={`sr-pill${businessTypes.length ? ' is-ok' : ''}`}>{businessTypes.length} selected</span>}>
         <fieldset className={`sr-fieldset${errors.business_types ? ' has-error' : ''}`}
           aria-describedby={errors.business_types ? 'sr-business_types-err' : undefined}>
@@ -592,7 +592,7 @@ function StepDocuments({ form, set, files, onFile, removeFile, businessTypes, ca
       })}
 
       <Section title="Category-specific licenses"
-        desc="Extra licenses for the business categories you selected. Only the ones marked Required are needed to register."
+        desc="For the categories you selected. Only those marked Required are needed to register."
         status={!catReq.loading && !catReq.error && reqCatDocs.length > 0
           ? <CountPill done={reqCatDocs.filter(d => catDocs.files[d.key]).length} total={reqCatDocs.length} />
           : null}>

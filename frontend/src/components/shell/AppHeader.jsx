@@ -91,8 +91,9 @@ function UserMenu({ user, menu }) {
   )
 }
 
-// Shared top bar: breadcrumbs + page title on the left; notifications and the
-// single user menu on the right. Identical for every role.
+// Shared top bar: page title on the left (with breadcrumbs on nested pages, where
+// they add something the title doesn't); notifications and the single user menu
+// on the right. Identical for every role.
 export default function AppHeader({ title, breadcrumbs = [], onMenu, user, menu }) {
   return (
     <header className="app-header">
@@ -101,7 +102,7 @@ export default function AppHeader({ title, breadcrumbs = [], onMenu, user, menu 
           <Menu size={20} />
         </button>
         <div className="app-header-titles">
-          {breadcrumbs.length > 0 && (
+          {breadcrumbs.length > 2 && (
             <nav className="app-crumbs" aria-label="Breadcrumb">
               <ol>
                 {breadcrumbs.map((c, i) => {

@@ -136,9 +136,9 @@ function validateFile(file) {
 }
 
 const QUAL_STATUS = {
-  waiting_admin_approval: { label: 'Pending Review', tone: 'pending', text: 'Your registration is awaiting admin verification. You can browse projects, but bidding unlocks once approved.' },
-  needs_revision:         { label: 'Action Required', tone: 'revision', text: 'The admin needs you to fix the documents below, then resubmit for review.' },
-  verified:               { label: 'Approved', tone: 'approved', text: 'Your account is verified. You can submit bids on open projects.' },
+  waiting_admin_approval: { label: 'Pending Review', tone: 'pending', text: 'Awaiting admin verification. You can browse projects; bidding unlocks once approved.' },
+  needs_revision:         { label: 'Action Required', tone: 'revision', text: 'Fix the documents below, then resubmit for review.' },
+  verified:               { label: 'Approved', tone: 'approved', text: 'You can submit bids on open projects.' },
   rejected:               { label: 'Rejected', tone: 'rejected', text: 'Your registration was rejected. See the message below.' },
 }
 
@@ -500,7 +500,7 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                   <label>Delivery Timeline <span className="sd-req">*</span></label>
                   <input type="text" placeholder="e.g. 30 days or 6 weeks" value={deliveryTimeline}
                     onChange={e => { setDeliveryTimeline(e.target.value); setErrors(x => ({ ...x, deliveryTimeline: '' })) }} />
-                  <span className="sd-upload-hint">Specify how many days or weeks from contract signing until full delivery is completed.</span>
+                  <span className="sd-upload-hint">Days or weeks from contract signing to full delivery.</span>
                   {errors.deliveryTimeline && <span className="sd-field-error">{errors.deliveryTimeline}</span>}
                 </div>
 
@@ -521,7 +521,7 @@ function BidModal({ project, profile, onClose, onSubmit }) {
             {step === 0 && (
               <div className="sd-bid-section">
                 <h4 className="sd-bid-section-label">Product Details <span className="sd-optional">(optional)</span></h4>
-                <p className="sd-bid-section-hint">If you are offering a specific branded product, provide its details below.</p>
+                <p className="sd-bid-section-hint">If you are offering a specific branded product.</p>
                 <div className="sd-form-group">
                   <label>Brand Name</label>
                   <input type="text" placeholder="e.g. HP, Samsung" value={brandName}
@@ -559,10 +559,10 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                   </h4>
                   <p className="sd-bid-section-hint">
                     {needImages
-                      ? 'This procurement requires photos of the exact product you are offering. Add its documents too if you have them.'
+                      ? 'Photos of the exact product you are offering are required. Add its documents if you have them.'
                       : hasRef
                       ? 'Upload files showing your matching product and confirm your product meets the specification.'
-                      : 'Bidding with a specific product? Add photos and its documents so the evaluators can see exactly what you are offering. This is optional and does not affect your eligibility.'}
+                      : 'Add photos and documents of a specific product. This does not affect your eligibility.'}
                   </p>
                   <div className="sd-upload-field">
                     <label className="sd-upload-label">
@@ -662,7 +662,7 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                 <div className="sd-bid-section">
                   <div className="sd-form-group">
                     <label>Additional Comments for the Procuring Entity</label>
-                    <textarea rows={3} placeholder="Any additional information you want to share with the evaluator."
+                    <textarea rows={3} placeholder="Anything else for the evaluator"
                       value={additionalComments} onChange={e => setAdditionalComments(e.target.value)} />
                   </div>
                 </div>
@@ -680,9 +680,8 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                       </div>
                     </div>
                     <p className="sd-company-note">
-                      Your registered business documents on file will be used for eligibility verification.
-                      The documents submitted during registration including your Business Permit, BIR Certificate
-                      and PhilGEPS Certificate are already on record.
+                      Your registered documents on file, including your Business Permit, BIR Certificate
+                      and PhilGEPS Certificate, are used for eligibility verification.
                     </p>
                   </div>
                 </div>
@@ -948,8 +947,7 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
               <div className="sd-bid-section sd-revision-card" style={{ borderColor: 'rgba(249,115,22,0.3)' }}>
                 <h4 className="sd-bid-section-label">Documents Needing Revision</h4>
                 <p className="sd-bid-section-hint">
-                  The admin flagged the document(s) below. You're still in this bidding — just
-                  re-upload the fixed file(s) and resubmit.
+                  You're still in this bidding. Re-upload the flagged file(s) and resubmit.
                 </p>
                 <div className="sd-revision-list">
                   {flaggedDocs.map(d => d.key === 'product_images' ? (
@@ -1023,8 +1021,7 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
                   Award Documents
                 </h4>
                 <p className="sd-bid-section-hint">
-                  Official documents issued to you for this contract. A fingerprint (SHA-256 hash)
-                  of each is recorded on the Sepolia blockchain, so you can check your copy on the
+                  Each document's fingerprint is on the Sepolia blockchain, so you can check your copy on the
                   public results page.
                 </p>
                 <div className="sd-doc-list">
@@ -1081,8 +1078,8 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
                     Blockchain
                   </h4>
                   <p className="sd-bid-section-hint">
-                    Your bid is kept as a database record. Only the winning bid and the award are
-                    fingerprinted on the Sepolia blockchain — your amount is never published there.
+                    Your bid is a database record. Only the winning bid and the award are fingerprinted
+                    on Sepolia, and your amount is never published there.
                   </p>
                 </>
               )}
@@ -1160,7 +1157,7 @@ function EmailVerifyBanner({ profile, setToast }) {
       <div className="sd-verify-text">
         <span className="sd-bold">Verify your email</span>
         <span className="sd-muted sd-small">
-          The BAC office can't approve your registration until you open the link we emailed{profile.email ? ` to ${profile.email}` : ' you'}. Didn't get it? Check your spam folder, or resend it.
+          Open the link we emailed{profile.email ? ` to ${profile.email}` : ' you'} so the BAC office can approve your registration. Check your spam folder, or resend it.
         </span>
       </div>
       <button type="button" className="sd-btn-back" disabled={sending} onClick={resend}>
@@ -1215,7 +1212,7 @@ function RevisionPanel({ profile, onResubmitted, setToast }) {
   return (
     <div className="sd-card sd-revision-card">
       <div className="sd-card-header">
-        <div><h2>Documents Needing Revision</h2><p>Re-upload the flagged documents, then resubmit for review.</p></div>
+        <div><h2>Documents Needing Revision</h2><p>Re-upload them, then resubmit for review.</p></div>
       </div>
       <div className="sd-revision-list">
         {flagged.map(d => (
@@ -1302,16 +1299,16 @@ function OnboardingTracker({ profile, eligible }) {
     },
   ]
   const next = eligible
-    ? 'You can submit bids on any open procurement that matches your registered categories.'
+    ? 'You can bid on open procurements in your registered categories.'
     : qs === 'needs_revision'
-    ? 'Re-upload the flagged documents above and resubmit — the admin will review them again.'
+    ? 'Re-upload the flagged documents above and resubmit.'
     : qs === 'rejected'
-    ? 'Your registration was not approved. Read the admin’s note above for the reason.'
-    : 'The procurement office is checking your company details and documents. You’ll be notified by email once a decision is made.'
+    ? 'Your registration was not approved. See the admin’s note above.'
+    : 'Your details and documents are being checked. You’ll be emailed the decision.'
   return (
     <div className="sd-card sd-onboard">
       <div className="sd-card-header">
-        <div><h2>Account Status</h2><p>Your registration and approval details</p></div>
+        <div><h2>Account Status</h2></div>
         <StatusBadge tone={QUAL_TONE[info?.tone] || 'warning'} label={info?.label || 'Pending Review'} />
       </div>
       <ol className="sd-onboard-steps">
@@ -1372,7 +1369,7 @@ function AccountStatusBanner({ profile }) {
         <span className="rf-banner-icon" aria-hidden="true"><AlertTriangle size={18} /></span>
         <div>
           <strong>Action needed: fix the flagged documents</strong>
-          <p>The BAC office reviewed your registration and needs some documents replaced. Bidding unlocks once they verify the new files.</p>
+          <p>The BAC office needs some documents replaced. Bidding unlocks once they verify the new files.</p>
           <ol>
             <li>Open <b>Documents Needing Revision</b> below and re-upload each flagged file.</li>
             <li>Select <b>Resubmit for Review</b>. Your account returns to the review queue.</li>
@@ -1387,7 +1384,7 @@ function AccountStatusBanner({ profile }) {
       <span className="rf-banner-icon" aria-hidden="true"><Clock size={18} /></span>
       <div>
         <strong>Your account is waiting for verification</strong>
-        <p>You can browse opportunities now. You can bid once the BAC office verifies your registration. To avoid delays:</p>
+        <p>You can browse opportunities now and bid once the BAC office verifies you. To avoid delays:</p>
         <ol>
           {!profile.email_verified && <li>Confirm your email address with the link we sent you.</li>}
           <li>{missing ? `Upload the ${missing} required document${missing === 1 ? '' : 's'} still missing (see Document health).` : 'Keep your documents current — all required documents are on file.'}</li>
@@ -1520,7 +1517,7 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
       <div className="rf-greeting">
         <div>
           <h2>{greeting()}, {profile?.representative_name || profile?.full_name || u.full_name || 'Supplier'}</h2>
-          <p>{todayLong()}{profile?.company ? ` · ${profile.company}` : ''}</p>
+          <p>{todayLong()}</p>
         </div>
         <div className="rf-greeting-actions">
           <Link to="/supplier/projects" className="ui-btn ui-btn--primary ui-btn--sm"><FolderOpen size={13} /> All opportunities</Link>
@@ -1545,7 +1542,7 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
       <KpiRow cols={5}>
         <KpiCard label="Open opportunities" icon={FolderOpen} tone="info" loading={loadingProjects}
           value={failed.projects ? '—' : open.length} to="/supplier/projects"
-          context={newCount ? `${newCount} new in the last 48 hours` : 'In your registered categories'} />
+          context={newCount ? `${newCount} new in 48 hours` : 'In your categories'} />
         <KpiCard label="My active bids" icon={FileText} loading={loadingBids} value={failed.bids ? '—' : active.length} to="/supplier/bids"
           context={`${active.filter(b => b.status === 'under_review').length} under evaluation`} />
         <KpiCard label="Bids won" icon={Trophy} tone={won.length ? 'success' : 'neutral'} loading={loadingBids}
@@ -1554,7 +1551,7 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
         <KpiCard label="Win rate" icon={BarChart2} loading={loadingBids}
           value={failed.bids || winRate == null ? '—' : `${winRate}%`} to="/supplier/reports"
           context={decided.length ? `${won.length} of ${decided.length} decided bid${decided.length === 1 ? '' : 's'}` : 'No decided bids yet'} />
-        <KpiCard label="Documents needing attention" icon={AlertTriangle} loading={!profile}
+        <KpiCard label="Documents to fix" icon={AlertTriangle} loading={!profile}
           tone={problems.some(p => p.tone === 'danger') ? 'danger' : problems.length ? 'warning' : 'success'}
           value={problems.length} to="/supplier/profile"
           context={problems.length ? 'Missing, flagged or expiring' : 'All in order'} />
@@ -1562,7 +1559,7 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
 
       <section className="rf-card" aria-labelledby="opp-h">
         <div className="rf-card-head" style={{ flexWrap: 'wrap' }}>
-          <div><h3 id="opp-h">Opportunities for you</h3><p>Published procurements in your registered categories</p></div>
+          <div><h3 id="opp-h">Opportunities for you</h3><p>In your registered categories</p></div>
           {open.length > 0 && (
             <div className="rf-filterbar">
               <label>Category
@@ -1585,7 +1582,7 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
           <div className="rf-opp-grid">{[0, 1, 2].map(i => <Skeleton key={i} height={170} radius={12} />)}</div>
         ) : feed.length === 0 ? (
           <EmptyState icon={FolderOpen} title="No open procurements in your categories"
-            description="New biddings in your categories appear here as soon as they are published."
+            description="New biddings appear here when published."
             action={<>
               <Link to="/public" className="ui-btn ui-btn--secondary ui-btn--sm">Browse all public biddings</Link>
               <Link to="/supplier/settings" className="ui-btn ui-btn--ghost ui-btn--sm">Review my categories</Link>
@@ -1636,7 +1633,7 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
       <div className="rf-grid-2">
         <section className="rf-card" aria-labelledby="mybids-h">
           <div className="rf-card-head">
-            <div><h3 id="mybids-h">My bids</h3><p>Where each bid stands in the evaluation</p></div>
+            <div><h3 id="mybids-h">My bids</h3></div>
             {bids.length > 0 && <Link to="/supplier/bids" className="rf-card-link">All bids <ChevronRight size={13} /></Link>}
           </div>
           {loadingBids && bids.length === 0 ? (
@@ -1677,7 +1674,7 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
 
         <section className="rf-card" aria-labelledby="docs-h">
           <div className="rf-card-head">
-            <div><h3 id="docs-h">Document health</h3><p>Missing, flagged and expiring licenses</p></div>
+            <div><h3 id="docs-h">Document health</h3></div>
             <Link to="/supplier/profile" className="rf-card-link">My documents <ChevronRight size={13} /></Link>
           </div>
           <DocumentHealth profile={profile} setToast={setToast} onUploaded={onResubmitted} />
@@ -1707,7 +1704,7 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
       {modal && <BidModal project={modal} profile={profile} onClose={() => setModal(null)} onSubmit={onBid} />}
       <div className="sd-card">
         <div className="sd-card-header">
-          <div><h2>Bid Opportunities</h2><p>Procurements open for bidding that match your registered business categories</p></div>
+          <div><h2>Open for bidding</h2><p>Matching your registered categories</p></div>
           {projects.length > 0 && (
             <label className="sd-search-inline">
               <Search size={14} aria-hidden="true" />
@@ -1725,7 +1722,7 @@ function SupplierProjects({ projects, bids, onBid, eligible, loading, profile })
           </table>
         ) : projects.length === 0 ? (
           <EmptyState icon={FolderOpen} title="No open procurements right now"
-            description="No open procurements match your categories right now. Check back later."
+            description="None match your categories. Check back later."
             action={<>
               <Link to="/public" className="sd-btn-cancel">View public procurements</Link>
               <Link to="/supplier/profile" className="sd-btn-cancel">Review my categories</Link>
@@ -1805,7 +1802,7 @@ function SupplierBids({ bids, awards = [], onWithdraw, loading, onResubmitted, s
       )}
       <div className="sd-card">
         <div className="sd-card-header">
-          <div><h2>My Bids</h2><p>Track all your submitted bids and their evaluation status</p></div>
+          <div><h2>Submitted bids</h2></div>
           {bids.length > 0 && (
             <label className="sd-search-inline">
               <Search size={14} aria-hidden="true" />
@@ -1823,7 +1820,7 @@ function SupplierBids({ bids, awards = [], onWithdraw, loading, onResubmitted, s
           </table>
         ) : bids.length === 0 ? (
           <EmptyState icon={FileText} title="No bids submitted yet"
-            description="No bids submitted yet. Browse projects to submit your first bid."
+            description="Browse projects to submit your first bid."
             action={<Link to="/supplier/projects" className="sd-btn-primary">Browse bid opportunities</Link>} />
         ) : filtered.length === 0 ? (
           <EmptyState icon={Search} title="No matching bids" description={`No bids match "${search}".`}
@@ -1911,7 +1908,6 @@ function SupplierReportsPage({ bids, profile }) {
       <div className="sd-report-bar">
         <div>
           <h2 className="sd-bold" style={{ fontSize: 16 }}>{profile?.company || 'My'} Bidding Report</h2>
-          <p className="sd-muted sd-small">A summary of your bid history and performance.</p>
         </div>
         <div className="sd-export-btns">
           <button className="sd-btn-export-csv" onClick={() => exportReportCSV(reportShape, `${filename}.csv`)}>
@@ -1972,46 +1968,46 @@ function SupplierReportsPage({ bids, profile }) {
 function SupplierStatusPage({ bids, profile, eligible }) {
   const qs = profile?.qualification_status
   const verifyDate =
-    qs === 'verified' ? (profile?.reviewed_at ? new Date(profile.reviewed_at).toLocaleDateString() : 'Approved')
+    qs === 'verified' ? (profile?.reviewed_at ? fmtDate(profile.reviewed_at) : 'Approved')
     : qs === 'needs_revision' ? 'Revision requested'
     : qs === 'rejected' ? 'Rejected'
     : 'Pending review'
   const steps = [
     {
       label: 'Account Registered',
-      date: profile?.registered || '—',
+      date: fmtDate(profile?.registered) || '—',
       done: true,
-      desc: 'Your supplier account was created and submitted for review.',
+      desc: 'Account created and submitted for review.',
     },
     {
       label: 'Admin Verification',
       date: verifyDate,
       done: qs === 'verified',
-      desc: 'Admin reviews your company details and uploaded documents.',
+      desc: 'The admin reviews your details and documents.',
     },
     {
       label: 'Eligible to Bid',
       date: eligible ? 'Active' : 'Locked until approved',
       done: !!eligible,
-      desc: 'Once approved, you can submit bids on all published projects.',
+      desc: 'Once approved, you can bid on published projects.',
     },
     {
       label: 'Bids Submitted',
       date: bids.length > 0 ? `${bids.length} bid${bids.length > 1 ? 's' : ''} total` : 'No bids yet',
       done: bids.length > 0,
-      desc: 'Your submitted bids are listed below.',
+      desc: 'Listed under My Bids.',
     },
     {
       label: 'Bid Shortlisted',
       date: bids.some(b => b.status === 'qualified') ? 'Active' : 'Pending evaluation',
       done: bids.some(b => b.status === 'qualified'),
-      desc: 'At least one of your bids has been shortlisted for final evaluation.',
+      desc: 'A bid is shortlisted for final evaluation.',
     },
     {
       label: 'Contract Awarded',
       date: bids.some(b => b.status === 'winner') ? 'Awarded!' : 'Awaiting decision',
       done: bids.some(b => b.status === 'winner'),
-      desc: 'The procurement office has selected a winner for the project.',
+      desc: 'A winner is selected for the project.',
     },
   ]
 
@@ -2036,7 +2032,7 @@ function SupplierStatusPage({ bids, profile, eligible }) {
 
       <div className="sd-card">
         <div className="sd-card-header">
-          <div><h2>Account & Bid Timeline</h2><p>Your progress through the procurement process</p></div>
+          <div><h2>Account & Bid Timeline</h2></div>
           <StatusBadge tone={steps.every(st => st.done) ? 'success' : 'neutral'} dot={false}
             label={`${steps.filter(st => st.done).length} of ${steps.length} complete`} />
         </div>
@@ -2094,7 +2090,7 @@ function CategoryRequestBanner({ profile, onWithdraw, withdrawing }) {
           <span className="sd-bold">Category change not approved</span>
           <span className="sd-muted sd-small">
             Your request ({changes || 'no change'}) was declined. You can still bid in your approved
-            categories, and you can submit a new request below.
+            categories or submit a new request below.
           </span>
           {profile.category_request_note && <span className="sd-verify-note">“{profile.category_request_note}”</span>}
         </div>
@@ -2107,8 +2103,8 @@ function CategoryRequestBanner({ profile, onWithdraw, withdrawing }) {
       <div className="sd-verify-text">
         <span className="sd-bold">Category change awaiting Admin approval</span>
         <span className="sd-muted sd-small">
-          Requested: {changes || 'no change'}. Until it's approved you can only see and bid on
-          procurements in your current categories: {approved.join(', ') || '—'}.
+          Requested: {changes || 'no change'}. Until approved, you can only bid in your current
+          categories: {approved.join(', ') || '—'}.
         </span>
       </div>
       {onWithdraw && (
@@ -2250,7 +2246,7 @@ function ProfileLoadError({ message, onRetry, retrying }) {
           </span>
           <span className="sd-muted">
             {missing
-              ? 'Your sign-in works, but there is no company profile attached to it. Please contact the procuring entity’s administrator so they can link or re-create your supplier registration.'
+              ? 'Your sign-in has no company profile. Ask the procuring entity’s administrator to link or re-create your registration.'
               : message || 'Something went wrong while loading your profile.'}
           </span>
         </div>
@@ -2298,7 +2294,7 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry, setToast,
     <div className="sd-content">
       <div className="sd-card">
         <div className="sd-card-header">
-          <div><h2>My Profile</h2><p>Your company and account information</p></div>
+          <div><h2>Company details</h2></div>
         </div>
 
         <div className="sd-profile-grid">
@@ -2325,7 +2321,7 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry, setToast,
 
       <div className="sd-card">
         <div className="sd-card-header">
-          <div><h2>My Documents</h2><p>Registration documents on file with the procuring entity</p></div>
+          <div><h2>My Documents</h2></div>
         </div>
         <div className="sd-doc-list" style={{ padding: '8px 24px 20px' }}>
           {(profile.documents || []).map(d => {
@@ -2556,7 +2552,7 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
   ) : (
     <div className="sd-card">
       <div className="sd-card-header">
-        <div><h2>Edit Profile</h2><p>Update your contact details on file</p></div>
+        <div><h2>Edit Profile</h2></div>
       </div>
       <form className="sd-profile-form" onSubmit={saveProfile}>
         <div className="sd-form-group">
@@ -2579,8 +2575,8 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
           <label>Business Types</label>
           <span className="sd-muted sd-small" style={{ marginBottom: 6 }}>
             {isVerified
-              ? 'Controls which procurement categories you see and can bid on. Changes are sent to the Admin for approval; your current categories stay active until then.'
-              : 'Controls which procurement categories you see and can bid on. They are reviewed together with your registration.'}
+              ? 'Which procurements you can see and bid on. Changes need Admin approval; current categories stay active until then.'
+              : 'Which procurements you can see and bid on. Reviewed with your registration.'}
           </span>
           <CategoryRequestBanner profile={profile} onWithdraw={withdrawRequest} withdrawing={withdrawing} />
           <div className="sd-chips">
@@ -2601,8 +2597,8 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
             <label>Documents for the new categories</label>
             <span className="sd-muted sd-small" style={{ marginBottom: 6 }}>
               {isVerified
-                ? 'Upload these with your request. The Admin approves the new categories only once the required licenses are on file.'
-                : 'Upload these so the Admin can review them with your registration.'}
+                ? 'Upload these with your request. New categories need the required licenses on file.'
+                : 'Upload these for review with your registration.'}
             </span>
             <CategoryDocumentFields req={newDocsReq} state={addedDocState} idPrefix="sd-catdoc"
               onError={msg => setToast({ type: 'error', message: msg })} />
@@ -2624,7 +2620,7 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
 
       <div className="sd-card">
         <div className="sd-card-header">
-          <div><h2>Change Password</h2><p>Use a strong password that you don't reuse elsewhere</p></div>
+          <div><h2>Change Password</h2></div>
         </div>
         <form className="sd-profile-form" onSubmit={savePassword}>
           <div className="sd-form-group sd-profile-field-full">

@@ -13,6 +13,7 @@ import { legacyDocumentNote, payloadNotStored, publicDate, verifiedRowDisplay } 
 import { contractUrl, isLedgerConfigured, txUrl, LEDGER_ADDRESS } from '../blockchain/contract'
 import { EXAMPLE_CODE, normalizeProcurementCode } from '../utils/procurementCode'
 import PacketCheck from './PacketCheck'
+import InfoTip from './ui/InfoTip'
 import './PublicVerifier.css'
 
 const shortHash = (h) => (h ? `${h.slice(0, 14)}…${h.slice(-8)}` : '—')
@@ -142,8 +143,11 @@ const STATE_UI = {
  * Everything here is read-only — no wallet, no gas, no account. Contract reads go
  * through a plain JSON-RPC provider; document hashing happens in the browser via
  * WebCrypto, so the file being checked is never uploaded anywhere.
+ *
+ * `embedded`: the page around it already names the procurement, so the result
+ * summary doesn't repeat it.
  */
-export default function PublicVerifier({ initialCode = '' }) {
+export default function PublicVerifier({ initialCode = '', embedded = false }) {
   const [code, setCode] = useState(initialCode)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -233,16 +237,13 @@ export default function PublicVerifier({ initialCode = '' }) {
   }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <section className="pv" id="verify" style={{ scrollMarginTop: 80 }}>
+    <section className="pv" id="verify" style={{ scrollMarginTop: 136 }}>
       <div className="pv-head">
         <div className="pv-title">
           <ShieldCheck size={20} className="pv-title-ico" />
           <div>
             <h2>Verify on the Blockchain</h2>
-            <p>
-              Enter a procurement reference to replay its entire history from the public Sepolia
-              ledger. No account, no wallet, and no fees — this reads the contract directly.
-            </p>
+            <p>Replay a procurement’s history from the public Sepolia ledger. No account, wallet or fees.</p>
           </div>
         </div>
         {isLedgerConfigured() && (
@@ -269,22 +270,12 @@ export default function PublicVerifier({ initialCode = '' }) {
         </button>
       </form>
 
-      {!loading && !error && !result && (
-        <div className="pv-idle">
-          <ShieldCheck size={16} aria-hidden="true" />
-          <span>
-            Results show every recorded step with its status: <strong className="pv-idle-ok">Found on the ledger</strong>,{' '}
-            <strong className="pv-idle-pending">Pending</strong> or <strong className="pv-idle-bad">Altered</strong>.
-          </span>
-        </div>
-      )}
-
       {loading && (
         <div className="pv-loading" role="status" aria-live="polite">
           <Loader2 size={18} className="pv-spin" aria-hidden="true" />
           <div>
             <div className="pv-loading-title">Reading the Sepolia ledger…</div>
-            <div className="pv-loading-sub">Replaying every anchored step for {normalizeProcurementCode(code) || 'this reference'}.</div>
+            <div className="pv-loading-sub">{normalizeProcurementCode(code) || 'This reference'}</div>
           </div>
         </div>
       )}
@@ -294,11 +285,13 @@ export default function PublicVerifier({ initialCode = '' }) {
       {result && (
         <>
           <div className="pv-summary">
-            <div className="pv-summary-main">
-              <span className="pv-code">{result.project.code}</span>
-              <strong>{result.project.name}</strong>
-              <span className="pv-muted">{result.project.category || '—'}</span>
-            </div>
+            {!embedded && (
+              <div className="pv-summary-main">
+                <span className="pv-code">{result.project.code}</span>
+                <strong>{result.project.name}</strong>
+                <span className="pv-muted">{result.project.category || '—'}</span>
+              </div>
+            )}
             <div className="pv-summary-stats">
               <span className={verifiedCount > 0 ? 'pv-chip pv-extra' : 'pv-chip pv-pending'}>
                 {verifiedCount} of {result.rows.filter((r) => r.state !== 'extra').length} steps found on the ledger
@@ -340,10 +333,9 @@ export default function PublicVerifier({ initialCode = '' }) {
                   being recorded on the blockchain.
                 </strong>
                 <p>
-                  The details now stored for the step{alteredCount === 1 ? '' : 's'} marked below no
-                  longer produce the hash that was published on Sepolia. The blockchain entry itself
-                  cannot be changed — so whatever was altered, it was altered afterwards, and this
-                  procurement's record can no longer be trusted as issued.
+                  The details stored for the step{alteredCount === 1 ? '' : 's'} marked below no longer
+                  match the hash published on Sepolia. The blockchain entry cannot change, so the record
+                  was altered afterwards and can no longer be trusted as issued.
                 </p>
               </div>
             </div>
@@ -353,8 +345,8 @@ export default function PublicVerifier({ initialCode = '' }) {
             <div className="pv-note">
               <AlertCircle size={14} />
               <span>
-                Showing the system's own record only — the Sepolia ledger could not be read
-                ({result.chainError}) so on-chain confirmation is unavailable right now.
+                Showing this system’s record only. The Sepolia ledger could not be read
+                ({result.chainError}), so on-chain confirmation is unavailable.
               </span>
             </div>
           )}
@@ -445,13 +437,12 @@ export default function PublicVerifier({ initialCode = '' }) {
             <div className="pv-doccheck-head">
               <Upload size={15} />
               <div>
-                <strong>Check a document</strong>
-                <p>
-                  Have a copy of a document from this procurement? Pick it below. Your browser
-                  hashes it locally — the file is never uploaded — and compares that hash with the
-                  document hashes this system recorded for this procurement’s steps. The blockchain
-                  holds each step’s record fingerprint, which includes its document’s hash.
-                </p>
+                <strong>
+                  Check a document{' '}
+                  <InfoTip label="How the document check works"
+                    text="The hash is compared with the document hashes this system recorded for this procurement’s steps. The blockchain holds each step’s record fingerprint, which includes its document’s hash." />
+                </strong>
+                <p>Compare your copy with this procurement’s records. Your browser hashes the file; it is never uploaded.</p>
               </div>
             </div>
             <label className="pv-file">
@@ -486,9 +477,8 @@ export default function PublicVerifier({ initialCode = '' }) {
                 key={`${matchedId}-${fileHash}`}
                 loadPacket={loadPacket}
                 fileHash={fileHash}
-                unavailableText={'Independent verification of this record is not public: award and bid '
-                  + 'records are confidential, so their verification data is available only to the Admin, '
-                  + 'the Head and the winning supplier. The match above is against this system’s database.'}
+                unavailableText={'This record can’t be independently verified by the public: its data is available only '
+                  + 'to the Admin, the Head and the winning supplier. The match above is against this system’s database.'}
               />
             )}
           </div>

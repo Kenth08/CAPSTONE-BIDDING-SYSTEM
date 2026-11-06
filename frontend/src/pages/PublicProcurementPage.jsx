@@ -5,10 +5,11 @@
 // public_record): the procurement, its ABC and dates, and — once awarded —
 // WHO won and WHEN. No bid amounts, no bidders, no contract amount (decision D2).
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { AlertCircle, ArrowLeft, Clock, Eye, Gavel, Shield, Trophy } from 'lucide-react'
+import { useParams } from 'react-router-dom'
+import { AlertCircle, Clock, Trophy } from 'lucide-react'
 
 import { apiPublicRecord } from '../api'
+import { PublicBackBar, PublicNav } from '../components/PublicShell'
 import PublicVerifier from '../components/PublicVerifier'
 import { Skeleton } from '../components/Skeleton'
 import StatusBadge from '../components/ui/StatusBadge'
@@ -37,26 +38,10 @@ export default function PublicProcurementPage() {
 
   return (
     <div className="pub">
-      <nav className="pub-nav">
-        <Link to="/" className="lp-logo">
-          <span className="lp-logo-icon"><Shield size={18} /></span>
-          <div>
-            <div className="lp-logo-name">E-Procurement</div>
-            <div className="lp-logo-sub">Blockchain System</div>
-          </div>
-        </Link>
-        <div className="pub-nav-right">
-          <Link to="/public" className="pub-back"><ArrowLeft size={15} /> All public results</Link>
-        </div>
-      </nav>
+      <PublicNav />
+      <PublicBackBar />
 
-      <header className="pub-header">
-        <div className="pub-badge"><Eye size={14} /> Public View</div>
-        <h1>{data?.name || code}</h1>
-        <p>The published outcome of this procurement, and its history replayed from the Sepolia blockchain.</p>
-      </header>
-
-      <main className="pub-main rf-home">
+      <main className="pub-main pub-main--detail rf-home">
         {error && <div className="pub-error" role="alert"><AlertCircle size={18} /> {error}</div>}
 
         {!error && !data && (
@@ -70,7 +55,7 @@ export default function PublicProcurementPage() {
             <div className="rf-card-body pr-head">
               <div style={{ minWidth: 0 }}>
                 <div className="pr-title-row">
-                  <h2 id="pp-h" className="pr-title">{data.name}</h2>
+                  <h1 id="pp-h" className="pr-title">{data.name}</h1>
                   <StatusBadge domain="project" status={data.status} />
                 </div>
                 <div className="pr-meta">
@@ -90,7 +75,7 @@ export default function PublicProcurementPage() {
                   <div>
                     <div className="pr-result-label">Awarded to</div>
                     <div className="pr-result-winner">{r.winner}</div>
-                    <div className="pr-muted pr-small">Awarded {publicDate(r.awarded_at)}. Bid amounts and the other bidders are not published.</div>
+                    <div className="pr-muted pr-small">Awarded {publicDate(r.awarded_at)}. Bid amounts and other bidders are not published.</div>
                   </div>
                 </div>
               ) : r?.state === 'closed' ? (
@@ -99,10 +84,7 @@ export default function PublicProcurementPage() {
                   <div><div className="pr-result-winner">Bidding closed</div><div className="pr-muted pr-small">{r.detail}</div></div>
                 </div>
               ) : (
-                <div className="pr-result-main">
-                  <span className="pr-result-icon" aria-hidden="true"><Gavel size={20} /></span>
-                  <div><div className="pr-result-winner">Open for bidding</div><div className="pr-muted pr-small">Results appear here once a winner is selected.</div></div>
-                </div>
+                <div className="pr-muted pr-small">Results appear here once a winner is selected.</div>
               )}
             </div>
           </section>
@@ -110,7 +92,7 @@ export default function PublicProcurementPage() {
 
         {/* The verifier reads the contract straight from Sepolia in this
             browser and matches every step by its fingerprint. */}
-        {!error && <PublicVerifier key={code} initialCode={code} />}
+        {!error && <PublicVerifier key={code} initialCode={code} embedded />}
       </main>
     </div>
   )

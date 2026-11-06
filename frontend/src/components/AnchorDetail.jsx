@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
-  AlertCircle, AlertTriangle, ArrowLeft, Database, Download, ExternalLink, Eye, FileText,
+  AlertCircle, AlertTriangle, ArrowLeft, Database, Download, ExternalLink, FileText,
   Fingerprint, History, Link2, Search, Shield, ShieldX, Upload,
 } from 'lucide-react'
 
@@ -19,8 +19,11 @@ import { apiProjectAnchorDetail, apiProjectPacket, apiPublicAnchorDetail, apiPub
 import { sha256File } from '../blockchain/anchor'
 import { chainRows, evidenceBanner, legacyDocumentNote, outcomeChip, payloadNotStored, recordTime, txLink, versionLabel } from '../blockchain/recordView'
 import PacketCheck from './PacketCheck'
+import { PublicBackBar, PublicNav } from './PublicShell'
 import CopyHash from './ui/CopyHash'
 import EmptyState from './ui/EmptyState'
+import InfoTip from './ui/InfoTip'
+import MoreInfo from './ui/MoreInfo'
 import StatusBadge from './ui/StatusBadge'
 import { Skeleton } from './Skeleton'
 import { normalizeProcurementCode } from '../utils/procurementCode'
@@ -60,7 +63,7 @@ function VersionsTable({ detail, recordHref }) {
     <section className="rf-card" aria-labelledby="rd-versions-h">
       <div className="rf-card-head"><div>
         <h3 id="rd-versions-h"><History size={15} /> Document versions</h3>
-        <p>Every issue of this document, oldest first. Each fingerprinted issue is its own blockchain record — pick one to inspect or verify it.</p>
+        <p>Oldest first. Each fingerprinted issue is its own blockchain record.</p>
       </div></div>
       <div className="rf-card-body rd-table-wrap">
         <table className="rd-table">
@@ -113,7 +116,7 @@ function CheckedPanel({ verification, completeness }) {
     <section className="rf-card" aria-labelledby="rd-checked-h">
       <div className="rf-card-head"><div>
         <h3 id="rd-checked-h"><Search size={15} /> What was checked</h3>
-        <p>The server’s own account of this record. A transaction hash alone is not proof.</p>
+        <p>The server’s account of this record. A transaction hash alone is not proof.</p>
       </div></div>
       <div className="rf-card-body">
         <span className={`pr-chip ${outcomeChip(verification)}`}>{verification.headline}</span>
@@ -126,18 +129,20 @@ function CheckedPanel({ verification, completeness }) {
             <dd>{verification.historical.explanation}</dd>
           </dl>
         )}
-        <ul className="rd-checks">
-          {verification.checked.map((c) => (
-            <li key={c.key} className={`rd-check rd-check-${c.status}`}>
-              <strong>{c.label}</strong>
-              <span>{c.detail}</span>
-            </li>
-          ))}
-        </ul>
-        <p className="pr-small rd-checked-note"><strong>Not verified by this answer</strong></p>
-        <ul className="rd-unverified">
-          {verification.unverified.map((text) => <li key={text}>{text}</li>)}
-        </ul>
+        <MoreInfo summary="Show each check, and what this does not verify">
+          <ul className="rd-checks">
+            {verification.checked.map((c) => (
+              <li key={c.key} className={`rd-check rd-check-${c.status}`}>
+                <strong>{c.label}</strong>
+                <span>{c.detail}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="pr-small rd-checked-note"><strong>Not verified by this answer</strong></p>
+          <ul className="rd-unverified">
+            {verification.unverified.map((text) => <li key={text}>{text}</li>)}
+          </ul>
+        </MoreInfo>
       </div>
     </section>
   )
@@ -178,8 +183,8 @@ function VerifyPanel({ detail, loadPacket }) {
         <h3 id="rd-verify-h"><Shield size={15} /> Verify independently</h3>
         <p>
           {doc
-            ? <>Checks a file against <strong>exactly this record</strong>{version ? ` (${versionLabel(version)})` : ''}: the file’s SHA-256, the stored payload, its fingerprint, and the record on Sepolia — read by this browser, not taken from the server.</>
-            : 'This record does not fingerprint a document. Its fingerprint can still be checked against Sepolia.'}
+            ? <>Checks a file against <strong>exactly this record</strong>{version ? ` (${versionLabel(version)})` : ''}, reading Sepolia from this browser, not from the server.</>
+            : 'This record has no document. Its fingerprint can still be checked against Sepolia.'}
         </p>
       </div></div>
       <div className="rf-card-body">
@@ -188,10 +193,10 @@ function VerifyPanel({ detail, loadPacket }) {
             <AlertCircle size={15} />
             <span>
               {detail.packet_unavailable_reason === 'missing_payload'
-                ? 'MISSING EVIDENCE — this record’s data (its payload) is not stored in this system, so nobody can recompute its fingerprint. The chain evidence above can be inspected, but the document cannot be proven to belong to it.'
+                ? 'MISSING EVIDENCE: this record’s data (its payload) is not stored here, so nobody can recompute its fingerprint. The chain evidence above can be inspected, but the document cannot be proven to belong to it.'
                 : detail.viewer === 'public'
-                  ? 'This record cannot be verified independently by the public: its data includes confidential award or bid details, available only to the Admin, the Head and the winning supplier. The evidence above is what the server reports.'
-                  : 'Your account cannot verify this record independently: its data includes details reserved for the Admin, the Head and the winning supplier. The evidence above is what the server reports.'}
+                  ? 'The public can’t verify this record independently: its data is available only to the Admin, the Head and the winning supplier. The evidence above is what the server reports.'
+                  : 'Your account can’t verify this record independently: its data is reserved for the Admin, the Head and the winning supplier. The evidence above is what the server reports.'}
             </span>
           </div>
         ) : (
@@ -207,8 +212,8 @@ function VerifyPanel({ detail, loadPacket }) {
               <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={clear}>Clear selected file</button>
             )}
             <p className="pr-muted pr-small">
-              {doc ? 'The file is hashed in your browser and never uploaded. ' : ''}
-              {fileHash ? <>File SHA-256: <span className="rd-mono">{fileHash}</span></> : doc ? 'Until a file is chosen, only the record itself is checked.' : ''}
+              {doc ? 'The file is hashed in your browser, never uploaded. ' : ''}
+              {fileHash ? <>File SHA-256: <span className="rd-mono">{fileHash}</span></> : doc ? 'With no file, only the record is checked.' : ''}
             </p>
             {error && <div className="rd-note rd-note-bad"><AlertTriangle size={15} /> {error}</div>}
             {!hashing && (
@@ -237,7 +242,7 @@ export function AnchorDetailView({ detail, loadPacket, recordHref, backTo, backL
   return (
     <div className="rd">
       <div className="rd-top">
-        {backTo && <Link className="ui-btn ui-btn--ghost ui-btn--sm" to={backTo}><ArrowLeft size={14} /> {backLabel}</Link>}
+        {backTo ? <Link className="ui-btn ui-btn--ghost ui-btn--sm" to={backTo}><ArrowLeft size={14} /> {backLabel}</Link> : <span />}
         <label className="rd-select">
           <span>Record</span>
           <select value={rec.id} onChange={(e) => navigate(recordHref(e.target.value))}
@@ -257,7 +262,7 @@ export function AnchorDetailView({ detail, loadPacket, recordHref, backTo, backL
             <span>{p.name}</span>
             <span className="rf-code">{p.code}</span>
             {p.id != null && <span>Procurement ID {p.id}</span>}
-            <span>Record #{rec.id} in this system</span>
+            <span>Record #{rec.id}</span>
             <span>{recordTime(detail.viewer, rec.created_at)}</span>
           </div>
         </div>
@@ -275,18 +280,17 @@ export function AnchorDetailView({ detail, loadPacket, recordHref, backTo, backL
             <p>This document was issued again later. <Link className="pr-link" to={recordHref(supersededBy)}>View the newer record #{supersededBy}</Link></p>
           )}
           {detail.evidence === 'verified' && (
-            <p className="pr-small">This is the server’s check, not proof on its own. Only the independent check below, run in your browser against Sepolia, can show green, and only with complete evidence and a matching selected document.</p>
+            <p className="pr-small">This is the server’s check, not proof. Only the independent check below can show green, and only with complete evidence and a matching document.</p>
           )}
         </div>
       </div>
 
       <div className="pr-grid">
         <section className="rf-card" aria-labelledby="rd-doc-h">
-          <div className="rf-card-head"><div><h3 id="rd-doc-h"><FileText size={15} /> Document</h3>
-            <p>The file this record fingerprints</p></div></div>
+          <div className="rf-card-head"><div><h3 id="rd-doc-h"><FileText size={15} /> Document</h3></div></div>
           <div className="rf-card-body">
             {!doc ? (
-              <p className="pr-muted pr-small">This record has no document. It fingerprints the record’s data only.</p>
+              <p className="pr-muted pr-small">No document. This record fingerprints its data only.</p>
             ) : (
               <dl className="rd-dl">
                 <div className="rd-dl-row"><dt>Document</dt><dd><strong>{doc.label}</strong></dd></div>
@@ -304,13 +308,14 @@ export function AnchorDetailView({ detail, loadPacket, recordHref, backTo, backL
                     ? <a className="pr-link" href={doc.version.file_url}><Download size={12} /> Download this version</a>
                     : <span className="rd-missing">{doc.version?.file_note || 'Not available'}</span>}
                 </dd></div>
-                <div className="rd-dl-row"><dt>Document SHA-256</dt><dd>
+                <div className="rd-dl-row"><dt>Document SHA-256{' '}
+                  <InfoTip label="About the document hash" text="The fingerprint of the file’s exact bytes. It is stored inside the record’s data, not on the blockchain by itself." />
+                </dt><dd>
                   {rec.document_hash ? <CopyHash value={rec.document_hash} /> : (
                     <span className="rd-missing">
                       {detail.viewer === 'public' && rec.entity_type === 'BID' ? 'Not shown publicly (bid document)' : 'Not recorded for this record'}
                     </span>
                   )}
-                  <small className="rd-explain">The fingerprint of the file’s exact bytes. It is stored inside the record’s data, not on the blockchain by itself.</small>
                 </dd></div>
               </dl>
             )}
@@ -318,16 +323,14 @@ export function AnchorDetailView({ detail, loadPacket, recordHref, backTo, backL
         </section>
 
         <section className="rf-card" aria-labelledby="rd-chain-h">
-          <div className="rf-card-head"><div><h3 id="rd-chain-h"><Link2 size={15} /> Blockchain evidence</h3>
-            <p>What the server holds about this record on Sepolia</p></div></div>
+          <div className="rf-card-head"><div><h3 id="rd-chain-h"><Link2 size={15} /> Blockchain evidence</h3></div></div>
           <div className="rf-card-body">
             <ChainList detail={detail} />
             <div className="rd-dl-row rd-fp">
-              <dt><Fingerprint size={13} /> Record fingerprint (dataHash)</dt>
-              <dd>
-                <CopyHash value={rec.data_hash} />
-                <small className="rd-explain">SHA-256 of this record’s data (which includes the document’s SHA-256). This is the value written to the smart contract.</small>
-              </dd>
+              <dt><Fingerprint size={13} /> Record fingerprint (dataHash){' '}
+                <InfoTip label="About the record fingerprint" text="SHA-256 of this record’s data, which includes the document’s SHA-256. This is the value written to the smart contract." />
+              </dt>
+              <dd><CopyHash value={rec.data_hash} /></dd>
             </div>
             {txLink(rec.tx_hash) && (
               <a className="ui-btn ui-btn--secondary ui-btn--sm" href={txLink(rec.tx_hash)} target="_blank" rel="noopener noreferrer">
@@ -387,7 +390,7 @@ export function ProjectAnchorDetailPage({ className = '' }) {
     <div className={`pr-page rf-home ${className}`}>
       <DetailState detail={detail} error={error}>
         {detail && <AnchorDetailView detail={detail} loadPacket={loadPacket} recordHref={recordHref}
-          backTo={base} backLabel="Back to the procurement record" />}
+          backTo={base} backLabel="Back to procurement record" />}
       </DetailState>
     </div>
   )
@@ -414,27 +417,12 @@ export function PublicAnchorDetailPage() {
 
   return (
     <div className="pub">
-      <nav className="pub-nav">
-        <Link to="/" className="lp-logo">
-          <span className="lp-logo-icon"><Shield size={18} /></span>
-          <div>
-            <div className="lp-logo-name">E-Procurement</div>
-            <div className="lp-logo-sub">Blockchain System</div>
-          </div>
-        </Link>
-        <div className="pub-nav-right">
-          <Link to={`/public/procurement/${encodeURIComponent(code)}`} className="pub-back"><ArrowLeft size={15} /> {code}</Link>
-        </div>
-      </nav>
-      <header className="pub-header">
-        <div className="pub-badge"><Eye size={14} /> Public View</div>
-        <h1>Blockchain record</h1>
-        <p>One step of this procurement, its evidence on Sepolia, and an independent check you can run in this browser.</p>
-      </header>
-      <main className="pub-main rf-home">
+      <PublicNav />
+      <PublicBackBar parent={{ to: `/public/procurement/${encodeURIComponent(code)}`, label: code }} />
+      <main className="pub-main pub-main--detail rf-home">
+        <h1 className="sr-only">Blockchain record of {code}</h1>
         <DetailState detail={detail} error={error}>
-          {detail && <AnchorDetailView detail={detail} loadPacket={loadPacket} recordHref={recordHref}
-            backTo={`/public/procurement/${encodeURIComponent(code)}`} backLabel="Back to the procurement" />}
+          {detail && <AnchorDetailView detail={detail} loadPacket={loadPacket} recordHref={recordHref} />}
         </DetailState>
       </main>
     </div>

@@ -234,14 +234,14 @@
 }
 .ad-stat-card:hover, .hd-stat-card:hover, .sd-stat-card:hover { box-shadow: var(--shadow-sm) !important; }
 .ad-stat-label, .hd-stat-label, .sd-stat-label {
-  font-size: var(--fs-micro) !important;
+  font-size: var(--fs-caption) !important;
   font-weight: var(--fw-semibold) !important;
   color: var(--text-subtle) !important;
-  text-transform: uppercase;
-  letter-spacing: 0.06em !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
 }
 .ad-stat-value, .hd-stat-value, .sd-stat-value {
-  font-size: 28px !important;
+  font-size: 26px !important;
   font-weight: var(--fw-bold) !important;
   color: var(--text-strong) !important;
   line-height: 1.1 !important;

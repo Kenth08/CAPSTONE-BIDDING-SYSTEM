@@ -3,6 +3,7 @@ import {
   AlertTriangle, CheckCircle2, Clock, ExternalLink, Info, Link2, Loader2, Lock, RotateCw, Search, ShieldCheck,
 } from 'lucide-react'
 import CopyHash from './ui/CopyHash'
+import InfoTip from './ui/InfoTip'
 
 import { apiVerifyProjectChain } from '../api'
 import { ANCHOR_STATES, anchorChip, anchorState, canSign, hasIncompleteEvidence } from '../blockchain/anchorState'
@@ -256,10 +257,9 @@ export default function BlockchainTrail({
       <div className="bc-note">
         <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
         <span>
-          Only a SHA-256 fingerprint of each record and its key document is written to the
-          Sepolia ledger — never the documents, amounts or names themselves. “Confirmed on-chain”
-          means the server read the transaction back and found exactly this fingerprint;
-          “Transaction reported” means a transaction hash was submitted but not yet checked.
+          Only SHA-256 fingerprints go on-chain, never documents, amounts or names.{' '}
+          <InfoTip label="What the statuses mean" size={13}
+            text="“Confirmed on-chain”: the server read the transaction back and found exactly this fingerprint. “Transaction reported”: a transaction hash was submitted but not yet checked." />
         </span>
       </div>
     </div>

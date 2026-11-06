@@ -25,6 +25,7 @@ import BlockchainTrail from './BlockchainTrail'
 import CopyHash from './ui/CopyHash'
 import DataTable from './ui/DataTable'
 import EmptyState from './ui/EmptyState'
+import InfoTip from './ui/InfoTip'
 import KpiCard, { KpiRow } from './ui/KpiCard'
 import ProcurementStepper from './ui/ProcurementStepper'
 import StatusBadge from './ui/StatusBadge'
@@ -123,7 +124,7 @@ function ReceiptCheck({ receipt }) {
   if (!receipt) {
     return (
       <p className="pr-muted pr-small">
-        No evaluation commitment exists for this procurement yet (it is written when a winner is selected).
+        No evaluation commitment yet. It is written when a winner is selected.
       </p>
     )
   }
@@ -136,9 +137,8 @@ function ReceiptCheck({ receipt }) {
   return (
     <div className="pr-receipt">
       <p className="pr-small">
-        When the winner was selected, every bid — including yours — was folded into one salted
-        fingerprint and recorded on Sepolia. Your browser can recompute it from your own bid
-        details, without trusting this server’s arithmetic.
+        At award, every bid was folded into one salted fingerprint on Sepolia. Your browser can
+        recompute it from your own bid details.
       </p>
       <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={run} disabled={state === 'checking'}>
         {state === 'checking' ? <Loader2 size={13} className="ui-spin" /> : <FileSearch size={13} />}
@@ -220,6 +220,7 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
           <div style={{ minWidth: 0 }}>
             <div className="pr-title-row">
               <h2 id="pr-title" className="pr-title">{project.name}</h2>
+              <InfoTip label="What you can see" text={VIEWER_NOTE[viewer]} />
               <StatusBadge domain="project" status={project.status} />
             </div>
             <div className="pr-meta">
@@ -229,7 +230,6 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
               {project.deadline && <span>Deadline {fmtDate(project.deadline)}</span>}
               {record.bid_count != null && <span>{record.bid_count} bid{record.bid_count === 1 ? '' : 's'} received</span>}
             </div>
-            <p className="pr-viewer">{VIEWER_NOTE[viewer]}</p>
           </div>
           <div className="pr-head-actions">
             {canCheck && onDeepCheck && (
@@ -254,29 +254,29 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
 
       <KpiRow cols={4}>
         <KpiCard label="Confirmed on-chain" icon={ShieldCheck} tone={counts.verified ? 'info' : 'neutral'}
-          value={`${counts.verified || 0}/${counts.total || 0}`} context="Server read the transaction and found this fingerprint" />
+          value={`${counts.verified || 0}/${counts.total || 0}`} context="Read back from Sepolia" />
         <KpiCard label="Transaction reported" icon={Link2} tone="info" value={counts.reported || 0}
-          context="Submitted, not yet checked against Sepolia" />
+          context="Not yet checked" />
         <KpiCard label="Awaiting signature" icon={Clock} tone={counts.pending ? 'warning' : 'neutral'} value={counts.pending || 0}
-          context="Fingerprint recorded here, not yet on-chain" />
+          context="Not yet on-chain" />
         <KpiCard label="Altered" icon={ShieldX} tone={tampered ? 'danger' : 'neutral'} value={tampered}
           context={counts.document_differs ? `${counts.document_differs} current file${counts.document_differs === 1 ? '' : 's'} differ — see each step`
-            : counts.superseded ? `${counts.superseded} superseded (re-issued) — not tampering` : 'Records still match their fingerprints'} />
+            : counts.superseded ? `${counts.superseded} re-issued — not tampering` : 'Records still match'} />
       </KpiRow>
 
       <div className="pr-grid">
         <section className="rf-card" aria-labelledby="pr-result-h">
-          <div className="rf-card-head"><div><h3 id="pr-result-h">Final result</h3><p>The outcome as recorded at award</p></div></div>
+          <div className="rf-card-head"><div><h3 id="pr-result-h">Final result</h3></div></div>
           <div className="rf-card-body"><ResultCard record={record} /></div>
         </section>
 
         <section className="rf-card" aria-labelledby="pr-docs-h">
-          <div className="rf-card-head"><div><h3 id="pr-docs-h">Award documents</h3><p>Each issue is fingerprinted with its file and issue date</p></div></div>
+          <div className="rf-card-head"><div><h3 id="pr-docs-h">Award documents</h3></div></div>
           <div className="rf-card-body">
             {(record.award_documents || []).length === 0 ? (
               <p className="pr-muted pr-small">
                 {record.result?.state === 'awarded'
-                  ? 'Award documents are available to the winning supplier, the Admin and the Head. The public Notice of Award is on the public page.'
+                  ? 'Available to the winning supplier, the Admin and the Head. The Notice of Award is on the public page.'
                   : 'Issued after the award.'}
               </p>
             ) : (
@@ -306,8 +306,7 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
       </div>
 
       <section className="rf-card" aria-labelledby="pr-tl-h">
-        <div className="rf-card-head"><div><h3 id="pr-tl-h">Procurement history</h3>
-          <p>Every step, and whether its evidence is a database record or a blockchain fingerprint</p></div></div>
+        <div className="rf-card-head"><div><h3 id="pr-tl-h">Procurement history</h3></div></div>
         <div className="rf-card-body">
           <ol className="pr-timeline">
             {record.timeline.map((e) => (
@@ -332,20 +331,23 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
           <h3 id="pr-bids-h" style={{ margin: 0, fontSize: 'var(--fs-section-title)', color: 'var(--text-strong)' }}>
             {viewer === 'supplier' ? 'Your bid' : 'Bids & evaluation'}
           </h3>
-          <p>Bids and their evaluation are database records. At award, all of them were fixed together in one salted on-chain fingerprint — no amounts or names leave this system.</p>
+          <p>
+            Database records, fixed together in one on-chain fingerprint at award.{' '}
+            <InfoTip label="How bids are recorded" text="The fingerprint is salted. No amounts or names leave this system." />
+          </p>
         </div></div>
         <DataTable
           caption={`Bids for ${project.code}`}
           columns={bidColumns}
           rows={record.bids}
           initialSort={{ key: 'amount', dir: 'asc' }}
-          empty={{ icon: Gavel, title: 'No bids were received', description: 'Bids appear here once eligible suppliers submit them.' }}
+          empty={{ icon: Gavel, title: 'No bids were received', description: 'Bids appear here once submitted.' }}
         />
       </section>
 
       {viewer === 'supplier' && (
         <section className="rf-card" aria-labelledby="pr-rc-h">
-          <div className="rf-card-head"><div><h3 id="pr-rc-h">Is my bid in the record?</h3><p>Your inclusion receipt</p></div></div>
+          <div className="rf-card-head"><div><h3 id="pr-rc-h">Is my bid in the record?</h3></div></div>
           <div className="rf-card-body">
             {(record.receipts || []).map((r) => <ReceiptCheck key={r.bid_id} receipt={r.receipt} />)}
           </div>
@@ -363,7 +365,6 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
           </p></div></div>
         <BlockchainTrail anchors={anchors} entityRef={project.code} projectId={canCheck ? project.id : null}
           title="Anchored steps" canSignAnchor={SIGNABLE[viewer]} />
-        <div className="rf-card-body pr-small pr-muted">{blockchain.what_is_on_chain}</div>
       </section>
     </div>
   )
