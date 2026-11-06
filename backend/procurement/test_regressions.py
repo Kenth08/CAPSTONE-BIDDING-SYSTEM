@@ -2239,6 +2239,110 @@ class ServerSendTestBase:
             stage=BlockchainAnchor.Stage.SUBMITTED, data_hash="0x" + "cd" * 32, **fields)
 
 
+class AnchorAllTests(ServerSendTestBase, APITestCase):
+    """The dashboard's "Anchor all" button: one call sends the oldest waiting step."""
+
+    URL = "/api/anchors/send-next/"
+
+    def setUp(self):
+        self._use_node()
+        self.client.force_authenticate(user=make_admin())
+        self.holds = mock.patch("procurement.blockchain._ledger_holds", return_value=False)
+        self.ledger_holds = self.holds.start()
+        self.addCleanup(self.holds.stop)
+        self.submit = mock.patch("procurement.blockchain.submit_anchor_server_side",
+                                 side_effect=self._fake_send)
+        self.send = self.submit.start()
+        self.addCleanup(self.submit.stop)
+
+    def _fake_send(self, anchor):
+        BlockchainAnchor.objects.filter(pk=anchor.pk).update(tx_hash="0x" + f"{anchor.pk:064x}")
+        anchor.refresh_from_db()
+        anchor.send_state = "sent"
+        return anchor
+
+    def _row(self, ref, byte="cd", **fields):
+        return BlockchainAnchor.objects.create(
+            entity_type=BlockchainAnchor.EntityType.PROJECT, entity_ref=ref,
+            stage=BlockchainAnchor.Stage.SUBMITTED, data_hash="0x" + byte * 32, **fields)
+
+    def test_sends_oldest_first_one_per_call_and_then_says_it_is_finished(self):
+        first, second = self._row("PC-A"), self._row("PC-B")
+        res = self.client.post(self.URL, format="json")
+        self.assertEqual(res.data["anchor"]["id"], first.pk)
+        self.assertEqual(res.data["remaining"], 1)
+        self.assertEqual(self.send.call_count, 1)
+        res = self.client.post(self.URL, format="json")
+        self.assertEqual(res.data["anchor"]["id"], second.pk)
+        self.assertEqual(res.data["remaining"], 0)
+        res = self.client.post(self.URL, format="json")
+        self.assertIsNone(res.data["anchor"])
+        self.assertEqual(self.send.call_count, 2)
+
+    def test_only_an_admin_may_use_it(self):
+        self._row("PC-A")
+        self.client.force_authenticate(user=make_head())
+        self.assertEqual(self.client.post(self.URL, format="json").status_code,
+                         status.HTTP_403_FORBIDDEN)
+        self.send.assert_not_called()
+
+    def test_a_step_already_on_the_ledger_is_skipped_not_sent_again(self):
+        held, fresh = self._row("PC-A"), self._row("PC-B")
+        self.ledger_holds.side_effect = lambda anchor, w3: anchor.pk == held.pk
+        res = self.client.post(self.URL, format="json")
+        self.assertEqual(res.data["anchor"]["id"], fresh.pk)
+        self.assertEqual(res.data["skipped"], 1)
+        self.assertEqual(self.send.call_count, 1)
+
+    def test_an_identical_row_with_a_transaction_is_not_sent_twice(self):
+        self._row("PC-A", tx_hash="0x" + "ab" * 32)
+        self._row("PC-A")
+        res = self.client.post(self.URL, format="json")
+        self.assertIsNone(res.data["anchor"])
+        self.assertEqual(res.data["skipped"], 1)
+        self.send.assert_not_called()
+
+    def test_unreadable_ledger_stops_instead_of_sending(self):
+        self._row("PC-A")
+        self.ledger_holds.return_value = None
+        res = self.client.post(self.URL, format="json")
+        self.assertEqual(res.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.send.assert_not_called()
+
+    def test_a_row_with_any_reported_transaction_is_left_alone(self):
+        self._row("PC-A", tx_hash="0x" + "ab" * 32,
+                  chain_status=BlockchainAnchor.ChainStatus.MISMATCH)
+        res = self.client.post(self.URL, format="json")
+        self.assertIsNone(res.data["anchor"])
+        self.send.assert_not_called()
+
+    def test_an_uncertain_send_is_reported_and_not_logged_as_anchored(self):
+        self._row("PC-A")
+        def uncertain(anchor):
+            anchor = self._fake_send(anchor)
+            anchor.send_state = "uncertain"
+            return anchor
+        self.send.side_effect = uncertain
+        res = self.client.post(self.URL, format="json")
+        self.assertEqual(res.data["send_state"], "uncertain")
+        self.assertFalse(AuditLog.objects.filter(action="blockchain.anchored").exists())
+
+    def test_a_refused_send_stops_with_a_message(self):
+        self._row("PC-A")
+        self.send.side_effect = None
+        self.send.return_value = None
+        res = self.client.post(self.URL, format="json")
+        self.assertEqual(res.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertIn("PC-A", res.data["detail"])
+
+    def test_refused_when_server_signing_is_off(self):
+        self._row("PC-A")
+        with mock.patch("procurement.blockchain.SERVER_SIGNING_ENABLED", False):
+            res = self.client.post(self.URL, format="json")
+        self.assertEqual(res.status_code, status.HTTP_409_CONFLICT)
+        self.send.assert_not_called()
+
+
 class ServerSendNeverRepeatsTests(ServerSendTestBase, APITestCase):
     """An uncertain send must never turn into a second transaction: every extra
     one is a permanent duplicate record on the public ledger."""

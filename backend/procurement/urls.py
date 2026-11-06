@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .dashboard import AdminSummaryView, HeadSummaryView, PublicSummaryView
 from .files import ProtectedFileLinkView, ProtectedFileView, PublicNoticeOfAwardView
 from .views import (
+    AnchorNextPendingView,
     AwardViewSet,
     BidViewSet,
     DocumentViewSet,
@@ -33,6 +34,7 @@ urlpatterns = [
     path("public/summary/", PublicSummaryView.as_view(), name="public-summary"),
     path("dashboard/admin-summary/", AdminSummaryView.as_view(), name="dashboard-admin-summary"),
     path("dashboard/head-summary/", HeadSummaryView.as_view(), name="dashboard-head-summary"),
+    path("anchors/send-next/", AnchorNextPendingView.as_view(), name="anchors-send-next"),
     # One procurement's public result (winner + date only) — no login.
     path(
         "public/procurement/<str:code>/",

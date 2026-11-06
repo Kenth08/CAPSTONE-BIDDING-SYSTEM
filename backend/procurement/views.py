@@ -387,6 +387,77 @@ def server_submit_anchor(request, anchor):
     return Response(anchor_summary(submitted))
 
 
+class AnchorNextPendingView(APIView):
+    """POST /api/anchors/send-next/ — the "Anchor all" button, one step per call.
+
+    The browser calls this repeatedly, so each send gets its own request within
+    Heroku's 30-second limit and a closed tab simply stops the run. Oldest first,
+    so the on-chain trail stays in the order things happened.
+
+    Rows reported as a mismatch are left out: they need a person to look at them.
+    A row whose fingerprint is already recorded (on the ledger, or by a transaction
+    on an identical row) is skipped, because sending it would add a permanent
+    duplicate. For example, a MetaMask transaction whose hash never reached us.
+    "Can't tell" stops the run instead of counting as "not there"."""
+
+    permission_classes = [IsAdminRole]
+
+    UNAVAILABLE = ("The blockchain network can't be reached right now. "
+                   "Your records are saved. Try again in a moment.")
+
+    def post(self, request):
+        if not chain.WALLET_SIGNING_ENABLED:
+            return Response({"detail": chain.SIGNING_DISABLED_DETAIL, "code": "signing_disabled"},
+                            status=http_status.HTTP_409_CONFLICT)
+        if not chain.SERVER_SIGNING_ENABLED:
+            return Response({"detail": "Server-side signing is not enabled on this deployment."},
+                            status=http_status.HTTP_409_CONFLICT)
+
+        w3 = chain.web3_client()
+        if w3 is None or chain.network_check(w3)[0] is not True:
+            return Response({"detail": self.UNAVAILABLE},
+                            status=http_status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        waiting = list(BlockchainAnchor.objects.filter(tx_hash="").order_by("created_at", "id"))
+        skipped = 0
+        for position, anchor in enumerate(waiting):
+            same_fingerprint = BlockchainAnchor.objects.filter(
+                entity_type=anchor.entity_type, entity_ref=anchor.entity_ref,
+                stage=anchor.stage, data_hash=anchor.data_hash,
+            ).exclude(tx_hash="").exists()
+            held = True if same_fingerprint else chain._ledger_holds(anchor, w3)
+            if held is None:
+                return Response({"detail": self.UNAVAILABLE, "skipped": skipped},
+                                status=http_status.HTTP_503_SERVICE_UNAVAILABLE)
+            if held:
+                skipped += 1
+                continue
+
+            submitted = chain.submit_anchor_server_side(anchor)
+            if submitted is None:
+                return Response(
+                    {"detail": f"{anchor.entity_ref} ({anchor.get_stage_display()}) could not be sent "
+                               "right now. It is still saved. Try again in a moment.",
+                     "skipped": skipped},
+                    status=http_status.HTTP_503_SERVICE_UNAVAILABLE)
+            send_state = getattr(submitted, "send_state", chain.SEND_SENT)
+            if send_state == chain.SEND_SENT:
+                log_action(
+                    request, "blockchain.anchored",
+                    entity_type=submitted.entity_type, entity_id=submitted.entity_id,
+                    description=(f"Anchored {submitted.entity_ref} {submitted.stage} on-chain "
+                                 f"(server-signed, Anchor all, tx {submitted.tx_hash})."),
+                )
+            return Response({
+                "anchor": anchor_summary(submitted),
+                "send_state": send_state,
+                "remaining": len(waiting) - position - 1,
+                "skipped": skipped,
+            })
+
+        return Response({"anchor": None, "remaining": 0, "skipped": skipped})
+
+
 class PublicAnchorTrailView(APIView):
     """Unauthenticated blockchain trail for one procurement code.
 
