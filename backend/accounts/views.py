@@ -151,7 +151,9 @@ class ResendVerificationEmailView(APIView):
     def post(self, request):
         if not send_verification_email(request.user):
             return Response(
-                {"detail": "We couldn't send the verification email right now. Please try again later."},
+                {"detail": "We couldn't send the verification email because our email service is busy. "
+                           "Please wait a few minutes and try again. If it still doesn't work, try "
+                           "again in a few hours."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         return Response({"detail": "A verification email has been sent to your address."})
@@ -194,9 +196,9 @@ class PasswordResetRequestView(APIView):
 
     GENERIC_RESPONSE = {"detail": "If an account exists for that email, a password reset link has been sent."}
     MAIL_UNAVAILABLE = {
-        "detail": "We can't send email right now, so no reset link was sent. Your password has "
-                  "not changed. Please try again later, or contact the procurement office if "
-                  "this keeps happening."
+        "detail": "Our email service is busy right now, so no reset link was sent. Your password "
+                  "has not changed. Please wait a few minutes and try again. If it still doesn't "
+                  "work, try again in a few hours or contact the procurement office."
     }
 
     def post(self, request):
