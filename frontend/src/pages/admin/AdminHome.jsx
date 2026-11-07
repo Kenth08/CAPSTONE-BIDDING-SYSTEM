@@ -161,12 +161,14 @@ function ChainHealth({ chain, loading, onAnchored }) {
         </p>
       )}
       {canAnchorAll && (
-        <button type="button" className="ui-btn ui-btn--primary" onClick={() => setConfirmAll(true)}
-          disabled={running || busy !== null || isAnchorBusy(activity)} aria-busy={running}>
-          {running
-            ? <><Loader2 size={14} className="ui-spin" aria-hidden="true" /> Anchoring… {allProgress.sent} sent{allProgress.remaining !== null ? `, ${allProgress.remaining} left` : ''}</>
-            : <><Link2 size={14} aria-hidden="true" /> Anchor all {waiting} steps</>}
-        </button>
+        <div className="rf-anchor-all">
+          <button type="button" className="ui-btn ui-btn--primary" onClick={() => setConfirmAll(true)}
+            disabled={running || busy !== null || isAnchorBusy(activity)} aria-busy={running}>
+            {running
+              ? <><Loader2 size={14} className="ui-spin" aria-hidden="true" /> Anchoring… {allProgress.sent} sent{allProgress.remaining !== null ? `, ${allProgress.remaining} left` : ''}</>
+              : <><Link2 size={14} aria-hidden="true" /> Anchor all {waiting} steps</>}
+          </button>
+        </div>
       )}
       {confirmAll && (
         <ConfirmDialog
