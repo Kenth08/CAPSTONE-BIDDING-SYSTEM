@@ -87,17 +87,19 @@ class AdminSummaryView(APIView):
         today = timezone.localdate()
         week_end = today + timedelta(days=7)
 
+        # Counts are grouped into single queries: production's database is far
+        # from its server, so every separate query adds a noticeable delay.
         published = Project.objects.filter(status=Project.Status.PUBLISHED)
-        open_count = published.count()
-        open_abc = published.aggregate(total=Sum("budget"))["total"]
-        closing_week = published.filter(deadline__lte=week_end).count()
+        open_stats = published.aggregate(
+            n=Count("id"), abc=Sum("budget"), closing=Count("id", filter=Q(deadline__lte=week_end)))
+        open_count, open_abc, closing_week = open_stats["n"], open_stats["abc"], open_stats["closing"]
 
         # Bids still undecided on procurements that are not yet awarded.
         pending_bids = Bid.objects.filter(
             status=Bid.Status.UNDER_REVIEW,
-        ).exclude(project__status=Project.Status.AWARDED)
-        pending_bid_count = pending_bids.count()
-        pending_on_closed = pending_bids.filter(project__status=Project.Status.CLOSED).count()
+        ).exclude(project__status=Project.Status.AWARDED).aggregate(
+            n=Count("id"), on_closed=Count("id", filter=Q(project__status=Project.Status.CLOSED)))
+        pending_bid_count, pending_on_closed = pending_bids["n"], pending_bids["on_closed"]
 
         suppliers = list(Supplier.objects.prefetch_related("category_documents"))
         to_verify = [s for s in suppliers if s.qualification_status == Supplier.Qualification.PENDING]
@@ -116,13 +118,18 @@ class AdminSummaryView(APIView):
         # exact fingerprint (blockchain.confirm_anchor). A mismatching one needs
         # signing again, so it is listed with the never-signed ones.
         Chain = BlockchainAnchor.ChainStatus
-        anchors_pending = BlockchainAnchor.objects.filter(
-            Q(tx_hash="") | Q(chain_status=Chain.MISMATCH))
-        pending_anchor_count = anchors_pending.count()
-        reported = BlockchainAnchor.objects.exclude(tx_hash="")
-        verified_count = reported.filter(chain_status=Chain.CONFIRMED).count()
-        mismatch_count = reported.filter(chain_status=Chain.MISMATCH).count()
-        anchored_count = reported.count()
+        needs_signing = Q(tx_hash="") | Q(chain_status=Chain.MISMATCH)
+        reported = ~Q(tx_hash="")
+        chain_stats = BlockchainAnchor.objects.aggregate(
+            pending=Count("id", filter=needs_signing),
+            anchored=Count("id", filter=reported),
+            verified=Count("id", filter=reported & Q(chain_status=Chain.CONFIRMED)),
+            mismatch=Count("id", filter=reported & Q(chain_status=Chain.MISMATCH)),
+        )
+        pending_anchor_count = chain_stats["pending"]
+        verified_count = chain_stats["verified"]
+        mismatch_count = chain_stats["mismatch"]
+        anchored_count = chain_stats["anchored"]
         unchecked_count = anchored_count - verified_count - mismatch_count
 
         # ── Needs your attention ─────────────────────────────────────────────
@@ -140,7 +147,9 @@ class AdminSummaryView(APIView):
                 "detail": f"{p.name} · bidding closed {p.deadline.isoformat() if p.deadline else ''}".strip(),
                 "link": f"/admin/bids/{p.id}", "since": p.deadline,
             })
-        for p in Project.objects.filter(status=Project.Status.NEEDS_REVISION).order_by("reviewed_at"):
+        reviewed = list(Project.objects.filter(
+            status__in=[Project.Status.NEEDS_REVISION, Project.Status.APPROVED]).order_by("reviewed_at"))
+        for p in (p for p in reviewed if p.status == Project.Status.NEEDS_REVISION):
             attention.append({
                 "kind": "revision", "tone": "warning",
                 "title": f"{p.code} returned by the Head",
@@ -161,7 +170,7 @@ class AdminSummaryView(APIView):
                 "detail": ", ".join(s.pending_business_types or []),
                 "link": "/admin/suppliers", "since": s.category_requested_at,
             })
-        for p in Project.objects.filter(status=Project.Status.APPROVED).order_by("reviewed_at"):
+        for p in (p for p in reviewed if p.status == Project.Status.APPROVED):
             attention.append({
                 "kind": "publish", "tone": "info",
                 "title": f"Publish {p.code} for bidding",
@@ -209,7 +218,8 @@ class AdminSummaryView(APIView):
         closing_soon = [
             {"id": p.id, "code": p.code, "name": p.name, "category": p.category,
              "budget": _money(p.budget), "deadline": p.deadline, "bids": p.num_bids}
-            for p in published.annotate(num_bids=Count("bids")).order_by("deadline", "code")[:LIST_LIMIT]
+            for p in (published.annotate(num_bids=Count("bids")).order_by("deadline", "code")[:LIST_LIMIT]
+                      if open_count else [])
         ]
 
         savings_rows = []
@@ -267,7 +277,11 @@ class AdminSummaryView(APIView):
                 "pending": pending_anchor_count,     # need a signature (never signed, or mismatch)
                 "incomplete": incomplete_evidence_count(),  # v3: recorded with documents missing
                 # Full anchor shape, so "Anchor now" can reuse runAnchor().
-                "pending_items": [anchor_summary(a) for a in anchors_pending.order_by("-created_at", "-id")[:8]],
+                "pending_items": [
+                    anchor_summary(a)
+                    for a in (BlockchainAnchor.objects.filter(needs_signing).order_by("-created_at", "-id")[:8]
+                              if pending_anchor_count else [])
+                ],
             },
         })
 

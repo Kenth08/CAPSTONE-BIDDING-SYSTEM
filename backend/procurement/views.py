@@ -30,6 +30,7 @@ from .blockchain import (
     anchor_summary,
     attach_anchors,
     attach_transaction,
+    preload_verification,
     verify_anchor,
 )
 from .anchor_detail import build_anchor_detail, may_view_anchor
@@ -500,8 +501,9 @@ class PublicAnchorTrailView(APIView):
         # amount, status or date.
         deep = request.query_params.get("deep") in {"1", "true", "yes"}
 
-        anchors = BlockchainAnchor.objects.filter(entity_ref=project.code)
-        integrity = {a.id: verify_anchor(a, deep=deep) for a in anchors}
+        anchors = list(BlockchainAnchor.objects.filter(entity_ref=project.code))
+        preload = None if deep else preload_verification(anchors)
+        integrity = {a.id: verify_anchor(a, deep=deep, preload=preload) for a in anchors}
         trail = [
             {
                 **_public_chain_fields(a),
@@ -893,14 +895,15 @@ class ProjectViewSet(viewsets.ModelViewSet):
         """This procurement's full anchor trail (its own, its bids', its award's)
         — powers the blockchain status badge and the "retry anchoring" button."""
         project = self.get_object()
-        rows = BlockchainAnchor.objects.filter(entity_ref=project.code)
+        rows = list(BlockchainAnchor.objects.filter(entity_ref=project.code))
         include_payload = getattr(request.user, "role", None) == "admin"
         deep = request.query_params.get("deep") in {"1", "true", "yes"}
+        preload = None if deep else preload_verification(rows)
 
         anchors = []
         for a in rows:
             data = anchor_summary(a, include_payload=include_payload)
-            data["integrity"] = verify_anchor(a, deep=deep)
+            data["integrity"] = verify_anchor(a, deep=deep, preload=preload)
             anchors.append(data)
         return Response({
             "code": project.code,

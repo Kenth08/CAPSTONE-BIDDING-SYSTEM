@@ -2998,3 +2998,123 @@ class ConcurrentSendsOnPostgresTests(ServerSendTestBase, APITransactionTestCase)
         self._together(lambda: blockchain.submit_anchor_server_side(next(copies)))
         anchor.refresh_from_db()
         self.assertEqual(anchor.tx_hash, "")
+
+
+class PageSpeedQueryBudgetTests(APITestCase):
+    """Production's database is far from its server (about 220 ms per query), so
+    query counts are what users feel: a procurement record took 8 seconds because
+    every anchor re-read the same project, bids and award.
+
+    The read-saving must never change a verdict, so the same anchors are also
+    checked with and without the bulk read, including after tampering."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.winner, self.loser = make_supplier(), make_supplier()
+        self.project = make_project(status=Project.Status.PUBLISHED)
+        self.win = Bid.objects.create(project=self.project, supplier=self.winner, amount=52111,
+                                      status=Bid.Status.QUALIFIED, delivery_timeline="30 days")
+        self.lose = Bid.objects.create(project=self.project, supplier=self.loser, amount=57333,
+                                       status=Bid.Status.QUALIFIED, delivery_timeline="45 days")
+        self.client.force_authenticate(user=self.admin)
+        self.assertEqual(self.client.post(f"/api/bids/{self.win.pk}/select-winner/").status_code, 200)
+        self.award = Award.objects.get()
+        for key in ("award_resolution", "notice_of_award", "notice_to_proceed"):
+            self._issue(key)
+        self.url = f"/api/projects/{self.project.pk}/record/"
+
+    def _issue(self, key):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(f"/api/awards/{self.award.pk}/documents/generate/", {"key": key}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def _anchors(self):
+        return list(BlockchainAnchor.objects.filter(entity_ref=self.project.code))
+
+    def _assert_verdicts_match(self):
+        """Every anchor gets the same answer from both read paths. Returns them."""
+        anchors = self._anchors()
+        preload = blockchain.preload_verification(anchors)
+        one_by_one = {a.id: verify_anchor(a) for a in anchors}
+        for anchor in anchors:
+            self.assertEqual(verify_anchor(anchor, preload=preload), one_by_one[anchor.id], anchor.stage)
+            self.assertEqual(blockchain.superseding_anchor(anchor, preload),
+                             blockchain.superseding_anchor(anchor), anchor.stage)
+        return one_by_one
+
+    def _record_statuses(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, 200, res.data)
+        return {a["id"]: a["integrity"] for a in res.data["blockchain"]["anchors"]}
+
+    def test_record_query_count_stays_low_and_does_not_grow_with_anchors(self):
+        with self.assertNumQueries(6):
+            self.client.get(self.url)
+        for key in ("award_resolution", "notice_of_award", "notice_to_proceed"):
+            self._issue(key)  # three more anchors, with superseded ones among them
+        self.assertGreaterEqual(len(self._anchors()), 9)
+        with self.assertNumQueries(6):
+            self.client.get(self.url)
+
+    def test_untouched_records_get_the_same_verdict_either_way(self):
+        verdicts = self._assert_verdicts_match()
+        self.assertTrue(all(v["status"] == "match" for v in verdicts.values()), verdicts)
+        self.assertEqual(self._record_statuses(), verdicts)
+
+    def test_a_superseded_document_gets_the_same_verdict_either_way(self):
+        self._issue("notice_of_award")
+        verdicts = self._assert_verdicts_match()
+        self.assertIn("superseded", {v["status"] for v in verdicts.values()})
+        self.assertEqual(self._record_statuses(), verdicts)
+
+    def test_an_edited_bid_is_still_caught(self):
+        Bid.objects.filter(pk=self.lose.pk).update(amount=1)
+        verdicts = self._assert_verdicts_match()
+        self.assertIn("mismatch", {v["status"] for v in verdicts.values()})
+        self.assertEqual(self._record_statuses(), verdicts)
+
+    def test_an_edited_award_is_still_caught(self):
+        Award.objects.filter(pk=self.award.pk).update(amount=1)
+        verdicts = self._assert_verdicts_match()
+        self.assertIn("mismatch", {v["status"] for v in verdicts.values()})
+        self.assertEqual(self._record_statuses(), verdicts)
+
+    def test_an_edited_project_is_still_caught(self):
+        blockchain.anchor_project(self.project, BlockchainAnchor.Stage.SUBMITTED)
+        Project.objects.filter(pk=self.project.pk).update(budget=1)
+        verdicts = self._assert_verdicts_match()
+        self.assertIn("mismatch", {v["status"] for v in verdicts.values()})
+        self.assertEqual(self._record_statuses(), verdicts)
+
+    def test_a_deleted_entity_is_reported_the_same_way(self):
+        BlockchainAnchor.objects.filter(entity_type=BlockchainAnchor.EntityType.BID).update(entity_id="999999")
+        verdicts = self._assert_verdicts_match()
+        self.assertIn("record_gone", {v.get("reason") for v in verdicts.values()})
+
+    def test_a_deep_check_does_not_use_preloaded_rows(self):
+        anchors = self._anchors()
+        preload = blockchain.preload_verification(anchors)
+        with mock.patch.object(blockchain, "live_record", wraps=blockchain.live_record) as live:
+            verify_anchor(anchors[0], deep=True, preload=preload)
+        self.assertTrue(all(call.args[1:] in ((), (None,)) for call in live.call_args_list), live.call_args_list)
+
+    def test_admin_summary_query_count_and_figures(self):
+        Chain = BlockchainAnchor.ChainStatus
+        rows = self._anchors()
+        BlockchainAnchor.objects.filter(pk=rows[0].pk).update(tx_hash="0x" + "a" * 64, chain_status=Chain.CONFIRMED)
+        BlockchainAnchor.objects.filter(pk=rows[1].pk).update(tx_hash="0x" + "b" * 64, chain_status=Chain.MISMATCH)
+        BlockchainAnchor.objects.filter(pk=rows[2].pk).update(tx_hash="0x" + "c" * 64)
+        self.client.force_authenticate(user=self.admin)
+        with self.assertNumQueries(15):
+            res = self.client.get("/api/dashboard/admin-summary/")
+        chain = res.data["chain"]
+        self.assertEqual(chain["anchored"], 3)
+        self.assertEqual(chain["verified"], 1)
+        self.assertEqual(chain["mismatch"], 1)
+        self.assertEqual(chain["unchecked"], 1)
+        # The mismatch needs signing again, alongside every anchor with no transaction.
+        self.assertEqual(chain["pending"], len(rows) - 3 + 1)
+        self.assertEqual(res.data["kpis"]["anchors_pending"], chain["pending"])
+        self.assertEqual(len(chain["pending_items"]), min(8, chain["pending"]))

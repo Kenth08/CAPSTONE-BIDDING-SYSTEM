@@ -580,14 +580,83 @@ SUPERSEDED = "superseded"
 # (amount, winner, bid, award date…) must still be unchanged.
 
 
-def superseding_anchor(anchor):
+class VerificationPreload:
+    """The rows verify_anchor needs for a whole page of anchors, read once.
+
+    Checking anchors one at a time re-reads the same project, bids and award for
+    each of them, and production's database is a long way from its server, so a
+    single procurement record took 8 seconds. This holds the same rows the
+    one-at-a-time lookups would return, read in bulk. It changes where they come
+    from and nothing about how they are checked.
+
+    For read-only use within one request, and never for a deep check: that one
+    opens stored files through these instances, so it keeps its own fresh rows."""
+
+    def __init__(self):
+        self.records = {}
+        self.superseded_by = {}
+
+    def add(self, entity_type, record):
+        self.records[(entity_type, str(record.pk))] = record
+
+
+def preload_verification(anchors, *, known=()):
+    """A VerificationPreload for `anchors`. `known` is (entity_type, record) pairs
+    the caller already holds, which aren't read a second time."""
+    from .models import Award, Bid, Project  # noqa: PLC0415 — same as live_record
+
+    Entity = BlockchainAnchor.EntityType
+    preload = VerificationPreload()
+    for entity_type, record in known:
+        preload.add(entity_type, record)
+
+    wanted = {Entity.PROJECT: set(), Entity.BID: set(), Entity.AWARD: set()}
+    for anchor in anchors:
+        entity_id = str(anchor.entity_id or "")
+        # Anything odd is left out, and live_record handles it as it always has.
+        if (anchor.entity_type in wanted and entity_id.isdigit()
+                and (anchor.entity_type, entity_id) not in preload.records):
+            wanted[anchor.entity_type].add(entity_id)
+    querysets = {
+        Entity.PROJECT: Project.objects.prefetch_related("bids"),
+        Entity.BID: Bid.objects.select_related("project"),
+        Entity.AWARD: Award.objects.select_related("project", "bid"),
+    }
+    for entity_type, ids in wanted.items():
+        if ids:
+            for record in querysets[entity_type].filter(pk__in=ids):
+                preload.add(entity_type, record)
+
+    # Same rule as superseding_anchor: the next anchor for this award and stage.
+    issued = [a for a in anchors if _can_be_superseded(a)]
+    if issued:
+        newest_first = (BlockchainAnchor.objects
+                        .filter(entity_type=Entity.AWARD, stage__in=AWARD_OWN_DOCUMENT_STAGES,
+                                entity_id__in={a.entity_id for a in issued})
+                        .defer("payload").order_by("-id"))
+        history = {}
+        for row in newest_first:
+            history.setdefault((row.entity_id, row.stage), []).append(row)
+        for anchor in issued:
+            later = [r for r in history.get((anchor.entity_id, anchor.stage), []) if r.id > anchor.id]
+            preload.superseded_by[anchor.id] = later[-1] if later else None
+    return preload
+
+
+def _can_be_superseded(anchor):
+    return (anchor.entity_type == BlockchainAnchor.EntityType.AWARD
+            and anchor.stage in AWARD_OWN_DOCUMENT_STAGES and bool(anchor.entity_id))
+
+
+def superseding_anchor(anchor, preload=None):
     """The newer anchor that replaced this award-document anchor, or None.
 
     Only the post-award documents can be re-issued (AwardViewSet._issue_document
     appends a new anchor every time), so every other anchor returns None."""
-    if (anchor.entity_type != BlockchainAnchor.EntityType.AWARD
-            or anchor.stage not in AWARD_OWN_DOCUMENT_STAGES or not anchor.entity_id):
+    if not _can_be_superseded(anchor):
         return None
+    if preload is not None and anchor.id in preload.superseded_by:
+        return preload.superseded_by[anchor.id]
     return (BlockchainAnchor.objects
             .filter(entity_type=anchor.entity_type, entity_id=anchor.entity_id,
                     stage=anchor.stage, id__gt=anchor.id)
@@ -608,12 +677,16 @@ def _superseded_record_ok(anchor, rebuilt, rules):
     return all(value == stored.get(key) for key, value in rebuilt.items() if key not in reissue_keys)
 
 
-def live_record(anchor):
+def live_record(anchor, preload=None):
     """The row this anchor was taken from, as it stands now (None if deleted)."""
     from .models import Award, Bid, Project  # noqa: PLC0415 — kept local; only verification needs these
 
     if not anchor.entity_id:
         return None
+    if preload is not None:
+        known = preload.records.get((anchor.entity_type, str(anchor.entity_id)))
+        if known is not None:
+            return known
     model = {
         BlockchainAnchor.EntityType.PROJECT: Project,
         BlockchainAnchor.EntityType.BID: Bid,
@@ -663,7 +736,7 @@ def _legacy_record_ok(anchor, rebuilt):
     return all(value == stored.get(key) for key, value in rebuilt.items() if key != "v")
 
 
-def verify_anchor(anchor, deep=False):
+def verify_anchor(anchor, deep=False, preload=None):
     """Check the live record against what was anchored.
 
     Returns {status, record, document, detail}, plus what was added in Stage 5:
@@ -674,8 +747,10 @@ def verify_anchor(anchor, deep=False):
     caller can act on one field. Never raises — a verifier that crashes on odd
     data is worse than one that reports "unavailable"."""
     result = {"status": UNAVAILABLE, "record": UNAVAILABLE, "document": SKIPPED, "detail": ""}
+    # A deep check opens stored files, so it never shares preloaded rows.
+    preload = None if deep else preload
     try:
-        result = _verify_anchor(anchor, deep, result)
+        result = _verify_anchor(anchor, deep, result, preload)
     except Exception:  # pragma: no cover — a verifier must never 500 a page
         logger.exception("Integrity check failed for anchor %s", getattr(anchor, "id", "?"))
         result["detail"] = "This record could not be checked."
@@ -700,9 +775,9 @@ def _single_document_evidence(anchor):
         return {"checked": True, "state": document_evidence.FILE_UNREADABLE, "entries": []}
 
 
-def _verify_anchor(anchor, deep, result):
+def _verify_anchor(anchor, deep, result, preload=None):
     """verify_anchor's checks. Exceptions are verify_anchor's to report."""
-    record = live_record(anchor)
+    record = live_record(anchor, preload)
     if record is None:
         result["detail"] = "The record this anchor was taken from no longer exists."
         result["reason"] = "record_gone"
@@ -728,7 +803,7 @@ def _verify_anchor(anchor, deep, result):
     # snapshot instead of the live record, which has legitimately moved on.
     # Its file was replaced on purpose, so the deep document check doesn't
     # apply either.
-    newer = superseding_anchor(anchor)
+    newer = superseding_anchor(anchor, preload)
     if newer is not None:
         if _superseded_record_ok(anchor, payload, rules):
             result.update(
