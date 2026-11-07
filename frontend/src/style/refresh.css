@@ -254,9 +254,32 @@ button.rf-bar-row:focus-visible { outline: none; box-shadow: var(--focus-ring); 
 .rf-anchor-all { padding: 0 var(--sp-5) var(--sp-3); }
 .rf-anchor-progress { margin-top: var(--sp-3); }
 .rf-anchor-progress-track { height: 8px; border-radius: var(--r-pill); background: var(--border); overflow: hidden; }
-.rf-anchor-progress-track > span { display: block; height: 100%; border-radius: inherit; background: var(--c-primary-500); transition: width 0.4s ease; }
+.rf-anchor-progress-track > span {
+  display: block; height: 100%; border-radius: inherit; background-color: var(--c-primary-500);
+  background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  background-size: 200px 100%; background-repeat: no-repeat;
+  transition: width 0.7s ease; animation: rf-progress-sheen 1.8s linear infinite;
+}
+.rf-anchor-progress.is-finished .rf-anchor-progress-track > span { animation: none; background-image: none; }
+@keyframes rf-progress-sheen { from { background-position: -200px 0; } to { background-position: calc(100% + 200px) 0; } }
 .rf-anchor-progress p { margin: 6px 0 0; font-size: var(--fs-caption); color: var(--text-subtle); }
 .rf-anchor-progress strong { color: var(--text-strong); font-weight: var(--fw-semibold); }
+.rf-anchor-progress strong.rf-anchor-progress-done { display: inline-flex; align-items: center; gap: 5px; color: var(--c-primary-500); animation: rf-fade-in 300ms ease both; }
+
+/* Shown in place of the waiting list when nothing is left to sign. */
+.rf-chain-status {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--sp-3); align-items: start;
+  margin: 0 var(--sp-5) var(--sp-4); padding: var(--sp-3); border: 1px solid var(--border);
+  border-radius: var(--r-btn); background: var(--surface-muted); animation: rf-fade-in 300ms ease both;
+}
+.rf-chain-status strong { display: block; font-size: var(--fs-small); font-weight: var(--fw-semibold); color: var(--text-strong); }
+.rf-chain-status p { margin: 2px 0 0; font-size: var(--fs-caption); color: var(--text-subtle); line-height: 1.5; }
+.rf-chain-status .rf-card-link { display: inline-flex; }
+
+/* A card whose height follows its neighbour in the row; its content scrolls inside. */
+.rf-card-fill { display: flex; flex-direction: column; min-height: 300px; }
+.rf-card-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+.rf-card-scroll:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .rf-anchor-list { list-style: none; margin: 0; padding: 0 var(--sp-5) var(--sp-4); display: flex; flex-direction: column; gap: 6px; }
 .rf-anchor-row {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-3); align-items: center;
@@ -504,7 +527,9 @@ button.rf-bar-row:focus-visible { outline: none; box-shadow: var(--focus-ring); 
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rf-card, .rf-kpi, .rf-opp, .rf-toast, .rf-dialog { animation: none; }
+  .rf-card, .rf-kpi, .rf-opp, .rf-toast, .rf-dialog, .rf-chain-status,
+  .rf-anchor-progress-track > span, .rf-anchor-progress strong.rf-anchor-progress-done { animation: none; }
+  .rf-anchor-progress-track > span { transition: none; }
   .rf-kpi, .rf-kpi-go, .rf-chip, .rf-attn-item, .rf-pipe-stage, .rf-table tbody tr, .rf-thumb, .rf-opp { transition: none; }
 }
 .rf-eval-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--sp-4); align-items: start; }
