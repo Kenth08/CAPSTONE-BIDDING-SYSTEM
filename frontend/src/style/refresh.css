@@ -250,6 +250,8 @@ button.rf-bar-row:focus-visible { outline: none; box-shadow: var(--focus-ring); 
 .rf-legend-value { font-weight: var(--fw-semibold); color: var(--text-strong); font-variant-numeric: tabular-nums; }
 
 /* ── Pending anchors ────────────────────────────────────────────────────── */
+/* Same side padding as the list below, so the button stays inside the card. */
+.rf-anchor-all { padding: 0 var(--sp-5) var(--sp-3); }
 .rf-anchor-list { list-style: none; margin: 0; padding: 0 var(--sp-5) var(--sp-4); display: flex; flex-direction: column; gap: 6px; }
 .rf-anchor-row {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-3); align-items: center;
