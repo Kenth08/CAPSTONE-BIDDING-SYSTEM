@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
-  AlertTriangle, ArrowRight, Award, ChevronRight, ClipboardCheck, FileWarning, FolderOpen, Gavel,
+  AlertTriangle, ArrowRight, Award, CheckCircle2, ChevronRight, ClipboardCheck, Clock, FileWarning, FolderOpen, Gavel,
   Link2, Loader2, Lock, PiggyBank, RefreshCw, RotateCw, Send, ShieldCheck, UserCheck, Users, Wallet,
 } from 'lucide-react'
 import { apiAdminSummary, apiAnchorNextPending } from '../../api'
@@ -87,20 +87,45 @@ function Pipeline({ stages, loading }) {
 }
 
 // How far "Anchor all" has got. Each step waits about 20 seconds before the next.
-function AnchorAllProgress({ remaining, total }) {
+function AnchorAllProgress({ remaining, total, finished }) {
   const done = Math.min(Math.max(total - remaining, 0), total)
   const percent = total ? Math.round((done / total) * 100) : 0
   const minutes = Math.ceil((remaining * 20) / 60)
   return (
-    <div className="rf-anchor-progress">
+    <div className={`rf-anchor-progress${finished ? ' is-finished' : ''}`}>
       <div className="rf-anchor-progress-track" role="progressbar" aria-label="Anchor all progress"
         aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} aria-valuetext={`${done} of ${total} steps done`}>
         <span style={{ width: `${percent}%` }} />
       </div>
       <p>
-        <strong>{done} of {total} done</strong>
-        {remaining > 0 && <> · about {minutes} min left. Keep this tab open.</>}
+        {finished
+          ? <strong className="rf-anchor-progress-done"><CheckCircle2 size={13} aria-hidden="true" /> All {total} steps sent</strong>
+          : <><strong>{done} of {total} done</strong>{remaining > 0 && <> · about {minutes} min left. Keep this tab open.</>}</>}
       </p>
+    </div>
+  )
+}
+
+// Replaces the waiting list once nothing is left to sign. "Sent" and "confirmed"
+// stay separate: a sent transaction is only a report until the server has read it.
+function ChainStatus({ unchecked, verified }) {
+  const checking = unchecked > 0
+  const Icon = checking ? Clock : CheckCircle2
+  return (
+    <div className="rf-chain-status" role="status">
+      <span className={`rf-attn-icon rf-tone-${checking ? 'info' : 'success'}`} aria-hidden="true"><Icon size={16} /></span>
+      <div>
+        <strong>
+          {checking
+            ? `Nothing to sign. ${unchecked} step${unchecked === 1 ? '' : 's'} not checked yet`
+            : `All ${verified} steps confirmed on Sepolia`}
+        </strong>
+        <p>
+          {checking
+            ? <>Open a procurement&apos;s record and press Check on-chain to confirm them. <Link to="/admin/projects" className="rf-card-link">Go to Projects</Link></>
+            : 'The server has read each transaction back from the ledger.'}
+        </p>
+      </div>
     </div>
   )
 }
@@ -147,6 +172,11 @@ function ChainHealth({ chain, loading, onAnchored }) {
     } catch (err) {
       problem = err.message || 'Anchoring stopped. Your records are saved. Try again in a moment.'
     }
+    // Let the bar reach 100% and say so, rather than vanishing on the last step.
+    if (!problem && sent > 0) {
+      setAllProgress((p) => ({ ...p, remaining: 0, finished: true }))
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+    }
     setAllProgress(null)
     if (sent > 0) toast.success(`${sent} step${sent === 1 ? '' : 's'} sent to Sepolia. Each is confirmed once the server has checked it.`)
     if (skipped > 0) toast.error(`${skipped} step${skipped === 1 ? ' is' : 's are'} already recorded on the blockchain, so ${skipped === 1 ? 'it was' : 'they were'} not sent again.`)
@@ -181,17 +211,20 @@ function ChainHealth({ chain, loading, onAnchored }) {
           {incomplete} recorded step{incomplete === 1 ? '' : 's'} with incomplete five-document evidence.
         </p>
       )}
-      {canAnchorAll && (
+      {(canAnchorAll || running) && (
         <div className="rf-anchor-all">
-          <button type="button" className="ui-btn ui-btn--primary" onClick={() => setConfirmAll(true)}
-            disabled={running || busy !== null || isAnchorBusy(activity)} aria-busy={running}>
-            {running
-              ? <><Loader2 size={14} className="ui-spin" aria-hidden="true" /> Anchoring…</>
-              : <><Link2 size={14} aria-hidden="true" /> Anchor all {waiting} steps</>}
-          </button>
+          {!allProgress?.finished && (
+            <button type="button" className="ui-btn ui-btn--primary" onClick={() => setConfirmAll(true)}
+              disabled={running || busy !== null || isAnchorBusy(activity)} aria-busy={running}>
+              {running
+                ? <><Loader2 size={14} className="ui-spin" aria-hidden="true" /> Anchoring…</>
+                : <><Link2 size={14} aria-hidden="true" /> Anchor all {waiting} steps</>}
+            </button>
+          )}
           {running && <AnchorAllProgress {...allProgress} />}
         </div>
       )}
+      {pending === 0 && !running && <ChainStatus unchecked={unchecked} verified={verified} />}
       {confirmAll && (
         <ConfirmDialog
           title={`Anchor all ${waiting} steps?`}
@@ -424,12 +457,15 @@ export default function AdminHome() {
       </div>
 
       <div className="rf-grid-2-even">
-        <section className="rf-card" aria-labelledby="act-h">
+        <section className="rf-card rf-card-fill" aria-labelledby="act-h">
           <div className="rf-card-head">
             <div><h3 id="act-h">Recent activity</h3></div>
           </div>
-          {loading ? <div className="rf-card-body"><ListSkeleton rows={4} height={36} /></div>
-            : <ActivityFeed items={data?.activity || []} />}
+          {/* Scrolls inside the card, so its height follows Blockchain health beside it. */}
+          <div className="rf-card-scroll" tabIndex={0} role="region" aria-labelledby="act-h">
+            {loading ? <div className="rf-card-body"><ListSkeleton rows={4} height={36} /></div>
+              : <ActivityFeed items={data?.activity || []} />}
+          </div>
         </section>
 
         <section className="rf-card" id="chain" aria-labelledby="chain-h" style={{ scrollMarginTop: 80 }}>
