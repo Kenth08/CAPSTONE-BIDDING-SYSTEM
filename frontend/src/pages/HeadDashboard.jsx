@@ -20,7 +20,7 @@ import StatusBadge from '../components/ui/StatusBadge'
 import EmptyState from '../components/ui/EmptyState'
 import AnchorActivity from '../components/AnchorActivity'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
-import ProcurementRecordPage from '../components/ProcurementRecord'
+import ProcurementRecordPage, { prefetchRecord } from '../components/ProcurementRecord'
 import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import KpiCard, { KpiRow } from '../components/ui/KpiCard'
 import Thumbnail from '../components/ui/Thumbnail'
@@ -665,7 +665,7 @@ function ResultsPage() {
                     <td className="hd-muted">{p.bids ?? '—'}</td>
                     <td><StatusBadge domain="project" status={p.status} /></td>
                     <td>
-                      <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={() => navigate(`/head/record/${p.id}`)}>
+                      <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onMouseEnter={() => prefetchRecord(p.id)} onClick={() => navigate(`/head/record/${p.id}`)}>
                         <ShieldCheck size={13} /> View record
                       </button>
                     </td>

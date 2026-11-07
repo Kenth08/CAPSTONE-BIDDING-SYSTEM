@@ -34,7 +34,7 @@ import RelativeTime from '../components/ui/RelativeTime'
 import Toaster from '../components/ui/Toaster'
 import BlockchainTrail, { BlockchainBadge } from '../components/BlockchainTrail'
 import { isVerified } from '../blockchain/anchorState'
-import ProcurementRecordPage from '../components/ProcurementRecord'
+import ProcurementRecordPage, { prefetchRecord } from '../components/ProcurementRecord'
 import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import SecureImg from '../components/ui/SecureImg'
@@ -1060,7 +1060,7 @@ function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToa
                   a receipt to check their bid is inside the evaluation
                   commitment anchored at award. */}
               {bid.projectPk && (
-                <Link to={`/supplier/record/${bid.projectPk}`} className="ui-btn ui-btn--secondary ui-btn--sm"
+                <Link to={`/supplier/record/${bid.projectPk}`} onMouseEnter={() => prefetchRecord(bid.projectPk)} className="ui-btn ui-btn--secondary ui-btn--sm"
                   style={{ marginBottom: 10 }}>
                   <Shield size={13} /> View procurement record &amp; result
                 </Link>

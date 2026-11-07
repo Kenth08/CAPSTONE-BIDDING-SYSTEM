@@ -3,7 +3,6 @@ import { AlertCircle, CheckCircle2, CircleDashed, Loader2, ShieldCheck, ShieldX,
 
 import { packetVerifyContext } from '../blockchain/anchor'
 import { isCurrentCheck, verifyPacket } from '../blockchain/packetVerify'
-import '../style/packet-check.css'
 
 const STEP_ICON = { pass: CheckCircle2, fail: XCircle, skip: CircleDashed }
 

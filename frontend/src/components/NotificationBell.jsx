@@ -38,8 +38,15 @@ export default function NotificationBell() {
 
   useEffect(() => {
     load()
-    timer.current = setInterval(load, 30000) // refresh every 30s
-    return () => clearInterval(timer.current)
+    // Every 30s, and not for tabs nobody is looking at: each check takes a slot on
+    // the server that a page someone is waiting for could be using.
+    const refreshIfVisible = () => { if (!document.hidden) load() }
+    timer.current = setInterval(refreshIfVisible, 30000)
+    document.addEventListener('visibilitychange', refreshIfVisible)
+    return () => {
+      clearInterval(timer.current)
+      document.removeEventListener('visibilitychange', refreshIfVisible)
+    }
   }, [])
 
   const unread = items.filter(n => !n.is_read).length
