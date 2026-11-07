@@ -86,6 +86,25 @@ function Pipeline({ stages, loading }) {
   )
 }
 
+// How far "Anchor all" has got. Each step waits about 20 seconds before the next.
+function AnchorAllProgress({ remaining, total }) {
+  const done = Math.min(Math.max(total - remaining, 0), total)
+  const percent = total ? Math.round((done / total) * 100) : 0
+  const minutes = Math.ceil((remaining * 20) / 60)
+  return (
+    <div className="rf-anchor-progress">
+      <div className="rf-anchor-progress-track" role="progressbar" aria-label="Anchor all progress"
+        aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} aria-valuetext={`${done} of ${total} steps done`}>
+        <span style={{ width: `${percent}%` }} />
+      </div>
+      <p>
+        <strong>{done} of {total} done</strong>
+        {remaining > 0 && <> · about {minutes} min left. Keep this tab open.</>}
+      </p>
+    </div>
+  )
+}
+
 function ChainHealth({ chain, loading, onAnchored }) {
   const activity = useAnchorActivity()
   const [busy, setBusy] = useState(null)
@@ -98,13 +117,13 @@ function ChainHealth({ chain, loading, onAnchored }) {
   }
 
   const [confirmAll, setConfirmAll] = useState(false)
-  const [allProgress, setAllProgress] = useState(null) // { sent, remaining } while running
+  const [allProgress, setAllProgress] = useState(null) // { sent, remaining, total } while running
 
   // Sends one step at a time and stops at the first problem. Each step is
   // independent, so leaving the page just stops the run; press again to continue.
   const anchorAll = async () => {
     setConfirmAll(false)
-    setAllProgress({ sent: 0, remaining: null })
+    setAllProgress({ sent: 0, remaining: waiting, total: waiting })
     let sent = 0
     let skipped = 0
     let problem = ''
@@ -118,10 +137,12 @@ function ChainHealth({ chain, loading, onAnchored }) {
           break
         }
         if (res.send_state === 'sent') sent += 1
-        setAllProgress({ sent, remaining: res.remaining })
+        setAllProgress({ sent, remaining: res.remaining, total: Math.max(waiting, res.remaining) })
         if (res.remaining === 0) break
-        // Let the node see this transaction before the next one reads its nonce.
-        await new Promise((resolve) => setTimeout(resolve, 2000))
+        // Let this transaction be mined and reach every node before the next one
+        // reads its nonce. Sepolia blocks take about 12s, and a shorter wait once
+        // ended a run with an RPC error right after a block (anchor 17, 2026-11-07).
+        await new Promise((resolve) => setTimeout(resolve, 20000))
       }
     } catch (err) {
       problem = err.message || 'Anchoring stopped. Your records are saved. Try again in a moment.'
@@ -165,9 +186,10 @@ function ChainHealth({ chain, loading, onAnchored }) {
           <button type="button" className="ui-btn ui-btn--primary" onClick={() => setConfirmAll(true)}
             disabled={running || busy !== null || isAnchorBusy(activity)} aria-busy={running}>
             {running
-              ? <><Loader2 size={14} className="ui-spin" aria-hidden="true" /> Anchoring… {allProgress.sent} sent{allProgress.remaining !== null ? `, ${allProgress.remaining} left` : ''}</>
+              ? <><Loader2 size={14} className="ui-spin" aria-hidden="true" /> Anchoring…</>
               : <><Link2 size={14} aria-hidden="true" /> Anchor all {waiting} steps</>}
           </button>
+          {running && <AnchorAllProgress {...allProgress} />}
         </div>
       )}
       {confirmAll && (
