@@ -1965,7 +1965,7 @@ function SupplierReportsPage({ bids, profile }) {
   )
 }
 
-function SupplierStatusPage({ bids, profile, eligible }) {
+function SupplierStatusPage({ bids, profile, eligible, setToast }) {
   const qs = profile?.qualification_status
   const verifyDate =
     qs === 'verified' ? (profile?.reviewed_at ? fmtDate(profile.reviewed_at) : 'Approved')
@@ -2013,6 +2013,7 @@ function SupplierStatusPage({ bids, profile, eligible }) {
 
   return (
     <div className="sd-content">
+      <EmailVerifyBanner profile={profile} setToast={setToast} />
       <div className="sd-stats">
         {[
           { label: 'Bids Submitted',  value: String(bids.length),                                             icon: FileText,     color: 'blue'   },
@@ -2292,6 +2293,7 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry, setToast,
 
   return (
     <div className="sd-content">
+      <EmailVerifyBanner profile={profile} setToast={setToast} />
       <div className="sd-card">
         <div className="sd-card-header">
           <div><h2>Company details</h2></div>
@@ -2616,6 +2618,7 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
 
   return (
     <div className="sd-content">
+      <EmailVerifyBanner profile={profile} setToast={setToast} />
       {profileCard}
 
       <div className="sd-card">
@@ -2799,7 +2802,7 @@ export default function SupplierDashboard() {
             <Route index element={<SupplierHome projects={projects} bids={bids} awards={awards} failed={loadFailed} onBid={submitBid} eligible={eligible} profile={profile} onResubmitted={loadProfile} setToast={setToast} loadingProjects={loadingProjects} loadingBids={loadingBids} />} />
             <Route path="projects" element={<SupplierProjects projects={projects} bids={bids} onBid={submitBid} eligible={eligible} loading={loadingProjects} profile={profile} />} />
             <Route path="bids"     element={<SupplierBids bids={bids} awards={awards} onWithdraw={withdrawBid} loading={loadingBids} onResubmitted={loadBids} setToast={setToast} />} />
-            <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} />} />
+            <Route path="status"   element={<SupplierStatusPage bids={bids} profile={profile} eligible={eligible} setToast={setToast} />} />
             <Route path="reports"  element={<SupplierReportsPage bids={bids} profile={profile} />} />
             <Route path="record/:id" element={<ProcurementRecordPage className="sd-content" backTo="/supplier/bids" backLabel="Back to my bids" />} />
             <Route path="record/:id/anchor/:anchorId" element={<ProjectAnchorDetailPage className="sd-content" />} />
