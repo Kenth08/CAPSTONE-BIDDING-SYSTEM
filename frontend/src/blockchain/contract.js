@@ -6,7 +6,8 @@
 // contracts/README.md for how to deploy and where the address comes from.
 //
 // The ABI is a verbatim copy of contracts/ProcurementLedger.abi.json. If you
-// ever change the Solidity, re-copy the ABI from Remix into BOTH files.
+// ever change the Solidity, re-copy the ABI from Remix into that file, this one
+// and backend/procurement/ProcurementLedger.abi.json (ledgerAbi.test.js checks).
 import { isSigningOffFlag } from './signingPolicy.js'
 
 /** Deployed ProcurementLedger address on Sepolia, e.g. "0xAbC…". */

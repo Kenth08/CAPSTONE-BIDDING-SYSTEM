@@ -15,3 +15,6 @@ __pycache__/
 # supplier TINs, addresses and phone numbers — never commit them.
 backups/
 *.json.enc
+
+# Ledger snapshots from `manage.py audit_ledger --snapshot`.
+ledger_snapshots/

@@ -30,6 +30,7 @@ from .blockchain import (
     anchor_summary,
     attach_anchors,
     attach_transaction,
+    preload_verification,
     verify_anchor,
 )
 from .anchor_detail import build_anchor_detail, may_view_anchor
@@ -333,6 +334,10 @@ def attach_anchor_transaction(request, *, entity_ref, entity_type, entity_id):
     except ValueError as exc:
         return Response({"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
 
+    # Another request recorded a transaction first: this hash was not saved.
+    if getattr(anchor, "send_state", None) == chain.SEND_CLAIMED_ELSEWHERE:
+        return Response(anchor_summary(anchor))
+
     log_action(
         request, "blockchain.anchored",
         entity_type=anchor.entity_type, entity_id=anchor.entity_id,
@@ -348,18 +353,16 @@ def server_submit_anchor(request, anchor):
     same role checks and record scoping apply — nobody can trigger a server
     transaction for a record they couldn't already anchor themselves.
 
-    The row is locked while the transaction is sent, so a double-click (or two
-    admins at once) can't pay for the same hash twice."""
+    Deliberately not in transaction.atomic(): the hash must be committed before
+    the transaction is sent, or a worker dying mid-send would erase the only trace
+    of it. A double-click (or two admins at once) can't send twice because only
+    one request can claim the anchor (blockchain._claim_transaction)."""
     if not chain.SERVER_SIGNING_ENABLED:
         return Response(
             {"detail": "Server-side signing is not enabled on this deployment."},
             status=http_status.HTTP_409_CONFLICT)
 
-    with transaction.atomic():
-        locked = BlockchainAnchor.objects.select_for_update().get(pk=anchor.pk)
-        if locked.anchored and locked.chain_status != BlockchainAnchor.ChainStatus.MISMATCH:
-            return Response(anchor_summary(locked))
-        submitted = chain.submit_anchor_server_side(locked)
+    submitted = chain.submit_anchor_server_side(anchor)
 
     if submitted is None:
         # The record itself is untouched and still retryable; the reason is in
@@ -368,6 +371,11 @@ def server_submit_anchor(request, anchor):
             {"detail": "The server could not anchor this record right now. "
                        "It is still saved — try again in a moment."},
             status=http_status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    # An uncertain send has its own audit entry, and a request that lost the claim
+    # sent nothing: neither may be logged as anchored.
+    if getattr(submitted, "send_state", chain.SEND_SENT) != chain.SEND_SENT:
+        return Response(anchor_summary(submitted))
 
     log_action(
         request, "blockchain.anchored",
@@ -378,6 +386,77 @@ def server_submit_anchor(request, anchor):
         ),
     )
     return Response(anchor_summary(submitted))
+
+
+class AnchorNextPendingView(APIView):
+    """POST /api/anchors/send-next/ — the "Anchor all" button, one step per call.
+
+    The browser calls this repeatedly, so each send gets its own request within
+    Heroku's 30-second limit and a closed tab simply stops the run. Oldest first,
+    so the on-chain trail stays in the order things happened.
+
+    Rows reported as a mismatch are left out: they need a person to look at them.
+    A row whose fingerprint is already recorded (on the ledger, or by a transaction
+    on an identical row) is skipped, because sending it would add a permanent
+    duplicate. For example, a MetaMask transaction whose hash never reached us.
+    "Can't tell" stops the run instead of counting as "not there"."""
+
+    permission_classes = [IsAdminRole]
+
+    UNAVAILABLE = ("The blockchain network can't be reached right now. "
+                   "Your records are saved. Try again in a moment.")
+
+    def post(self, request):
+        if not chain.WALLET_SIGNING_ENABLED:
+            return Response({"detail": chain.SIGNING_DISABLED_DETAIL, "code": "signing_disabled"},
+                            status=http_status.HTTP_409_CONFLICT)
+        if not chain.SERVER_SIGNING_ENABLED:
+            return Response({"detail": "Server-side signing is not enabled on this deployment."},
+                            status=http_status.HTTP_409_CONFLICT)
+
+        w3 = chain.web3_client()
+        if w3 is None or chain.network_check(w3)[0] is not True:
+            return Response({"detail": self.UNAVAILABLE},
+                            status=http_status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        waiting = list(BlockchainAnchor.objects.filter(tx_hash="").order_by("created_at", "id"))
+        skipped = 0
+        for position, anchor in enumerate(waiting):
+            same_fingerprint = BlockchainAnchor.objects.filter(
+                entity_type=anchor.entity_type, entity_ref=anchor.entity_ref,
+                stage=anchor.stage, data_hash=anchor.data_hash,
+            ).exclude(tx_hash="").exists()
+            held = True if same_fingerprint else chain._ledger_holds(anchor, w3)
+            if held is None:
+                return Response({"detail": self.UNAVAILABLE, "skipped": skipped},
+                                status=http_status.HTTP_503_SERVICE_UNAVAILABLE)
+            if held:
+                skipped += 1
+                continue
+
+            submitted = chain.submit_anchor_server_side(anchor)
+            if submitted is None:
+                return Response(
+                    {"detail": f"{anchor.entity_ref} ({anchor.get_stage_display()}) could not be sent "
+                               "right now. It is still saved. Try again in a moment.",
+                     "skipped": skipped},
+                    status=http_status.HTTP_503_SERVICE_UNAVAILABLE)
+            send_state = getattr(submitted, "send_state", chain.SEND_SENT)
+            if send_state == chain.SEND_SENT:
+                log_action(
+                    request, "blockchain.anchored",
+                    entity_type=submitted.entity_type, entity_id=submitted.entity_id,
+                    description=(f"Anchored {submitted.entity_ref} {submitted.stage} on-chain "
+                                 f"(server-signed, Anchor all, tx {submitted.tx_hash})."),
+                )
+            return Response({
+                "anchor": anchor_summary(submitted),
+                "send_state": send_state,
+                "remaining": len(waiting) - position - 1,
+                "skipped": skipped,
+            })
+
+        return Response({"anchor": None, "remaining": 0, "skipped": skipped})
 
 
 class PublicAnchorTrailView(APIView):
@@ -422,8 +501,9 @@ class PublicAnchorTrailView(APIView):
         # amount, status or date.
         deep = request.query_params.get("deep") in {"1", "true", "yes"}
 
-        anchors = BlockchainAnchor.objects.filter(entity_ref=project.code)
-        integrity = {a.id: verify_anchor(a, deep=deep) for a in anchors}
+        anchors = list(BlockchainAnchor.objects.filter(entity_ref=project.code))
+        preload = None if deep else preload_verification(anchors)
+        integrity = {a.id: verify_anchor(a, deep=deep, preload=preload) for a in anchors}
         trail = [
             {
                 **_public_chain_fields(a),
@@ -815,14 +895,15 @@ class ProjectViewSet(viewsets.ModelViewSet):
         """This procurement's full anchor trail (its own, its bids', its award's)
         — powers the blockchain status badge and the "retry anchoring" button."""
         project = self.get_object()
-        rows = BlockchainAnchor.objects.filter(entity_ref=project.code)
+        rows = list(BlockchainAnchor.objects.filter(entity_ref=project.code))
         include_payload = getattr(request.user, "role", None) == "admin"
         deep = request.query_params.get("deep") in {"1", "true", "yes"}
+        preload = None if deep else preload_verification(rows)
 
         anchors = []
         for a in rows:
             data = anchor_summary(a, include_payload=include_payload)
-            data["integrity"] = verify_anchor(a, deep=deep)
+            data["integrity"] = verify_anchor(a, deep=deep, preload=preload)
             anchors.append(data)
         return Response({
             "code": project.code,

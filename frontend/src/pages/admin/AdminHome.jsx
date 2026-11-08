@@ -285,9 +285,9 @@ export default function AdminHome() {
   const loc = useLocation()
   const u = storedUser()
 
-  const load = useCallback(() => {
+  const load = useCallback((options) => {
     setError('')
-    return loadCached(SUMMARY_CACHE, apiAdminSummary)
+    return loadCached(SUMMARY_CACHE, () => apiAdminSummary(options))
       .then(setData)
       .catch((e) => setError(e instanceof TypeError ? 'Cannot reach the server. Check your connection and try again.' : e.message || 'Could not load the dashboard.'))
       .finally(() => setLoading(false))
@@ -313,7 +313,7 @@ export default function AdminHome() {
           <p>{todayLong()}</p>
         </div>
         <div className="rf-greeting-actions">
-          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => { setLoading(true); load() }}>
+          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => { setLoading(true); load({ fresh: true }) }}>
             <RefreshCw size={13} /> Refresh
           </button>
           <Link to="/admin/planning" className="ui-btn ui-btn--primary ui-btn--sm"><FolderOpen size={13} /> New procurement</Link>

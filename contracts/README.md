@@ -54,10 +54,11 @@ shows up in MetaMask on Sepolia.
    live.
 
 The ABI is already exported for you in
-[`ProcurementLedger.abi.json`](ProcurementLedger.abi.json) and is embedded in
-`frontend/src/blockchain/contract.js`, so you do **not** need to copy the ABI out
-of Remix. (If you change the Solidity, re-copy the ABI from Remix's compiler tab
-→ **ABI** button into both of those files.)
+[`ProcurementLedger.abi.json`](ProcurementLedger.abi.json), embedded in
+`frontend/src/blockchain/contract.js` and copied to
+`backend/procurement/ProcurementLedger.abi.json`, so you do **not** need to copy
+the ABI out of Remix. (If you change the Solidity, re-copy the ABI from Remix's
+compiler tab → **ABI** button into all three files. Tests fail if they differ.)
 
 ## 4. Paste the address into the app
 

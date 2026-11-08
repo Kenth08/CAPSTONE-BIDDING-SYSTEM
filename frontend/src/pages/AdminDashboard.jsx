@@ -53,7 +53,7 @@ import DataTable from '../components/ui/DataTable'
 import ActionConfirm from '../components/ui/ConfirmDialog'
 import Countdown from '../components/ui/Countdown'
 import ProcurementStepper from '../components/ui/ProcurementStepper'
-import ProcurementRecordPage from '../components/ProcurementRecord'
+import ProcurementRecordPage, { prefetchRecord } from '../components/ProcurementRecord'
 import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import SecureImg from '../components/ui/SecureImg'
 import '../style/AdminDashboard.css'
@@ -355,7 +355,7 @@ function ProjectHistoryPage() {
                     <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/bids/${p.id}`)}>
                       <Eye size={13} /> View Bids
                     </button>
-                    <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/record/${p.id}`)}>
+                    <button className="ad-btn-view-sm" onMouseEnter={() => prefetchRecord(p.id)} onClick={() => navigate(`/admin/record/${p.id}`)}>
                       <ShieldCheck size={13} /> Record
                     </button>
                   </td>
@@ -3148,7 +3148,7 @@ function BidEvaluationPage() {
                 <button className="ad-btn-timeline" onClick={() => setShowTimeline(true)}>
                   <Clock size={14} /> View Timeline
                 </button>
-                <button className="ad-btn-timeline" onClick={() => navigate(`/admin/record/${project.id}`)}
+                <button className="ad-btn-timeline" onMouseEnter={() => prefetchRecord(project.id)} onClick={() => navigate(`/admin/record/${project.id}`)}
                   title="The whole procurement, with blockchain evidence for each step">
                   <ShieldCheck size={14} /> Procurement record
                 </button>
@@ -3485,7 +3485,7 @@ function AwardsPage() {
                   <div className="ad-cell-stack">
                     <span>{a.project_name}</span>
                     <RefCode code={a.project_code} />
-                    <Link to={`/admin/record/${a.project}`} className="ad-btn-view-sm" style={{ alignSelf: 'flex-start' }}>
+                    <Link to={`/admin/record/${a.project}`} onMouseEnter={() => prefetchRecord(a.project)} className="ad-btn-view-sm" style={{ alignSelf: 'flex-start' }}>
                       <ShieldCheck size={12} /> Procurement record
                     </Link>
                   </div>

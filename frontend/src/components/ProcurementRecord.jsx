@@ -31,6 +31,7 @@ import ProcurementStepper from './ui/ProcurementStepper'
 import StatusBadge from './ui/StatusBadge'
 import { Skeleton } from './Skeleton'
 import { fmtDate, fmtDateTime, peso } from '../utils/format'
+import { getCached, loadCached } from '../utils/sessionCache'
 import '../style/procurement-record.css'
 
 const VIEWER_NOTE = {
@@ -370,6 +371,13 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
   )
 }
 
+const recordCacheKey = (id) => `record:${id}`
+
+/** Starts loading a record when someone points at its link, so it's ready sooner. */
+export function prefetchRecord(id) {
+  loadCached(recordCacheKey(id), () => apiProjectRecord(id)).catch(() => {})
+}
+
 /** Route page: /admin/record/:id, /head/record/:id, /supplier/record/:id. */
 export default function ProcurementRecordPage({ backTo, backLabel = 'Back', className = '' }) {
   const { id } = useParams()
@@ -377,21 +385,37 @@ export default function ProcurementRecordPage({ backTo, backLabel = 'Back', clas
   const { pathname } = useLocation()
   const recordBase = pathname.replace(/\/$/, '')
   const anchorHref = useCallback((aid) => `${recordBase}/anchor/${aid}`, [recordBase])
-  const [record, setRecord] = useState(null)
+  // A revisit shows the last answer at once, and the effect below refreshes it.
+  const [record, setRecord] = useState(() => getCached(recordCacheKey(id)) ?? null)
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => getCached(recordCacheKey(id)) === undefined)
   const [deepBusy, setDeepBusy] = useState(false)
 
-  const load = useCallback((opts) => {
+  useEffect(() => {
+    let current = true
+    const known = getCached(recordCacheKey(id))
+    setRecord(known ?? null)
+    setLoading(known === undefined)
     setError('')
-    return apiProjectRecord(id, opts)
-      .then(setRecord)
-      .catch((e) => setError(e.message || 'Could not load this procurement record.'))
+    loadCached(recordCacheKey(id), () => apiProjectRecord(id))
+      .then((value) => { if (current) setRecord(value) })
+      .catch((e) => { if (current) setError(e.message || 'Could not load this procurement record.') })
+      .finally(() => { if (current) setLoading(false) })
+    return () => { current = false }
   }, [id])
 
-  useEffect(() => { setLoading(true); load().finally(() => setLoading(false)) }, [load])
-
-  const deepCheck = async () => { setDeepBusy(true); await load({ deep: true }); setDeepBusy(false) }
+  // A deep check isn't kept: it answers "right now", on request.
+  const deepCheck = async () => {
+    setDeepBusy(true)
+    setError('')
+    try {
+      setRecord(await apiProjectRecord(id, { deep: true }))
+    } catch (e) {
+      setError(e.message || 'Could not load this procurement record.')
+    } finally {
+      setDeepBusy(false)
+    }
+  }
 
   return (
     <div className={`pr-page rf-home ${className}`}>

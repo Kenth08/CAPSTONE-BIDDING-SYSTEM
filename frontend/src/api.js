@@ -1,5 +1,9 @@
 import { protectedFilePath } from './utils/fileUrls'
-import { resetSessionCache } from './utils/sessionCache'
+import { clearRecentGets, recentGet } from './utils/requestCache'
+import { onSessionReset, resetSessionCache } from './utils/sessionCache'
+
+// Answers belong to whoever was signed in when they were requested.
+onSessionReset(clearRecentGets)
 
 // Central API layer for talking to the Django backend.
 // In production set VITE_API_URL (e.g. https://api.yourdomain.com/api); locally
@@ -353,7 +357,24 @@ async function refreshAccessToken() {
 }
 
 // ── Authenticated requests (for wiring dashboard data later) ───────────────────
+// A GET may be answered from requestCache unless { fresh: true } is passed. Anything
+// else changes data on the server, so it empties that cache both ways: before the
+// request, so nothing joins an older answer, and after, so no answer read while it
+// ran is kept.
 export async function apiFetch(path, options = {}) {
+  const { fresh = false, ...init } = options
+  if ((init.method || 'GET').toUpperCase() === 'GET') {
+    return recentGet(path, () => sendRequest(path, init), { fresh })
+  }
+  clearRecentGets()
+  try {
+    return await sendRequest(path, init)
+  } finally {
+    clearRecentGets()
+  }
+}
+
+async function sendRequest(path, options) {
   const send = (token) =>
     fetch(`${API_URL}${path}`, {
       ...options,
@@ -418,6 +439,15 @@ export async function apiFetchFileBlob(url) {
 // Authenticated multipart upload (no Content-Type header — the browser sets the
 // multipart boundary). Used for supplier document re-submission.
 async function apiUpload(path, formData, method = 'POST') {
+  clearRecentGets()
+  try {
+    return await sendUpload(path, formData, method)
+  } finally {
+    clearRecentGets()
+  }
+}
+
+async function sendUpload(path, formData, method) {
   const send = (token) =>
     fetch(`${API_URL}${path}`, {
       method,
@@ -472,7 +502,9 @@ export const apiSupplierRejectCategories = (id, note) =>
   apiFetch(`/suppliers/${id}/reject-categories/`, { method: 'POST', body: JSON.stringify({ note }) })
 
 // Logged-in supplier's own profile + document re-submission.
-export const apiGetMySupplier = () => apiFetch('/suppliers/me/')
+// Always asked fresh: the dashboard re-reads this when the supplier returns from
+// the email-verify tab, which can happen seconds after the last read.
+export const apiGetMySupplier = () => apiFetch('/suppliers/me/', { fresh: true })
 export const apiUpdateMySupplier = (data) =>
   apiFetch('/suppliers/me/', { method: 'PATCH', body: JSON.stringify(data) })
 export const apiResubmitDocuments = (formData) => apiUpload('/suppliers/resubmit/', formData)
@@ -591,7 +623,7 @@ export const apiListProjectAnchors = (projectId) => apiFetch(`/projects/${projec
 // to the caller by the server (procurement/record.py). `deep` (Admin/Head)
 // also re-reads and re-hashes every anchored document.
 export const apiProjectRecord = (projectId, { deep = false } = {}) =>
-  apiFetch(`/projects/${projectId}/record/${deep ? '?deep=1' : ''}`)
+  apiFetch(`/projects/${projectId}/record/${deep ? '?deep=1' : ''}`, { fresh: deep })
 export const apiVerifyProjectChain = (projectId) =>
   apiFetch(`/projects/${projectId}/verify-chain/`, { method: 'POST' })
 // One anchor's verification packet, scoped to the caller's role (server-side).
@@ -615,13 +647,13 @@ export const apiAnchorAward = (awardId, payload) =>
   apiFetch(`/awards/${awardId}/anchor/`, { method: 'POST', body: anchorBody(payload) })
 
 // ── Dashboard summaries (read-only) ─────────────────────────────────────────
-export const apiAdminSummary = () => apiFetch('/dashboard/admin-summary/')
+export const apiAdminSummary = (options) => apiFetch('/dashboard/admin-summary/', options)
 export const apiHeadSummary = () => apiFetch('/dashboard/head-summary/')
 // "Anchor all": the server signs and sends the oldest waiting step, one per call.
 export const apiAnchorNextPending = () =>
   apiFetch('/anchors/send-next/', { method: 'POST', body: '{}' })
 
 // ── Notifications ──────────────────────────────────────────────────────────────
-export const apiListNotifications = () => apiFetch('/notifications/')
+export const apiListNotifications = () => apiFetch('/notifications/', { fresh: true })
 export const apiMarkNotificationsRead = () =>
   apiFetch('/notifications/mark-read/', { method: 'POST', body: '{}' })

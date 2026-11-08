@@ -266,10 +266,13 @@ The app is deployed using:
 ### Manual backup
 
 ```bash
-python manage.py backup_db              # saves to backups/ folder
+python manage.py backup_db              # saves to backups/ folder (+ a .sha256 checksum)
 python manage.py backup_db -o /my/path  # custom output directory
-python manage.py loaddata <file>        # restore from backup
+python manage.py backup_db --verify <file>   # prove a backup is readable; writes nothing
+python manage.py audit_ledger           # check the database against the blockchain (read-only)
 ```
+
+Restoring, and what to do after an attack: **[RECOVERY.md](RECOVERY.md)**.
 
 ---
 

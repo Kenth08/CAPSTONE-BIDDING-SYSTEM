@@ -27,6 +27,7 @@ own state says whether a transaction is verified, reported or pending).
 """
 from datetime import date, datetime
 
+from django.db.models import Prefetch, prefetch_related_objects
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -37,6 +38,7 @@ from .blockchain import (
     SEPOLIA_CHAIN_ID,
     anchor_summary,
     inclusion_receipt,
+    preload_verification,
     superseding_anchor,
     verify_anchor,
 )
@@ -98,11 +100,11 @@ def _visible_anchors(anchors, role, own_bid_ids):
             if a.entity_type != BlockchainAnchor.EntityType.BID or a.entity_id in own_bid_ids]
 
 
-def _anchor_row(anchor, *, include_payload, deep):
+def _anchor_row(anchor, *, include_payload, deep, preload=None):
     data = anchor_summary(anchor, include_payload=include_payload)
-    data["integrity"] = verify_anchor(anchor, deep=deep)
+    data["integrity"] = verify_anchor(anchor, deep=deep, preload=preload)
     data["verification"] = summarize(anchor, data["integrity"])
-    newer = superseding_anchor(anchor)
+    newer = superseding_anchor(anchor, preload)
     data["superseded_by"] = newer.id if newer else None
     return data
 
@@ -234,7 +236,11 @@ def _counts(anchors):
 # ── The authenticated record ─────────────────────────────────────────────────
 
 def build_record(project, role, supplier, request, *, deep=False):
-    all_bids = list(project.bids.select_related("supplier").order_by("submitted_at", "id"))
+    # Prefetched on the project itself: verifying the evaluation commitment needs
+    # the same bids, so this one query also serves that check.
+    prefetch_related_objects([project], Prefetch(
+        "bids", queryset=Bid.objects.select_related("supplier").order_by("submitted_at", "id")))
+    all_bids = list(project.bids.all())
     own_bids = [b for b in all_bids if supplier and b.supplier_id == supplier.id]
     bids = own_bids if role == "supplier" else all_bids
     award = (Award.objects.select_related("supplier", "bid")
@@ -243,7 +249,16 @@ def build_record(project, role, supplier, request, *, deep=False):
 
     raw = list(BlockchainAnchor.objects.filter(entity_ref=project.code).order_by("created_at", "id"))
     raw = _visible_anchors(raw, role, {str(b.id) for b in own_bids})
-    anchors = [_anchor_row(a, include_payload=(role == "admin"), deep=deep and role != "supplier")
+    deep_check = deep and role != "supplier"
+    preload = None
+    if not deep_check:
+        Entity = BlockchainAnchor.EntityType
+        known = [(Entity.PROJECT, project)] + [(Entity.BID, b) for b in all_bids]
+        if award:
+            award.project = project  # the row already in hand, not a second read
+            known.append((Entity.AWARD, award))
+        preload = preload_verification(raw, known=known)
+    anchors = [_anchor_row(a, include_payload=(role == "admin"), deep=deep_check, preload=preload)
                for a in raw]
 
     winner_amount_visible = role in {"admin", "head"} or is_winner
