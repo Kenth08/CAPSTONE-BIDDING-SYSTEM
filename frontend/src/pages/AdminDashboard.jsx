@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
-  apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision, apiAdminRegisterSupplier,
+  apiSupplierApprove, apiSupplierReject, apiSupplierRequestRevision, apiSupplierAcceptDocuments, apiAdminRegisterSupplier,
   apiSupplierApproveCategories, apiSupplierRejectCategories, apiUnlockAccount,
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject,
   apiListAwards, apiListDocuments, apiBidRequestRevision,
@@ -1171,6 +1171,10 @@ function SuppliersPage() {
                         <StatusBadge tone="danger" dot={false} label="Documents incomplete or expired"
                           title="A required document is missing or expired, or a document expires within 30 days. Open View for details." />
                       )}
+                      {s.documents_to_review > 0 && (
+                        <StatusBadge tone="warning" dot={false} label={`${s.documents_to_review} renewal${s.documents_to_review === 1 ? '' : 's'} to review`}
+                          title="The supplier uploaded a renewed document. Open View to accept or flag it." />
+                      )}
                       {s.category_request_status === 'pending' && (
                         <StatusBadge tone="warning" dot={false} label="Category change"
                           title="This supplier asked to change their business categories" />
@@ -1654,7 +1658,9 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
     }
     setConfirm({
       title: 'Request revision?',
-      message: decided
+      message: decided && flagsRenewal
+        ? `The supplier will be asked to re-upload ${Object.keys(docs).length} document(s). Their account goes back to Needs Revision, so they can't bid until you approve them again.`
+        : decided
         ? `The supplier will be asked to re-upload ${Object.keys(docs).length} license(s) for the requested categories. They stay verified and keep bidding in their current categories.`
         : `The supplier will be notified to re-upload ${Object.keys(docs).length} document(s). They cannot bid until re-approved.`,
       tone: 'orange',
@@ -1679,9 +1685,14 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
   const decided = supplier?.qualification_status === 'verified' || supplier?.qualification_status === 'rejected'
   // A verified supplier's profile is read-only, except the licenses of a
   // pending category request: the Admin can flag those without un-verifying them.
-  const canFlag = (d) => !decided || (d.pending_category && supplier?.qualification_status === 'verified')
+  // A verified supplier can still have documents to look at: licenses for a
+  // requested category, and renewals they uploaded for expired permits.
+  const isVerified = supplier?.qualification_status === 'verified'
+  const canFlag = (d) => !decided || (isVerified && (d.pending_category || d.review_status === 'renewed'))
   const pendingFlagCount = (supplier?.documents || [])
-    .filter(d => d.pending_category && flags[d.key]?.checked).length
+    .filter(d => canFlag(d) && flags[d.key]?.checked).length
+  const flagsRenewal = (supplier?.documents || [])
+    .some(d => d.review_status === 'renewed' && flags[d.key]?.checked)
 
   return (
     <div className="ad-modal-overlay" onClick={onClose}>
@@ -1807,12 +1818,27 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                             ? <span className="ad-doc-status ad-doc-flag">Flagged for revision</span>
                             : rs === 'resubmitted'
                               ? <span className="ad-doc-status ad-doc-resub">Resubmitted — please review</span>
-                              : rs === 'approved'
-                                ? <span className="ad-doc-status ad-doc-ok"><Check size={11} /> Reviewed</span>
-                                : null}
+                              : rs === 'renewed'
+                                ? <span className="ad-doc-status ad-doc-resub">Renewed — please review</span>
+                                : rs === 'approved'
+                                  ? <span className="ad-doc-status ad-doc-ok"><Check size={11} /> Reviewed</span>
+                                  : null}
                         </div>
                         <SupplierDocView doc={d} />
+                        {rs === 'renewed' && !checked && (
+                          <button type="button" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy}
+                            onClick={() => runAction(() => apiSupplierAcceptDocuments(supplierId, [d.key]),
+                              `${d.label} accepted. The supplier was notified.`)}>
+                            <Check size={13} /> Accept
+                          </button>
+                        )}
                       </div>
+                      {rs === 'renewed' && !checked && (
+                        <div className="ad-doc-prevnote">
+                          New copy uploaded by the supplier{d.previous_expiry ? ` to replace one that expired ${fmtDate(d.previous_expiry)}` : ''}.
+                          Open it, then Accept, or tick it and Flag it with a note.
+                        </div>
+                      )}
                       {/* Remind the admin why this doc was sent back, now that it's been re-uploaded. */}
                       {!checked && rs === 'resubmitted' && d.review_note && (
                         <div className="ad-doc-prevnote">Previously flagged: “{d.review_note}”</div>
@@ -1877,7 +1903,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
               {decided && pendingFlagCount > 0 && (
                 <div className="ad-modal-footer-actions">
                   <button className="ad-btn-revision" disabled={busy} onClick={handleRequestRevision}>
-                    <AlertTriangle size={14} /> {busy ? 'Working…' : `Flag ${pendingFlagCount} license(s)`}
+                    <AlertTriangle size={14} /> {busy ? 'Working…' : `Flag ${pendingFlagCount} document(s)`}
                   </button>
                 </div>
               )}

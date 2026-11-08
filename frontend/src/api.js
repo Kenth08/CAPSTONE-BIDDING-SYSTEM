@@ -494,6 +494,11 @@ export const apiSupplierRequestRevision = (id, { note, documents }) =>
     body: JSON.stringify({ note, documents }),
   })
 
+// Admin accepts documents a supplier renewed (expired/expiring permit replaced
+// from their profile). Their verification is unchanged.
+export const apiSupplierAcceptDocuments = (id, documents) =>
+  apiFetch(`/suppliers/${id}/accept-documents/`, { method: 'POST', body: JSON.stringify({ documents }) })
+
 // Category change requests: a verified supplier's new business_types are only
 // a request until an Admin approves them (enforced server-side).
 export const apiSupplierApproveCategories = (id) =>

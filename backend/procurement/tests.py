@@ -5595,7 +5595,9 @@ class BaseDocumentRenewalTests(_TempMediaMixin, APITestCase):
         self.supplier.refresh_from_db()
         self.assertEqual(self.supplier.mayors_permit_expiry.isoformat(), IN_A_YEAR)
         self.assertNotEqual(self.supplier.mayors_permit.name, old_file)
-        self.assertNotIn("mayors_permit", self.supplier.document_reviews)     # pending review again
+        review = self.supplier.document_reviews["mayors_permit"]
+        self.assertEqual(review["status"], "renewed")                        # waits for the Admin
+        self.assertEqual(review["previous_expiry"], (timezone.localdate() - timedelta(days=3)).isoformat())
         self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.VERIFIED)
         doc = next(d for d in res.data["documents"] if d["key"] == "mayors_permit")
         self.assertFalse(doc["expired"])
@@ -5695,3 +5697,70 @@ class DocumentAlertTests(_TempMediaMixin, APITestCase):
         self.supplier.save()
         call_command("notify_document_expiry", stdout=io.StringIO())
         self.assertEqual(self._alerts(), [])
+
+
+class RenewalReviewTests(_TempMediaMixin, APITestCase):
+    """The Admin reviews a verified supplier's renewal. The supplier-level
+    Approve button isn't shown for a verified supplier, so before this the
+    Admin couldn't accept a renewed permit, or even tell which file was new."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = make_admin()
+        self.supplier = attach_base_documents(make_supplier(verified=True))
+        self.supplier.mayors_permit_expiry = timezone.localdate() - timedelta(days=3)
+        self.supplier.tax_clearance_expiry = timezone.localdate() - timedelta(days=3)
+        self.supplier.save()
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.post("/api/suppliers/me/category-documents/", {
+            "catdoc_mayors_permit": dummy_pdf("p.pdf"), "catdoc_mayors_permit_expiry": IN_A_YEAR,
+            "catdoc_tax_clearance_certificate": dummy_pdf("t.pdf"),
+            "catdoc_tax_clearance_certificate_expiry": IN_A_YEAR,
+        }, format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.client.force_authenticate(user=self.admin)
+
+    def _reviews(self):
+        self.supplier.refresh_from_db()
+        return self.supplier.document_reviews
+
+    def test_the_admin_list_shows_renewals_to_review(self):
+        row = next(r for r in self.client.get("/api/suppliers/").data if r["id"] == self.supplier.pk)
+        self.assertEqual(row["documents_to_review"], 2)
+        doc = next(d for d in self.client.get(f"/api/suppliers/{self.supplier.pk}/").data["documents"]
+                   if d["key"] == "mayors_permit")
+        self.assertEqual(doc["review_status"], "renewed")
+        self.assertIsNotNone(doc["previous_expiry"])
+
+    def test_accepting_a_renewal_keeps_the_supplier_verified_and_tells_them(self):
+        res = self.client.post(f"/api/suppliers/{self.supplier.pk}/accept-documents/",
+                               {"documents": ["mayors_permit"]}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        reviews = self._reviews()
+        self.assertEqual(reviews["mayors_permit"]["status"], "approved")
+        self.assertEqual(reviews["tax_clearance_certificate"]["status"], "renewed")   # untouched
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.VERIFIED)
+        self.assertTrue(Notification.objects.filter(
+            user=self.supplier.user, message__startswith="The BAC office accepted your renewed").exists())
+        self.assertTrue(AuditLog.objects.filter(action="supplier.documents_accepted").exists())
+
+    def test_only_renewed_documents_can_be_accepted_here(self):
+        res = self.client.post(f"/api/suppliers/{self.supplier.pk}/accept-documents/",
+                               {"documents": ["valid_id"]}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_supplier_cannot_accept_their_own_renewal(self):
+        self.client.force_authenticate(user=self.supplier.user)
+        res = self.client.post(f"/api/suppliers/{self.supplier.pk}/accept-documents/",
+                               {"documents": ["mayors_permit"]}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._reviews()["mayors_permit"]["status"], "renewed")
+
+    def test_flagging_one_renewal_never_approves_the_other_by_default(self):
+        res = self.client.post(f"/api/suppliers/{self.supplier.pk}/request-revision/",
+                               {"documents": {"mayors_permit": "Wrong business name"}}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        reviews = self._reviews()
+        self.assertEqual(reviews["mayors_permit"]["status"], "needs_revision")
+        self.assertEqual(reviews["tax_clearance_certificate"]["status"], "renewed")
+        self.assertEqual(reviews["valid_id"]["status"], "approved")
