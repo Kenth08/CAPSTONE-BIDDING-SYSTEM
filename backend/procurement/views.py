@@ -43,6 +43,8 @@ from .document_requirements import (
     BASE_EXPIRY_FIELDS,
     CATEGORY_DOCUMENT_INDEX,
     EXPIRY_SUFFIX,
+    NOT_UPLOADED,
+    RENEWED,
     UPLOAD_PREFIX,
     allowed_review_keys,
     approved_categories,
@@ -1759,7 +1761,12 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 except ValueError as exc:
                     errors[field + EXPIRY_SUFFIX] = [str(exc)]
                     continue
-            uploads.append((req, upload, expiry, flagged))
+            # A renewal replaces a file already on record. It is marked
+            # "renewed" (with the old expiry) so the Admin can see which file
+            # is new and accept or flag it, even for a verified supplier.
+            replaces = status["reason"] != NOT_UPLOADED and not flagged
+            previous_expiry = status["expiry_date"].isoformat() if status["expiry_date"] else ""
+            uploads.append((req, upload, expiry, flagged, replaces and renewal, previous_expiry))
         if errors:
             return Response(errors, status=http_status.HTTP_400_BAD_REQUEST)
         if not uploads:
@@ -1770,7 +1777,9 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             supplier = Supplier.objects.select_for_update(of=("self",)).select_related("user").get(pk=supplier.pk)
             reviews = dict(supplier.document_reviews or {})
             base_fields = []
-            for req, upload, expiry, flagged in uploads:
+            for req, upload, expiry, flagged, renewed, previous_expiry in uploads:
+                if renewed:
+                    reviews[req["key"]] = {"status": RENEWED, "note": "", "previous_expiry": previous_expiry}
                 if req["source"] == "base":
                     setattr(supplier, req["key"], upload)
                     base_fields.append(req["key"])
@@ -1778,7 +1787,8 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                     if expiry_field:
                         setattr(supplier, expiry_field, expiry)
                         base_fields.append(expiry_field)
-                    reviews.pop(req["key"], None)   # the renewal waits for review
+                    if not renewed:
+                        reviews.pop(req["key"], None)   # a new file waits for review
                     continue
                 row = SupplierCategoryDocument.objects.select_for_update().filter(
                     supplier=supplier, key=req["key"]).first()
@@ -1793,12 +1803,12 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 if flagged:
                     reviews[req["key"]] = {"status": "resubmitted",
                                            "note": (reviews.get(req["key"]) or {}).get("note", "")}
-                else:
+                elif not renewed:
                     reviews.pop(req["key"], None)   # a new file waits for review
             supplier.document_reviews = reviews
             supplier.save(update_fields=["document_reviews", *base_fields])
 
-        names = labels([req for req, *_ in uploads])
+        names = labels([u[0] for u in uploads])
         log_action(request, "supplier.category_documents_uploaded", entity_type="Supplier",
                    entity_id=supplier.id, description=f"{supplier.company} uploaded: {names}.")
         notify_admins(f"{supplier.company} uploaded documents for review: {names}.", link="/admin/suppliers")
@@ -2070,6 +2080,42 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         )
         return self._detail_response(supplier)
 
+    @action(detail=True, methods=["post"], url_path="accept-documents")
+    def accept_documents(self, request, pk=None):
+        """Admin accepts renewed documents: {"documents": [key, ...]}.
+
+        A verified supplier's renewal (an expired or expiring permit replaced
+        from their profile) is marked "renewed". The supplier-level Approve
+        button isn't shown for a verified supplier, so without this the Admin
+        had no way to accept the new file. Only renewed documents can be
+        accepted here; the supplier's verification is unchanged. To refuse a
+        renewal, flag it with request-revision as usual."""
+        documents = request.data.get("documents")
+        if not isinstance(documents, list) or not documents:
+            return Response({"detail": "Choose at least one renewed document to accept."},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            supplier = Supplier.objects.select_for_update(of=("self",)).select_related("user").get(
+                pk=self.get_object().pk)
+            reviews = dict(supplier.document_reviews or {})
+            not_renewed = [k for k in documents if (reviews.get(k) or {}).get("status") != RENEWED]
+            if not_renewed:
+                return Response({"detail": "Only renewed documents can be accepted here: "
+                                           + ", ".join(map(str, not_renewed)) + "."},
+                                status=http_status.HTTP_400_BAD_REQUEST)
+            for key in documents:
+                reviews[key] = {"status": "approved", "note": ""}
+            supplier.document_reviews = reviews
+            supplier.save(update_fields=["document_reviews"])
+
+        label_of = {key: label for key, label, _ in SUPPLIER_DOCUMENT_FIELDS}
+        label_of.update({key: doc["label"] for key, (_, doc) in CATEGORY_DOCUMENT_INDEX.items()})
+        names = ", ".join(label_of.get(k, k) for k in documents)
+        notify_supplier(supplier, f"The BAC office accepted your renewed {names}.", link="/supplier/profile")
+        log_action(request, "supplier.documents_accepted", entity_type="Supplier", entity_id=supplier.id,
+                   description=f"Accepted renewed documents from {supplier.company}: {names}.")
+        return self._detail_response(supplier)
+
     @action(detail=True, methods=["post"], url_path="request-revision")
     def request_revision(self, request, pk=None):
         supplier = self.get_object()
@@ -2097,6 +2143,8 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             on_file = getattr(supplier, key, None) if key in SUPPLIER_DOCUMENT_KEYS else key in uploaded_keys
             if key in documents:
                 reviews[key] = {"status": "needs_revision", "note": documents[key] or ""}
+            elif (reviews.get(key) or {}).get("status") == RENEWED:
+                pass    # a renewal the Admin hasn't looked at stays waiting, never approved by default
             elif on_file:
                 reviews[key] = {"status": "approved", "note": ""}
             else:

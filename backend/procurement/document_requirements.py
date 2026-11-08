@@ -214,6 +214,11 @@ NOT_UPLOADED = "not uploaded"
 FILE_MISSING = "file missing from storage"
 EXPIRED = "expired"
 
+# Review status of a document a supplier renewed themselves (expired or
+# expiring, replaced from their profile). Waits for the Admin to accept it
+# (accept-documents) or flag it (request-revision).
+RENEWED = "renewed"
+
 # A license expiring within this many days is flagged ("Expires in 12 days")
 # but still counts as valid.
 EXPIRING_SOON_DAYS = 30

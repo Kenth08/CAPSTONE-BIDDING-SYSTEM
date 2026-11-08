@@ -5,6 +5,7 @@ from .document_requirements import (
     BASE_EXPIRY_FIELDS,
     base_requirements as requirements_base,
     EXPIRED,
+    RENEWED,
     approved_categories,
     category_requirements,
     document_categories,
@@ -38,18 +39,25 @@ class SupplierListSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(source="user.full_name", read_only=True, default="")
     email = serializers.EmailField(source="user.email", read_only=True, default="")
     documents_complete = serializers.SerializerMethodField()
+    # Renewed documents waiting for the Admin. A verified supplier isn't in the
+    # Pending tab, so the list shows this count to make them findable.
+    documents_to_review = serializers.SerializerMethodField()
 
     class Meta:
         model = Supplier
         fields = [
             "id", "company", "contact", "full_name", "email", "business_type",
             "business_types", "status", "qualification_status", "email_verified", "registered",
-            "category_request_status", "documents_complete",
+            "category_request_status", "documents_complete", "documents_to_review",
         ]
         # Output-only: verification state changes only through the approve /
         # reject / request-revision actions, which are audit-logged.
         read_only_fields = fields
 
+
+    def get_documents_to_review(self, obj):
+        return sum(1 for v in (obj.document_reviews or {}).values()
+                   if (v or {}).get("status") == RENEWED)
 
     def get_documents_complete(self, obj):
         # False when a required document is missing or expired, or any uploaded
@@ -134,6 +142,8 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
                 "url": url,
                 "review_status": review.get("status"),
                 "review_note": review.get("note", ""),
+                # For a renewal: the expiry date of the copy it replaced.
+                "previous_expiry": review.get("previous_expiry") or None,
                 "source": "base",
                 "category": None,
                 "has_expiry": bool(expiry_field),
@@ -152,6 +162,8 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
                 "url": protected_file_url(request, "supplierdoc", row, "file") if row else None,
                 "review_status": review.get("status"),
                 "review_note": review.get("note", ""),
+                # For a renewal: the expiry date of the copy it replaced.
+                "previous_expiry": review.get("previous_expiry") or None,
                 "source": "category",
                 "category": req["category"],
                 # True when the category is only in a pending change request.
