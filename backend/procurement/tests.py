@@ -45,7 +45,7 @@ from .models import (
     AwardDocumentVersion, CommitmentOpening,
     PROCUREMENT_DOCUMENT_KEYS, ProjectDocumentVersion,
     BID_DOCUMENT_KEYS, SUPPLIER_DOCUMENT_FIELDS, SUPPLIER_DOCUMENT_KEYS, Award, Bid, BidProductImage,
-    BlockchainAnchor, Project, Supplier, SupplierCategoryDocument,
+    BlockchainAnchor, Notification, Project, Supplier, SupplierCategoryDocument,
 )
 
 User = get_user_model()
@@ -5566,3 +5566,132 @@ class BackupVerifyTests(APITestCase):
         with override_settings(FILE_ENCRYPTION_KEY=throwaway_key()):
             with self.assertRaisesMessage(CommandError, "Could not decrypt"):
                 self._verify(path)
+
+
+class BaseDocumentRenewalTests(_TempMediaMixin, APITestCase):
+    """A supplier renews an expired base document (Mayor's Permit, Tax
+    Clearance) themselves. Before, the Upload button sent them to a Profile page
+    with no upload, because base documents could only be replaced after the BAC
+    office requested a revision."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = make_admin()
+        self.supplier = attach_base_documents(make_supplier(verified=True))
+        self.supplier.mayors_permit_expiry = timezone.localdate() - timedelta(days=3)
+        self.supplier.tax_clearance_expiry = timezone.localdate() + timedelta(days=200)
+        self.supplier.document_reviews = {"mayors_permit": {"status": "approved", "note": ""}}
+        self.supplier.save()
+        self.client.force_authenticate(user=self.supplier.user)
+
+    def _upload(self, **files):
+        return self.client.post("/api/suppliers/me/category-documents/", files, format="multipart")
+
+    def test_an_expired_permit_can_be_renewed_and_waits_for_review(self):
+        old_file = self.supplier.mayors_permit.name
+        res = self._upload(catdoc_mayors_permit=dummy_pdf("permit-2027.pdf"),
+                           catdoc_mayors_permit_expiry=IN_A_YEAR)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        self.supplier.refresh_from_db()
+        self.assertEqual(self.supplier.mayors_permit_expiry.isoformat(), IN_A_YEAR)
+        self.assertNotEqual(self.supplier.mayors_permit.name, old_file)
+        self.assertNotIn("mayors_permit", self.supplier.document_reviews)     # pending review again
+        self.assertEqual(self.supplier.qualification_status, Supplier.Qualification.VERIFIED)
+        doc = next(d for d in res.data["documents"] if d["key"] == "mayors_permit")
+        self.assertFalse(doc["expired"])
+        self.assertTrue(Notification.objects.filter(user=self.admin, message__contains="Mayor").exists())
+        self.assertTrue(Notification.objects.filter(user=self.supplier.user,
+                                                    message__startswith="We received your").exists())
+
+    def test_the_renewal_needs_a_future_expiry_date(self):
+        res = self._upload(catdoc_mayors_permit=dummy_pdf("p.pdf"))
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        res = self._upload(catdoc_mayors_permit=dummy_pdf("p.pdf"), catdoc_mayors_permit_expiry=LAST_MONTH)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_valid_document_cannot_be_swapped_unreviewed(self):
+        res = self._upload(catdoc_tax_clearance_certificate=dummy_pdf("t.pdf"),
+                           catdoc_tax_clearance_certificate_expiry=IN_TWO_YEARS)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        res = self._upload(catdoc_valid_id=dummy_pdf("id.pdf"))
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_document_expiring_within_30_days_can_be_renewed_early(self):
+        self.supplier.tax_clearance_expiry = timezone.localdate() + timedelta(days=10)
+        self.supplier.save(update_fields=["tax_clearance_expiry"])
+        res = self._upload(catdoc_tax_clearance_certificate=dummy_pdf("t.pdf"),
+                           catdoc_tax_clearance_certificate_expiry=IN_A_YEAR)
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def test_a_flagged_document_goes_through_the_revision_panel(self):
+        self.supplier.document_reviews = {"mayors_permit": {"status": "needs_revision", "note": "Blurry"}}
+        self.supplier.save(update_fields=["document_reviews"])
+        res = self._upload(catdoc_mayors_permit=dummy_pdf("p.pdf"), catdoc_mayors_permit_expiry=IN_A_YEAR)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("revision panel", str(res.data))
+
+
+class DocumentAlertTests(_TempMediaMixin, APITestCase):
+    """Suppliers are told about expired, expiring and missing documents: in the
+    bell when they open the dashboard, and by email from the daily command."""
+
+    def setUp(self):
+        super().setUp()
+        self.supplier = attach_base_documents(make_supplier(verified=True))
+        self.client.force_authenticate(user=self.supplier.user)
+
+    def _alerts(self):
+        return list(Notification.objects.filter(user=self.supplier.user, link="/supplier/profile")
+                    .values_list("message", flat=True))
+
+    def test_nothing_is_sent_when_all_documents_are_in_order(self):
+        self.supplier.mayors_permit_expiry = timezone.localdate() + timedelta(days=200)
+        self.supplier.save(update_fields=["mayors_permit_expiry"])
+        self.client.get("/api/suppliers/me/")
+        self.assertEqual(self._alerts(), [])
+
+    def test_opening_the_dashboard_raises_each_alert_once(self):
+        self.supplier.mayors_permit_expiry = timezone.localdate() - timedelta(days=3)
+        self.supplier.tax_clearance_expiry = timezone.localdate() + timedelta(days=10)
+        self.supplier.bank_reference_letter = None
+        self.supplier.save()
+        for _ in range(3):
+            res = self.client.get("/api/suppliers/me/")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+        alerts = self._alerts()
+        self.assertEqual(len(alerts), 3, alerts)
+        self.assertTrue(any(a.startswith("Your Mayor") and "expired on" in a for a in alerts))
+        self.assertTrue(any("Tax Clearance" in a and "expires on" in a for a in alerts))
+        self.assertTrue(any("Bank Reference Letter is missing" in a for a in alerts))
+        self.assertEqual(len(mail.outbox), 0)          # in-app only from the dashboard
+
+    def test_a_renewal_with_a_new_date_can_warn_again(self):
+        self.supplier.tax_clearance_expiry = timezone.localdate() + timedelta(days=10)
+        self.supplier.save(update_fields=["tax_clearance_expiry"])
+        self.client.get("/api/suppliers/me/")
+        self.supplier.tax_clearance_expiry = timezone.localdate() + timedelta(days=20)
+        self.supplier.save(update_fields=["tax_clearance_expiry"])
+        self.client.get("/api/suppliers/me/")
+        self.assertEqual(len(self._alerts()), 2)
+
+    def test_the_daily_command_emails_once_and_dry_run_sends_nothing(self):
+        self.supplier.mayors_permit_expiry = timezone.localdate() - timedelta(days=3)
+        self.supplier.save(update_fields=["mayors_permit_expiry"])
+
+        out = io.StringIO()
+        call_command("notify_document_expiry", "--dry-run", stdout=out)
+        self.assertIn("1 alert(s) would be sent", out.getvalue())
+        self.assertEqual(self._alerts(), [])
+
+        call_command("notify_document_expiry", stdout=io.StringIO())
+        call_command("notify_document_expiry", stdout=io.StringIO())
+        self.assertEqual(len(self._alerts()), 1)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.supplier.user.email])
+
+    def test_rejected_suppliers_are_skipped(self):
+        self.supplier.mayors_permit_expiry = timezone.localdate() - timedelta(days=3)
+        self.supplier.qualification_status = Supplier.Qualification.REJECTED
+        self.supplier.save()
+        call_command("notify_document_expiry", stdout=io.StringIO())
+        self.assertEqual(self._alerts(), [])

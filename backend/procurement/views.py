@@ -40,11 +40,13 @@ from .packets import is_public_packet, packet_for
 from .record import PUBLIC_STATUSES, build_record, public_date, public_record, viewer_for
 from .verification import summarize
 from .document_requirements import (
+    BASE_EXPIRY_FIELDS,
     CATEGORY_DOCUMENT_INDEX,
     EXPIRY_SUFFIX,
     UPLOAD_PREFIX,
     allowed_review_keys,
     approved_categories,
+    base_requirements,
     category_requirements,
     describe,
     document_categories,
@@ -55,6 +57,7 @@ from .document_requirements import (
     unknown_categories,
     validate_future_expiry,
 )
+from .document_alerts import send_document_alerts
 from .documents import DOCUMENT_BUILDERS
 from .models import (
     AWARD_DOCUMENT_FIELDS,
@@ -1618,6 +1621,11 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 serializer.save()
                 if categories is not None:
                     self._handle_category_change(request, supplier, categories)
+        else:
+            # Expired / expiring / missing documents go to the bell the moment
+            # the supplier looks (once each; never raises). Email is left to
+            # the daily `notify_document_expiry` command.
+            send_document_alerts(supplier)
 
         return self._detail_response(supplier)
 
@@ -1681,18 +1689,27 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     # ── Category documents uploaded by the supplier ──────────────────────
     @action(detail=False, methods=["post"], url_path="me/category-documents")
     def my_category_documents(self, request):
-        """Supplier uploads extra licenses: multipart catdoc_<key> (+ catdoc_<key>_expiry).
+        """Supplier uploads a license or a renewal: multipart catdoc_<key> (+ catdoc_<key>_expiry).
 
         Allowed for the categories of a pending change request (so the Admin
         can review them before approving), and for the supplier's current
         categories only when that document is missing or was flagged for
         revision. A verified supplier can't quietly swap a license the Admin
-        already accepted; the Admin flags it first."""
+        already accepted; the Admin flags it first.
+
+        Base registration documents (Mayor's Permit, Tax Clearance, ...) may be
+        uploaded here only as a renewal: when the one on record is expired,
+        expires within 30 days, or is missing. Before this, an expired permit
+        could only be replaced after the Admin requested a revision, so the
+        supplier's Upload button led nowhere. A base document the Admin flagged
+        still goes through the revision flow (`resubmit`). Either way the new
+        file waits for the Admin's review."""
         supplier = self._own_supplier(request)
         if supplier is None:
             return Response({"detail": "No supplier profile found."}, status=http_status.HTTP_404_NOT_FOUND)
 
         requirements = {r["key"]: r for r in category_requirements(document_categories(supplier))}
+        requirements.update({r["key"]: r for r in base_requirements()})
         approved = set(approved_categories(supplier))
         reviews = dict(supplier.document_reviews or {})
         rows = {row.key: row for row in supplier.category_documents.all()}
@@ -1706,11 +1723,20 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 errors[field] = ["This document is not required for your categories or category request."]
                 continue
             flagged = (reviews.get(key) or {}).get("status") == "needs_revision"
+            status = document_status(supplier, req, rows=rows)
+            renewal = status["reason"] is not None or status["expiring_soon"]
+            if req["source"] == "base":
+                if flagged:
+                    errors[field] = [f"The BAC office flagged your {req['label']}. "
+                                     "Re-upload it from the revision panel on your dashboard."]
+                    continue
+                if not renewal:
+                    errors[field] = [f"{req['label']} is on file and not expiring yet. "
+                                     "Ask the Admin to flag it if it needs replacing."]
+                    continue
             # A current category's license may be replaced when it is missing,
             # expired or about to expire (a renewal), or was flagged.
-            status = document_status(supplier, req, rows=rows)
-            replaceable = flagged or status["reason"] is not None or status["expiring_soon"]
-            if req["category"] in approved and not replaceable:
+            elif req["category"] in approved and not (flagged or renewal):
                 errors[field] = [f"{req['label']} is already on file. Ask the Admin to flag it if it needs replacing."]
                 continue
             try:
@@ -1741,7 +1767,19 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                             status=http_status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
+            supplier = Supplier.objects.select_for_update(of=("self",)).select_related("user").get(pk=supplier.pk)
+            reviews = dict(supplier.document_reviews or {})
+            base_fields = []
             for req, upload, expiry, flagged in uploads:
+                if req["source"] == "base":
+                    setattr(supplier, req["key"], upload)
+                    base_fields.append(req["key"])
+                    expiry_field = BASE_EXPIRY_FIELDS.get(req["key"])
+                    if expiry_field:
+                        setattr(supplier, expiry_field, expiry)
+                        base_fields.append(expiry_field)
+                    reviews.pop(req["key"], None)   # the renewal waits for review
+                    continue
                 row = SupplierCategoryDocument.objects.select_for_update().filter(
                     supplier=supplier, key=req["key"]).first()
                 if row is None:
@@ -1758,12 +1796,15 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 else:
                     reviews.pop(req["key"], None)   # a new file waits for review
             supplier.document_reviews = reviews
-            supplier.save(update_fields=["document_reviews"])
+            supplier.save(update_fields=["document_reviews", *base_fields])
 
         names = labels([req for req, *_ in uploads])
         log_action(request, "supplier.category_documents_uploaded", entity_type="Supplier",
                    entity_id=supplier.id, description=f"{supplier.company} uploaded: {names}.")
-        notify_admins(f"{supplier.company} uploaded category documents: {names}.", link="/admin/suppliers")
+        notify_admins(f"{supplier.company} uploaded documents for review: {names}.", link="/admin/suppliers")
+        notify_supplier(supplier, f"We received your {names}. The BAC office will review "
+                                  f"{'it' if len(uploads) == 1 else 'them'} and let you know.",
+                        link="/supplier/profile")
         return self._detail_response(self._own_supplier(request))
 
     # ── Admin decisions on a category change request ─────────────────────

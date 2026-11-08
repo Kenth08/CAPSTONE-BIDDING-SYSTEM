@@ -2150,9 +2150,11 @@ function docExpiryInfo(doc, profile) {
 // flagged. A flagged document during a full revision goes through the
 // "Documents Needing Revision" panel instead, so it isn't offered twice.
 function canUploadCategoryDoc(doc, profile) {
-  if (doc.source !== 'category') return false
   const inRevision = profile?.qualification_status === 'needs_revision'
   if (inRevision && doc.review_status === 'needs_revision') return false
+  // Base registration documents: only as a renewal (expired, expiring soon or
+  // missing). One the BAC office flagged goes through the revision panel.
+  if (doc.source === 'base') return doc.review_status !== 'needs_revision' && (!!doc.reason || !!doc.expiring_soon)
   // Missing, lost from storage, expired or expiring soon (a renewal) → upload.
   return doc.pending_category || !!doc.reason || doc.expiring_soon || doc.review_status === 'needs_revision'
 }
@@ -2344,7 +2346,7 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry, setToast,
             // d.expiring_soon), so the page and the approval rules agree.
             const expiryEl = d.expired ? (
               <span className="cd-badge cd-badge-missing">
-                Expired {expiry ? expiry.date.toLocaleDateString() : ''}{d.source === 'category' ? ' — please renew' : ''}
+                Expired {expiry ? expiry.date.toLocaleDateString() : ''} — please renew
               </span>
             ) : d.expiring_soon ? (
               <span className="cd-badge cd-badge-warn">
@@ -2353,9 +2355,11 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry, setToast,
             ) : expiry && (
               <span className="sd-doc-expiry">Expires {expiry.date.toLocaleDateString()}</span>
             )
-            // Category licenses: a "Missing" badge and an upload control right in
-            // the list (base documents are replaced through a revision request).
-            if (d.source === 'category' && (d.missing || canUploadCategoryDoc(d, profile))) {
+            // A "Missing" badge and an upload control right in the list, for
+            // category licenses and for base documents that need renewing.
+            // (A base document the BAC office flagged is replaced through the
+            // revision panel instead.)
+            if ((d.source === 'category' && d.missing) || canUploadCategoryDoc(d, profile)) {
               return (
                 <div key={d.key} className={`sd-doc-row${d.url ? '' : ' sd-doc-row-missing'}`}>
                   {labelEl}
