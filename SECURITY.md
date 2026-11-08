@@ -214,7 +214,9 @@ Only Published means the record is on the blockchain. A prepared anchor must nev
 | Rotate the commitment key | Move the current key to `COMMITMENT_OLD_KEYS`, set a new `COMMITMENT_KEY`, deploy, run `python manage.py rotate_commitment_openings` (dry run), then add `--apply`. Keep the old key as described under custody. |
 | Check commitment openings (after a restore or recovery) | `python manage.py check_commitment_openings`. Read-only; exits with an error unless every opening matches. |
 | Copy files left on a local disk into the bucket | `python manage.py migrate_media_to_bucket --source <dir>` (dry run), then add `--apply`. Byte-for-byte and SHA-256-checked. |
-| Back up the database | `python manage.py backup_db` writes an encrypted `.json.enc`. Restore with `backup_db --decrypt <file>`, then `loaddata`. `backups/` is gitignored. |
+| Back up the database | `python manage.py backup_db` writes an encrypted `.json.enc` and a `.sha256`. Restore with `backup_db --decrypt <file>`, then `loaddata`. `backups/` is gitignored. |
+| Test a backup | `python manage.py backup_db --verify <file>`. Checks the checksum, decrypts in memory, counts records; writes nothing. |
+| Check the database against the blockchain (after a restore or a suspected break-in) | `python manage.py audit_ledger --expect-owner <owner>`; add `--deep` to re-hash documents and `--snapshot <dir>` to save a copy. Read-only; exits with an error on any problem. Incident steps: [RECOVERY.md](RECOVERY.md). |
 
 **Local development:** `backend/.env` points `DB_HOST` at the production
 database. Run every non-test `manage.py` command as `DB_HOST= python manage.py ...`

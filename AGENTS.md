@@ -55,6 +55,7 @@ npm run dev
 - `backend/procurement/verification.py` — the five verification outcomes, with what was and wasn't checked
 - `backend/procurement/project_documents.py` — `ProjectDocumentVersion` history and the five-document manifest
 - `backend/procurement/openings.py` — encrypted `CommitmentOpening` rows, `COMMITMENT_KEY` handling, access and audit. Commands: `rotate_commitment_openings`, `check_commitment_openings`
+- `backend/procurement/management/commands/audit_ledger.py` — read-only check of the whole database against the on-chain ledger; incident steps in [RECOVERY.md](RECOVERY.md)
 - `backend/procurement/permissions.py` — role permissions (admin / head / supplier)
 - `backend/accounts/` — custom User (role field), JWT auth, MFA, password reset, `audit.log_action`, throttling
 - `frontend/src/api.js` — **all** HTTP calls go through `apiFetch` / `apiUpload` wrappers here

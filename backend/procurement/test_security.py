@@ -737,8 +737,10 @@ class EncryptedBackupTests(TestCase):
     @override_settings(FILE_ENCRYPTION_KEY=KEY_A)
     def test_backup_is_encrypted_and_decrypts_for_restore(self):
         call_command("backup_db", "-o", self.out, stdout=io.StringIO())
-        [name] = os.listdir(self.out)
+        # The backup, plus the checksum that `backup_db --verify` reads.
+        [name] = [n for n in os.listdir(self.out) if not n.endswith(".sha256")]
         self.assertTrue(name.endswith(".json.enc"))
+        self.assertIn(name + ".sha256", os.listdir(self.out))
         path = os.path.join(self.out, name)
         with open(path, "rb") as f:
             raw = f.read()

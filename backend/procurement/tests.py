@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import shutil
 import tempfile
 from datetime import datetime, timedelta
@@ -5368,3 +5369,200 @@ class V3PublicPacketTests(V3ReaderCase):
         blockchain.anchor_project(v2, BlockchainAnchor.Stage.SUBMITTED)
         row = self.client.get(f"/api/public/procurement/{v2.code}/anchors/").data["anchors"][0]
         self.assertIsNone(row["document_manifest"])
+
+
+class LedgerAuditTests(APITestCase):
+    """`audit_ledger`: the recovery check. The normal integrity check compares a
+    record with the hash stored beside it in the same database, so an attacker
+    who edits both passes it. Only the ledger's own copy is out of their reach."""
+
+    LEDGER = "0x" + "12" * 20
+    OWNER = "0x" + "0a" * 20
+    SIGNER = "0x" + "11" * 20
+    STRANGER = "0x" + "66" * 20
+
+    def setUp(self):
+        patcher = patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", self.LEDGER)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.rows = {}
+
+    def _anchored(self, *, confirm=True):
+        """A real SUBMITTED anchor, recorded on the fake ledger (and confirmed)."""
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        anchor = blockchain.anchor_project(project, BlockchainAnchor.Stage.SUBMITTED)
+        chain_id = len(self.rows)
+        self.rows[chain_id] = (anchor.entity_type, anchor.entity_ref, anchor.stage,
+                               anchor.data_hash, self.SIGNER, 1_762_000_000)
+        if confirm:
+            BlockchainAnchor.objects.filter(pk=anchor.pk).update(
+                tx_hash="0x" + f"{chain_id + 1:02x}" * 32, actor_address=self.SIGNER,
+                chain_status=BlockchainAnchor.ChainStatus.CONFIRMED, chain_anchor_id=chain_id,
+                chain_contract=self.LEDGER)
+        anchor.refresh_from_db()
+        return project, anchor
+
+    def _node(self, *, owner=None, restricted=False, chain_id=SEPOLIA):
+        w3 = sepolia_node(state=self.rows, chain_id=chain_id)
+        fns = w3.eth.contract.return_value.functions
+        fns.total.return_value.call.return_value = len(self.rows)
+        fns.owner.return_value.call.return_value = owner or self.OWNER
+        fns.restricted.return_value.call.return_value = restricted
+        return w3
+
+    def _audit(self, *args, w3=None):
+        out = io.StringIO()
+        with patch("procurement.blockchain.web3_client", return_value=w3 or self._node()):
+            try:
+                call_command("audit_ledger", *args, stdout=out)
+            except CommandError as exc:
+                return out.getvalue(), exc
+        return out.getvalue(), None
+
+    def test_a_database_that_agrees_with_the_ledger_passes(self):
+        self._anchored()
+        self._anchored()
+        out, err = self._audit("--expect-owner", self.OWNER)
+        self.assertIsNone(err, out)
+        self.assertIn("OK: the database agrees with the blockchain", out)
+        self.assertIn("2 on-chain record(s), 2 database anchor(s)", out)
+
+    def test_a_record_and_its_stored_hash_edited_together_is_caught(self):
+        # The attack the normal check can't see: both database copies changed.
+        project, anchor = self._anchored()
+        Project.objects.filter(pk=project.pk).update(budget=1)
+        project.refresh_from_db()
+        payload, _ = blockchain.rebuild_payload(anchor, project, document_hash=anchor.document_hash)
+        forged = blockchain.hash_payload(payload)
+        BlockchainAnchor.objects.filter(pk=anchor.pk).update(data_hash=forged, payload=payload)
+        anchor.refresh_from_db()
+        self.assertEqual(verify_anchor(anchor)["status"], "match")   # the local check is fooled
+
+        out, err = self._audit()
+        self.assertIsNotNone(err)
+        self.assertIn("no longer matches on-chain record 0", out)
+
+    def test_an_edited_record_is_caught(self):
+        project, _ = self._anchored()
+        Project.objects.filter(pk=project.pk).update(budget=1)
+        out, err = self._audit()
+        self.assertIsNotNone(err)
+        self.assertIn("altered since it was recorded", out)
+
+    def test_a_deleted_anchored_record_is_caught(self):
+        project, _ = self._anchored()
+        Project.objects.filter(pk=project.pk).delete()
+        out, err = self._audit()
+        self.assertIsNotNone(err)
+        self.assertIn("has been deleted", out)
+
+    def test_an_on_chain_record_the_database_lost_is_reported(self):
+        # A restore from an older backup, or a stolen signing key.
+        self._anchored()
+        self.rows[1] = ("PROJECT", "PC-LOST-0001", "SUBMITTED", "0x" + "ab" * 32, self.SIGNER, 1_762_000_500)
+        out, err = self._audit()
+        self.assertIsNotNone(err)
+        self.assertIn("On-chain record 1 (PC-LOST-0001 SUBMITTED", out)
+
+    def test_strangers_writing_to_an_open_ledger_is_only_a_warning(self):
+        self._anchored()
+        self.rows[1] = ("PROJECT", "PC-NOISE", "SUBMITTED", "0x" + "cd" * 32, self.STRANGER, 1)
+        out, err = self._audit()
+        self.assertIsNone(err, out)
+        self.assertIn("1 on-chain record(s) were written by wallets this system", out)
+        self.assertIn("The ledger is unrestricted", out)
+
+    def test_strangers_writing_to_a_restricted_ledger_is_a_problem(self):
+        self._anchored()
+        self.rows[1] = ("PROJECT", "PC-NOISE", "SUBMITTED", "0x" + "cd" * 32, self.STRANGER, 1)
+        _, err = self._audit(w3=self._node(restricted=True))
+        self.assertIsNotNone(err)
+
+    def test_an_unexpected_owner_is_a_problem(self):
+        self._anchored()
+        out, err = self._audit("--expect-owner", self.OWNER, w3=self._node(owner=self.STRANGER))
+        self.assertIsNotNone(err)
+        self.assertIn("Contract owner is", out)
+
+    def test_an_unconfirmed_anchor_is_matched_by_its_content(self):
+        self._anchored(confirm=False)
+        out, err = self._audit()
+        self.assertIsNone(err, out)
+
+    def test_an_unreachable_or_wrong_network_checks_nothing(self):
+        self._anchored()
+        with patch("procurement.blockchain.network_check", return_value=(None, None)):
+            _, err = self._audit()
+        self.assertIn("Could not reach", str(err))
+        _, err = self._audit(w3=self._node(chain_id=1))
+        self.assertIn("not 11155111", str(err))
+
+    def test_it_changes_nothing(self):
+        project, _ = self._anchored()
+        Project.objects.filter(pk=project.pk).update(budget=1)
+        before = list(BlockchainAnchor.objects.values())
+        logs = AuditLog.objects.count()
+        self._audit()
+        self.assertEqual(list(BlockchainAnchor.objects.values()), before)
+        self.assertEqual(AuditLog.objects.count(), logs)
+
+    def test_the_snapshot_holds_hashes_only_and_a_checksum(self):
+        self._anchored()
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        out, err = self._audit("--snapshot", folder)
+        self.assertIsNone(err, out)
+        [name] = [n for n in os.listdir(folder) if n.endswith(".json")]
+        with open(os.path.join(folder, name), "rb") as f:
+            data = f.read()
+        with open(os.path.join(folder, name + ".sha256"), encoding="ascii") as f:
+            self.assertEqual(f.read().split()[0], hashlib.sha256(data).hexdigest())
+        snap = json.loads(data)
+        self.assertEqual(snap["format"], "bidbridge-ledger-snapshot/1")
+        self.assertEqual(len(snap["chain_anchors"]), 1)
+        self.assertNotIn("payload", snap["database_anchors"][0])
+        self.assertNotIn("Laptops", data.decode())          # no record contents
+
+
+class BackupVerifyTests(APITestCase):
+    """`backup_db --verify`: prove a backup restores before you need it."""
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
+        make_project()
+
+    def _backup(self):
+        call_command("backup_db", "-o", self.folder, stdout=io.StringIO(), stderr=io.StringIO())
+        [name] = [n for n in os.listdir(self.folder) if not n.endswith(".sha256")]
+        return os.path.join(self.folder, name)
+
+    def _verify(self, path):
+        out = io.StringIO()
+        call_command("backup_db", "--verify", path, stdout=out, stderr=io.StringIO())
+        return out.getvalue()
+
+    def test_an_encrypted_backup_verifies_without_writing_plaintext(self):
+        with override_settings(FILE_ENCRYPTION_KEY=throwaway_key()):
+            path = self._backup()
+            self.assertTrue(path.endswith(".json.enc"))
+            out = self._verify(path)
+        self.assertIn("Checksum OK", out)
+        self.assertIn("procurement.project: 1", out)
+        self.assertEqual(sorted(os.listdir(self.folder)),
+                         sorted([os.path.basename(path), os.path.basename(path) + ".sha256"]))
+
+    def test_a_damaged_or_swapped_backup_is_refused(self):
+        with override_settings(FILE_ENCRYPTION_KEY=throwaway_key()):
+            path = self._backup()
+            with open(path, "ab") as f:
+                f.write(b"x")
+            with self.assertRaisesMessage(CommandError, "Checksum MISMATCH"):
+                self._verify(path)
+
+    def test_the_wrong_key_is_reported_without_crashing(self):
+        with override_settings(FILE_ENCRYPTION_KEY=throwaway_key()):
+            path = self._backup()
+        with override_settings(FILE_ENCRYPTION_KEY=throwaway_key()):
+            with self.assertRaisesMessage(CommandError, "Could not decrypt"):
+                self._verify(path)
