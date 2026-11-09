@@ -4,11 +4,11 @@ import {
   LayoutDashboard, Clock, CheckCircle2, XCircle,
   ChevronDown, LogOut,
   ClipboardCheck, AlertCircle, AlertTriangle, FolderOpen, Eye,
-  ThumbsUp, ThumbsDown, FileText, Menu, X, Image as ImageIcon, ChevronRight, ShieldCheck, Link2, Loader2, Trophy,
+  ThumbsUp, FileText, Menu, X, Image as ImageIcon, ChevronRight, ShieldCheck, Link2, Loader2, Trophy,
 } from 'lucide-react'
 import { apiLogout, apiHeadSummary } from '../api'
 import {
-  useProjects, approveProject as storeApprove, rejectProject as storeReject,
+  useProjects, approveProject as storeApprove,
   requestProjectRevision as storeRequestRevision,
   isReviewed, decisionOf, deadlineLabel, deliveryLabel,
 } from '../store/projectsStore'
@@ -65,14 +65,16 @@ function Toast({ type, message, onClose }) {
   )
 }
 
-function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultExpanded = false }) {
+// The Head reviews a procurement: approve it, or send flagged documents back to
+// the Admin for revision. There is no reject: the procurement was already
+// planned and approved before it was filed, so the Head's review can correct it
+// but not cancel it. (The backend refuses /reject/ too; see ProjectViewSet.reject.)
+function PendingCard({ project, onApprove, onRequestRevision, defaultExpanded = false }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
-  const [showRejectForm, setShowRejectForm] = useState(false)
-  const [rejectReason, setRejectReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   // Per-document flags — tick the box next to a problem document, add a note,
-  // then "Request Revision" instead of an outright reject.
+  // then "Request Revision".
   const [flags, setFlags] = useState({})   // { key: { checked, note } }
 
   const toggleFlag = (key) =>
@@ -89,13 +91,6 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultE
     setBusy(true); setErr('')
     // On success the card disappears (project leaves the pending list).
     try { await onApprove(project.id) } catch (e) { setErr(e.message || 'Could not approve.'); setBusy(false) }
-  }
-
-  const handleReject = async (e) => {
-    e.preventDefault()
-    setBusy(true); setErr('')
-    try { await onReject(project.id, rejectReason); setShowRejectForm(false) }
-    catch (e2) { setErr(e2.message || 'Could not reject.'); setBusy(false) }
   }
 
   const handleRequestRevision = async () => {
@@ -135,14 +130,9 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultE
             <Eye size={13} /> {expanded ? 'Hide review' : 'Review'}
           </button>
           {!expanded && (
-            <>
-              <button className="hd-btn-reject-sm" onClick={() => setShowRejectForm(true)} disabled={busy}>
-                <ThumbsDown size={13} /> Reject
-              </button>
-              <button className="hd-btn-approve" onClick={handleApprove} disabled={busy}>
-                <ThumbsUp size={13} /> {busy ? 'Working…' : 'Approve'}
-              </button>
-            </>
+            <button className="hd-btn-approve" onClick={handleApprove} disabled={busy}>
+              <ThumbsUp size={13} /> {busy ? 'Working…' : 'Approve'}
+            </button>
           )}
         </div>
       </div>
@@ -241,8 +231,8 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultE
           <div className="hd-decision-bar">
             <span className="hd-decision-hint">
               {flaggedCount > 0
-                ? `${flaggedCount} document${flaggedCount > 1 ? 's' : ''} flagged. Request a revision, or decide on the project.`
-                : 'Decide on this project, or flag documents to request a revision.'}
+                ? `${flaggedCount} document${flaggedCount > 1 ? 's' : ''} flagged. Request a revision so the Admin can fix ${flaggedCount > 1 ? 'them' : 'it'}.`
+                : 'Approve this project, or flag documents to request a revision.'}
             </span>
             <div className="hd-decision-actions">
               {project.documents?.length > 0 && (
@@ -255,9 +245,6 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultE
                   <AlertTriangle size={14} /> {busy ? 'Working…' : 'Request Revision'}
                 </button>
               )}
-              <button className="hd-btn-reject-sm" onClick={() => setShowRejectForm(true)} disabled={busy}>
-                <ThumbsDown size={14} /> Reject
-              </button>
               <button className="hd-btn-approve" onClick={handleApprove} disabled={busy}>
                 <ThumbsUp size={14} /> {busy ? 'Working…' : 'Approve'}
               </button>
@@ -266,41 +253,6 @@ function PendingCard({ project, onApprove, onReject, onRequestRevision, defaultE
         </div>
       )}
 
-      {showRejectForm && (
-        <div className="hd-modal-overlay" onClick={() => !busy && setShowRejectForm(false)}>
-          <form
-            className="hd-modal"
-            onSubmit={handleReject}
-            onClick={e => e.stopPropagation()}
-            onKeyDown={e => { if (e.key === 'Escape' && !busy) setShowRejectForm(false) }}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={`reject-title-${project.id}`}
-          >
-            <div className="hd-modal-icon" aria-hidden="true"><XCircle size={22} /></div>
-            <h3 id={`reject-title-${project.id}`}>Reject this project?</h3>
-            <p className="hd-modal-text">
-              <strong>{project.name}</strong> ({project.code}) will be marked Rejected and returned to the Admin.
-            </p>
-            <label className="hd-label" htmlFor={`reject-reason-${project.id}`}>Reason for rejection (optional)</label>
-            <textarea
-              id={`reject-reason-${project.id}`}
-              placeholder="Explain why this project is being rejected…"
-              value={rejectReason}
-              onChange={e => setRejectReason(e.target.value)}
-              rows={4}
-              autoFocus
-            />
-            {err && <div className="hd-inline-error" role="alert" style={{ margin: '10px 0 0' }}><AlertCircle size={14} /> {err}</div>}
-            <div className="hd-reject-form-actions">
-              <button type="button" className="hd-btn-cancel" onClick={() => setShowRejectForm(false)} disabled={busy}>Cancel</button>
-              <button type="submit" className="hd-btn-reject-confirm" disabled={busy}>
-                {busy ? 'Working…' : 'Confirm Rejection'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
     </div>
   )
 }
@@ -354,9 +306,6 @@ function QueueItem({ project, meta, onDecide }) {
             label={days === 0 ? 'Waiting since today' : `Waiting ${days} day${days === 1 ? '' : 's'}`} />
         )}
         <div className="rf-queue-actions">
-          <button type="button" className="ui-btn ui-btn--danger-outline ui-btn--sm" onClick={() => onDecide('reject', project)}>
-            <ThumbsDown size={13} /> Reject
-          </button>
           <Link to={`/head/pending#${project.code}`} className="ui-btn ui-btn--secondary ui-btn--sm">
             <AlertTriangle size={13} /> Request revision
           </Link>
@@ -415,8 +364,7 @@ function HeadHome() {
   const [summary, setSummary] = useState(() => getCached(SUMMARY_CACHE) ?? null)
   const [sumLoading, setSumLoading] = useState(() => getCached(SUMMARY_CACHE) === undefined)
   const [sumError, setSumError] = useState('')
-  const [decide, setDecide] = useState(null)     // { type: 'approve'|'reject', project }
-  const [reason, setReason] = useState('')
+  const [decide, setDecide] = useState(null)     // { type: 'approve', project }
   const [busy, setBusy] = useState(false)
   const u = storedUser()
 
@@ -436,17 +384,12 @@ function HeadHome() {
   const oldest = daysSince(summary?.queue?.[0]?.waiting_since)
 
   const run = async () => {
-    const { type, project } = decide
+    const { project } = decide
     setBusy(true)
     try {
-      if (type === 'approve') {
-        await storeApprove(project.id)
-        toast.success(`${project.code} approved — sent to the Admin to publish for bidding.`)
-      } else {
-        await storeReject(project.id, reason)
-        toast.success(`${project.code} was rejected and returned to the Admin.`)
-      }
-      setDecide(null); setReason('')
+      await storeApprove(project.id)
+      toast.success(`${project.code} approved — sent to the Admin to publish for bidding.`)
+      setDecide(null)
       loadSummary()
     } catch (e) {
       toast.error(e.message || 'Could not record your decision.')
@@ -548,24 +491,14 @@ function HeadHome() {
 
       {decide && (
         <ConfirmDialog
-          title={decide.type === 'approve' ? `Approve ${decide.project.code}?` : `Reject ${decide.project.code}?`}
-          tone={decide.type === 'approve' ? 'primary' : 'danger'}
-          confirmLabel={decide.type === 'approve' ? 'Approve procurement' : 'Reject procurement'}
+          title={`Approve ${decide.project.code}?`}
+          tone="primary"
+          confirmLabel="Approve procurement"
           onChain busy={busy}
-          points={decide.type === 'approve'
-            ? [`${decide.project.name} (ABC ${decide.project.budget}) is approved.`, 'It goes back to the Admin, who publishes it for bidding.']
-            : [`${decide.project.name} is marked Rejected and returned to the Admin.`, 'A rejected procurement cannot be edited — the Admin files a new one.']}
-          onCancel={() => { setDecide(null); setReason('') }}
+          points={[`${decide.project.name} (ABC ${decide.project.budget}) is approved.`, 'It goes back to the Admin, who publishes it for bidding.']}
+          onCancel={() => setDecide(null)}
           onConfirm={run}
-        >
-          {decide.type === 'reject' && (
-            <label className="rf-field">
-              <span>Reason for rejection (optional)</span>
-              <textarea rows={3} value={reason} onChange={e => setReason(e.target.value)}
-                placeholder="Explain why, so the Admin can correct it in a new filing" />
-            </label>
-          )}
-        </ConfirmDialog>
+        />
       )}
     </div>
   )
@@ -587,11 +520,6 @@ function PendingPage() {
     const proj = projects.find(p => p.id === id)
     await storeApprove(id)
     setToast({ type: 'success', message: `"${proj?.name}" approved — sent back to Admin to be published for bidding.` })
-  }
-  const onReject = async (id, reason) => {
-    const proj = projects.find(p => p.id === id)
-    await storeReject(id, reason)
-    setToast({ type: 'success', message: `"${proj?.name}" was rejected.` })
   }
   const onRequestRevision = async (id, documents) => {
     const proj = projects.find(p => p.id === id)
@@ -616,7 +544,7 @@ function PendingPage() {
         ) : (
           <div className="hd-pending-list">
             {pending.map(p => (
-              <PendingCard key={p.id} project={p} onApprove={onApprove} onReject={onReject} onRequestRevision={onRequestRevision}
+              <PendingCard key={p.id} project={p} onApprove={onApprove} onRequestRevision={onRequestRevision}
                 defaultExpanded={loc.hash === `#${p.code}`} />
             ))}
           </div>

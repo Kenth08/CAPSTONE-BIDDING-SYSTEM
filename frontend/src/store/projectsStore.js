@@ -10,7 +10,7 @@
 import { useEffect } from 'react'
 import { useSyncExternalStore } from 'react'
 import {
-  apiListProjects, apiCreateProject, apiApproveProject, apiRejectProject, apiPublishProject,
+  apiListProjects, apiCreateProject, apiApproveProject, apiPublishProject,
   apiProjectRequestRevision, apiResubmitProjectDocuments,
 } from '../api'
 import { runAnchor } from '../blockchain/anchorStore'
@@ -196,14 +196,9 @@ export async function approveProject(id) {
   anchorAfter(updated, 'Approved by Head')
 }
 
-export async function rejectProject(id, reason = '') {
-  const updated = await apiRejectProject(id, reason)
-  upsert(updated)
-  anchorAfter(updated, 'Rejected by Head')
-}
-
 // Head flags one or more procurement documents — project bounces to Admin's
-// Planning queue (status `needs_revision`) instead of being rejected outright.
+// Planning queue (status `needs_revision`). This is the Head's only alternative
+// to approving: there is no reject (see ProjectViewSet.reject in the backend).
 export async function requestProjectRevision(id, documents) {
   const updated = await apiProjectRequestRevision(id, documents)
   upsert(updated)

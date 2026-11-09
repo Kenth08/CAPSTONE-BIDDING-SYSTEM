@@ -716,7 +716,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_permissions(self):
-        # Head approves/rejects/requests-revision; suppliers bid; Admin creates,
+        # Head approves or requests revision (reject is retired and always refused); suppliers bid; Admin creates,
         # manages & resubmits flagged documents; everyone signed in can read
         # (suppliers see only eligible projects — get_queryset).
         if self.action in {"approve", "reject", "request_revision"}:
@@ -1322,31 +1322,29 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
-        """Head rejects a pending project, with an optional reason for the Admin."""
-        with transaction.atomic():
-            project = self._lock(self.get_object())
-            refusal = self._require_pending_head(project, "rejected")
-            if refusal:
-                return refusal
-            project.status = Project.Status.REJECTED
-            project.reject_reason = request.data.get("reason", "") or ""
-            project.reviewed_at = timezone.now()
-            project.save()
-        reason = project.reject_reason.strip()
-        notify_users(
-            [project.created_by],
-            f"Your procurement \"{project.name}\" ({project.code}) was rejected by the Head."
-            + (f" Reason: {reason}" if reason else ""),
-            link="/admin/projects",
-        )
+        """Retired: the Head can no longer reject a procurement. Always refused.
+
+        A procurement is planned and approved before the Admin files it, so the
+        Head's review can only approve it or send flagged documents back for
+        revision (`request-revision`); it cannot cancel it. The endpoint stays,
+        answering 403 with a reason, so an old client or a direct API call gets a
+        clear refusal and nothing changes: no status change, no notification and
+        no anchor.
+
+        Procurements rejected before this change keep status `rejected` and their
+        HEAD_REJECTED anchor: the stage stays in the vocabulary (append-only, it is
+        written on-chain), and verifying those records is unaffected."""
+        self.get_object()  # same 404 as before for a project the caller can't see
         log_action(
-            request, "project.rejected",
-            entity_type="Project", entity_id=project.id,
-            description=f"Head rejected procurement {project.code}."
-            + (f" Reason: {reason}" if reason else ""),
+            request, "project.reject_refused",
+            entity_type="Project", entity_id=pk,
+            description="Refused a Head rejection: rejecting a procurement is no longer allowed.",
         )
-        anchor = anchor_project(project, BlockchainAnchor.Stage.HEAD_REJECTED)
-        return anchored_response(self.get_serializer(project).data, anchor)
+        return Response(
+            {"detail": "Rejecting a procurement is no longer part of the Head's review. "
+                       "Approve it, or flag documents and request a revision."},
+            status=http_status.HTTP_403_FORBIDDEN,
+        )
 
     @action(detail=True, methods=["post"], url_path="request-revision")
     def request_revision(self, request, pk=None):

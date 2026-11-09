@@ -8,7 +8,7 @@ A full-stack procurement management web application built as a capstone project.
 
 ### Procurement Lifecycle
 - **Project Planning** — Admin creates procurement projects with category, budget (ABC), procurement type, delivery location, required documents (Purchase Request, Technical Specifications, Terms of Reference, Approved Budget, Bid Evaluation Criteria), and a bidding period
-- **Head Approval** — Department Head reviews submitted projects, can approve, reject, or flag specific documents for revision without rejecting the whole project
+- **Head Approval** — Department Head reviews submitted projects, can approve the project or flag specific documents for revision. The Head can't reject: the project was approved before it was filed
 - **Publishing & Bidding** — Admin publishes approved projects; bidding deadline is computed automatically on publish (today + bidding period), eliminating stale deadlines. Published projects are only visible to eligible suppliers (matched by business category)
 - **Bid Submission** — Verified suppliers submit bids with supporting documents; one bid per supplier per project enforced; expired bidding windows automatically close
 - **Bid Evaluation** — Admin reviews submitted bids, can qualify/disqualify, flag individual documents for revision, and select a winner
@@ -18,7 +18,7 @@ A full-stack procurement management web application built as a capstone project.
 ### Blockchain Audit Trail (Sepolia)
 Each key lifecycle step is fingerprinted (SHA-256 of the record + its key document) and anchored on an Ethereum smart contract, giving the procurement a tamper-evident, independently verifiable history. Hashes only — no documents, amounts or personal data ever go on-chain. Individual bids and qualify/disqualify decisions are database records; they are fixed on-chain together, as one salted evaluation commitment, when the winner is selected. See [BLOCKCHAIN.md](BLOCKCHAIN.md#what-is-on-chain-and-what-is-not).
 
-- **Anchored stages** — `SUBMITTED` → `HEAD_APPROVED` / `HEAD_REJECTED` / `REVISION_REQUESTED` → `BIDDING_OPEN` → (at award) `BID_SUBMITTED` for the winning bid only → `AWARDED` → `RESOLUTION_ISSUED` → `NOA_ISSUED` → `NTP_ISSUED`. Bid submission and qualify/disqualify are database records only, so losing bids never reach the ledger.
+- **Anchored stages** — `SUBMITTED` → `HEAD_APPROVED` / `REVISION_REQUESTED` (`HEAD_REJECTED` (older projects only: the Head can no longer reject)) → `BIDDING_OPEN` → (at award) `BID_SUBMITTED` for the winning bid only → `AWARDED` → `RESOLUTION_ISSUED` → `NOA_ISSUED` → `NTP_ISSUED`. Bid submission and qualify/disqualify are database records only, so losing bids never reach the ledger.
 - **Post-award documents** — the signed BAC Resolution, Notice of Award and Notice to Proceed are uploaded and anchored with their file hash *and* issue date, so a notice can't be swapped or backdated after the fact
 - **MetaMask signing** for the demo, with an optional server-side signing path (`web3.py`) for production
 - **Public verification** — `/public` → *Verify on the Blockchain*: replay any procurement's trail straight from the contract with no account, no wallet and no gas, and check a document you hold against the document hash BidBridge recorded for each step (hashed locally in the browser — the file is never uploaded; the ledger holds the fingerprint of the step record that includes it, see [BLOCKCHAIN.md](BLOCKCHAIN.md))
@@ -103,7 +103,7 @@ Capstone-project/
 | Role         | Access |
 |--------------|--------|
 | **Admin**    | Full system access: create projects, manage suppliers, publish, evaluate bids, award contracts, view reports, manage MFA |
-| **Head**     | Review and approve/reject/flag projects before they can be published, manage MFA |
+| **Head**     | Review and approve projects, or flag documents for revision, before they can be published; manage MFA |
 | **Supplier** | Register, browse eligible projects, submit bids, track status, update profile/business types |
 | **Public**   | View open biddings and awarded contracts (no login required) |
 
@@ -226,7 +226,7 @@ Base URL: `http://127.0.0.1:8000/api/`
 ### Resources (require `Authorization: Bearer <access>`)
 | Endpoint | Description |
 |----------|-------------|
-| `/projects/` | Project CRUD + `publish`, `approve`, `reject`, `request-revision`, `resubmit-documents`, `bid` actions |
+| `/projects/` | Project CRUD + `publish`, `approve`, `request-revision`, `resubmit-documents`, `bid` actions (`reject` is retired and always answers 403) |
 | `/suppliers/` | Supplier list/detail + `approve`, `reject`, `request-revision`, `resubmit` actions |
 | `/bids/` | Bid list/detail + `qualify`, `disqualify`, `select-winner`, `request-revision`, `resubmit-documents` actions |
 | `/awards/` | Award records + `documents` action (upload a signed BAC Resolution / NOA / NTP, each anchored on-chain) |
@@ -282,7 +282,7 @@ Restoring, and what to do after an attack: **[RECOVERY.md](RECOVERY.md)**.
 Admin creates project (Planning)
         │
         ▼
-Head reviews → Approve / Reject / Flag documents for revision
+Head reviews → Approve / Flag documents for revision
         │
         ▼ (approved)
 Admin publishes → Bidding deadline computed (today + bidding period)
