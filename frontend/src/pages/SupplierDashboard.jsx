@@ -2001,9 +2001,13 @@ function SupplierStatusPage({ bids, profile, eligible, setToast }) {
       desc: 'Listed under My Bids.',
     },
     {
+      // "Shortlisted" = the Admin marked a bid Qualified. A bid holds one status,
+      // and a winner moves on from qualified to winner, so a winning bid was
+      // shortlisted too. Checking only `qualified` left this step pending for the
+      // supplier who won.
       label: 'Bid Shortlisted',
-      date: bids.some(b => b.status === 'qualified') ? 'Active' : 'Pending evaluation',
-      done: bids.some(b => b.status === 'qualified'),
+      date: bids.some(b => b.status === 'qualified' || b.status === 'winner') ? 'Active' : 'Pending evaluation',
+      done: bids.some(b => b.status === 'qualified' || b.status === 'winner'),
       desc: 'A bid is shortlisted for final evaluation.',
     },
     {

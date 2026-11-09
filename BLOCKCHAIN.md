@@ -19,7 +19,7 @@ endpoint, or permission changed behaviour.
 | Lifecycle event | Authoritative record | On-chain? (stage) | What the fingerprint covers | Who can see the details |
 |---|---|---|---|---|
 | Procurement filed | DB `Project` | Yes — `SUBMITTED` | code, name, category, type, ABC, periods, created_at + Purchase Request file hash | Admin, Head |
-| Head approves / rejects / requests revision | DB `Project` | Yes — `HEAD_APPROVED` / `HEAD_REJECTED` / `REVISION_REQUESTED` | same fields + the stage's document hash | Admin, Head |
+| Head approves / requests revision (rejecting is retired) | DB `Project` | Yes — `HEAD_APPROVED` / `HEAD_REJECTED` / `REVISION_REQUESTED` | same fields + the stage's document hash | Admin, Head |
 | Published for bidding | DB `Project` | Yes — `BIDDING_OPEN` | same fields + Bid Evaluation Criteria file hash | everyone (public after publish) |
 | Supplier submits a bid | DB `Bid` (audit log) | **No** (individually) | — | Admin, Head (D3), the bidder |
 | Qualify / disqualify | DB `Bid.status` (audit log) | **No** (individually) | — | Admin, Head, the bidder |
@@ -136,7 +136,7 @@ to Etherscan.
 | # | Who | Action | Anchored as |
 |---|-----|--------|-------------|
 | 1 | **Admin** | Planning → create a procurement (uploads the 5 documents) | `PROJECT / SUBMITTED` |
-| 2 | **Head** | Pending Approval → **Approve** (or Reject / Request Revision) | `PROJECT / HEAD_APPROVED` · `HEAD_REJECTED` · `REVISION_REQUESTED` |
+| 2 | **Head** | Pending Approval → **Approve** (or Request Revision) | `PROJECT / HEAD_APPROVED` · `REVISION_REQUESTED` (`HEAD_REJECTED` (older projects only: the Head can no longer reject)) |
 | 3 | **Admin** | Projects → **Publish** | `PROJECT / BIDDING_OPEN` |
 | 4 | **Supplier** | Bid Opportunities → **Submit bid** (with quotation) | *not anchored* — database record only |
 | 5 | **Admin** | Bids → open a bid → **Qualify** / **Disqualify** | *not anchored* — database record, audit-logged |

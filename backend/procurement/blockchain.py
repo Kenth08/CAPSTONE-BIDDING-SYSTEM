@@ -18,15 +18,18 @@ Design rules this module exists to enforce:
    fields (never Django objects, floats, or dict ordering) and serialized with
    json.dumps(sort_keys=True, separators=(",", ":")).
 """
+import contextlib
 import hashlib
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
 from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 
@@ -1236,40 +1239,172 @@ def submit_anchor_server_side(anchor):
         # every transaction out of gas, so it reverted on-chain while the app
         # still showed "On-chain". estimate_gas also raises if the call would
         # revert, which leaves the anchor un-anchored and retryable instead.
+        # Done before taking the signing lock, so the lock is held briefly.
         gas = int(call.estimate_gas({"from": account.address}) * GAS_HEADROOM)
-        tx = call.build_transaction({
-            "from": account.address,
-            # "pending", not the default "latest": awarding issues three
-            # documents (BAC Resolution, NOA, NTP) back to back, so the earlier
-            # transactions are still unmined when the next nonce is read. Off
-            # "latest" all three would claim the same nonce and two would be
-            # rejected as duplicates.
-            "nonce": w3.eth.get_transaction_count(account.address, "pending"),
-            "chainId": SEPOLIA_CHAIN_ID,
-            "gas": gas,
-            **_fee_fields(w3),
-        })
-        signed = account.sign_transaction(tx)
-        # web3.py v6 exposes .rawTransaction, v7 renamed it to .raw_transaction.
-        raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
-        # Web3.to_hex, not hash.hex(): hexbytes >= 1.0 (what web3 v7 pins)
-        # dropped the "0x" prefix from .hex(). to_hex is prefixed on every version.
-        tx_hash = Web3.to_hex(signed.hash)
-        if not _is_hex32(tx_hash):
-            raise ValueError("Signing produced a malformed transaction hash.")
-
-        previous = {field: getattr(anchor, field) for field in (*TRANSACTION_FIELDS, *CHAIN_IDENTITY_FIELDS)}
-        if not _claim_transaction(anchor, tx_hash, account.address):
-            anchor.refresh_from_db()
-            anchor.send_state = SEND_CLAIMED_ELSEWHERE
-            return anchor
-        anchor.refresh_from_db()
+        fees = _fee_fields(w3)
     except Exception as exc:  # noqa: BLE001 — nothing has been sent, so it can be retried
         logger.exception("Server-side anchoring failed for anchor %s", anchor.id)
         _pause_if_node_unreachable(exc)
         return None
 
-    return _broadcast(anchor, tx_hash, raw, w3, previous)
+    # Choosing the nonce, signing, claiming and broadcasting happen under one
+    # lock across every worker and thread (see _signing_lock), so two sends can
+    # never read the same nonce. Without it, documents issued at the same moment
+    # took the same nonce and the node dropped all but one (PC-QZK7-TPPF-G5Y8's
+    # Notice of Award and Notice to Proceed, 2026-11-09).
+    with _signing_lock() as held:
+        if not held:
+            logger.warning("Not sending anchor %s: another transaction is being signed. "
+                           "It stays retryable.", anchor.id)
+            return None
+        try:
+            nonce = _next_nonce(w3, account.address)
+            tx = call.build_transaction({
+                "from": account.address,
+                "nonce": nonce,
+                "chainId": SEPOLIA_CHAIN_ID,
+                "gas": gas,
+                **fees,
+            })
+            signed = account.sign_transaction(tx)
+            # web3.py v6 exposes .rawTransaction, v7 renamed it to .raw_transaction.
+            raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
+            # Web3.to_hex, not hash.hex(): hexbytes >= 1.0 (what web3 v7 pins)
+            # dropped the "0x" prefix from .hex(). to_hex is prefixed on every version.
+            tx_hash = Web3.to_hex(signed.hash)
+            if not _is_hex32(tx_hash):
+                raise ValueError("Signing produced a malformed transaction hash.")
+
+            previous = {field: getattr(anchor, field) for field in (*TRANSACTION_FIELDS, *CHAIN_IDENTITY_FIELDS)}
+            if not _claim_transaction(anchor, tx_hash, account.address):
+                anchor.refresh_from_db()
+                anchor.send_state = SEND_CLAIMED_ELSEWHERE
+                return anchor
+            anchor.refresh_from_db()
+        except Exception as exc:  # noqa: BLE001 — nothing has been sent, so it can be retried
+            logger.exception("Server-side anchoring failed for anchor %s", anchor.id)
+            _pause_if_node_unreachable(exc)
+            return None
+
+        result = _broadcast(anchor, tx_hash, raw, w3, previous)
+        if result is not None:
+            # Sent, or uncertain (it may be on the network): either way this
+            # nonce is spent. A refused send (None) used nothing.
+            _remember_nonce(account.address, nonce)
+            _wait_until_node_counts(w3, account.address, nonce)
+        return result
+
+
+# ── One signer at a time ─────────────────────────────────────────────────────
+# A wallet's transactions need consecutive, unique nonces, and the node keeps
+# only one transaction per nonce. Production runs several gunicorn workers with
+# several threads each, so two documents issued at the same moment used to read
+# the same "pending" nonce, and one of them was silently dropped.
+
+# Arbitrary, fixed id of the PostgreSQL advisory lock that serializes signing.
+SIGNING_LOCK_KEY = 0x50434C45  # "PCLE"
+# How long a send waits for another one to finish before giving up. The anchor
+# then stays unsent and retryable ("Anchor all"), like any failed send: anchoring
+# never blocks the business action, and requests stay well under 30 seconds.
+SIGNING_LOCK_WAIT_SECONDS = 10
+# A nonce this worker sent is trusted over the node's "pending" count for this
+# long. Public RPCs are load-balanced, and the next request can reach a node that
+# hasn't seen the last transaction yet.
+NONCE_MEMORY_SECONDS = 120
+# After a send, wait up to this long for the node to count it, so the next signer
+# (possibly in another worker, with no shared memory) reads the right nonce. Short,
+# because an award sends three transactions inside one request.
+# Off under `manage.py test`, where the fake node never counts anything; the
+# wait has its own test.
+NONCE_VISIBLE_WAIT_SECONDS = 0 if getattr(settings, "RUNNING_TESTS", False) else 1.5
+
+_process_signing_lock = threading.Lock()
+_last_nonce = {}  # address -> (nonce, time.monotonic() when sent); guarded by the lock
+
+
+@contextlib.contextmanager
+def _signing_lock():
+    """Hold the signing lock for this process and, on PostgreSQL, for every
+    process sharing the database. Yields True when held, False when another send
+    kept it past SIGNING_LOCK_WAIT_SECONDS.
+
+    The database part is a session-level advisory lock: it doesn't depend on a
+    transaction (sends run outside transaction.atomic) and PostgreSQL releases it
+    if the connection drops. If the database can't take advisory locks at all,
+    this falls back to the process lock alone and says so in the log, instead of
+    stopping every send."""
+    from django.db import connection  # noqa: PLC0415
+
+    deadline = time.monotonic() + SIGNING_LOCK_WAIT_SECONDS
+    if not _process_signing_lock.acquire(timeout=SIGNING_LOCK_WAIT_SECONDS):
+        yield False
+        return
+    try:
+        if connection.vendor != "postgresql":
+            yield True
+            return
+        held_in_db = False
+        try:
+            with connection.cursor() as cursor:
+                while True:
+                    cursor.execute("SELECT pg_try_advisory_lock(%s)", [SIGNING_LOCK_KEY])
+                    held_in_db = bool(cursor.fetchone()[0])
+                    if held_in_db or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.2)
+        except Exception:  # noqa: BLE001 — degrade to the process lock, never block anchoring
+            logger.warning("Could not take the database signing lock; using the process lock only.",
+                           exc_info=True)
+            yield True
+            return
+        if not held_in_db:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_advisory_unlock(%s)", [SIGNING_LOCK_KEY])
+            except Exception:  # noqa: BLE001 — released anyway when the connection closes
+                logger.warning("Could not release the database signing lock.", exc_info=True)
+    finally:
+        _process_signing_lock.release()
+
+
+def _next_nonce(w3, address):
+    """The nonce for the next transaction from `address`. Call under _signing_lock.
+
+    "pending", not the default "latest": the earlier transactions of an award
+    (BAC Resolution, NOA, NTP) are still unmined when the next nonce is read, and
+    off "latest" all three would claim the same one. The nonce this worker sent
+    last is used as a floor, in case the node hasn't counted it yet."""
+    nonce = int(w3.eth.get_transaction_count(address, "pending"))
+    last = _last_nonce.get(address)
+    if last is not None and time.monotonic() - last[1] < NONCE_MEMORY_SECONDS:
+        nonce = max(nonce, last[0] + 1)
+    return nonce
+
+
+def _remember_nonce(address, nonce):
+    _last_nonce[address] = (nonce, time.monotonic())
+
+
+def _wait_until_node_counts(w3, address, nonce):
+    """Briefly wait until the node's pending count includes `nonce`. Never raises:
+    at worst the next signer's own checks (memory, lock) still apply."""
+    if NONCE_VISIBLE_WAIT_SECONDS <= 0:
+        return
+    deadline = time.monotonic() + NONCE_VISIBLE_WAIT_SECONDS
+    while True:
+        try:
+            if int(w3.eth.get_transaction_count(address, "pending")) > nonce:
+                return
+        except Exception:  # noqa: BLE001 — best effort
+            return
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.25)
 
 
 # ── Confirmation: is the reported transaction really on-chain? ───────────────

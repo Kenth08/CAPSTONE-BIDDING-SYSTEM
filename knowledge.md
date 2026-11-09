@@ -15,7 +15,7 @@ is tamper-evident and publicly verifiable.
 | Role | What they do |
 |------|--------------|
 | **Admin** (BAC / procurement office) | Creates projects, reviews supplier registrations, publishes approved projects, evaluates bids, selects winners, issues post-award documents, views reports |
-| **Head** (department head) | Approves, rejects, or requests document revisions on submitted projects |
+| **Head** (department head) | Approves submitted projects or requests document revisions. Can't reject: the project was approved before it was filed, so the Head's review can correct it but not cancel it (`/reject/` answers 403) |
 | **Supplier** | Registers with compliance documents, bids on projects matching their business category, resubmits flagged documents |
 | **Public** | No login: views open biddings, awarded contracts, and verifies the blockchain trail at `/public` |
 
@@ -46,8 +46,9 @@ chain id, contract) and depth/finality (`chain_finalized` only if the node's
 
 ### Project statuses (`Project.Status`)
 
-`draft` → `pending_head` → (`needs_revision` ↔ `pending_head`) → `approved` | `rejected` → `published` → `closed` (deadline passed) / `awarded`
+`draft` → `pending_head` → (`needs_revision` ↔ `pending_head`) → `approved` → `published` → `closed` (deadline passed) / `awarded`
 
+- `rejected` and the `HEAD_REJECTED` stage exist only on older projects. The Head can no longer reject, but both stay, because statuses are history and stages are written on-chain.
 - `deadline` is **computed at publish time** (today + `bidding_period_days`), never typed in by the Admin.
 - `expected_delivery_date` is **computed at award time** (award date + `delivery_period_days`).
 - Expired published projects are flipped to `closed` lazily on read (`close_expired_published_projects`) — there is no background worker.

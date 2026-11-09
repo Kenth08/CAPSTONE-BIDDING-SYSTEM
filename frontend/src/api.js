@@ -550,8 +550,6 @@ export const apiGetProject = (id) => apiFetch(`/projects/${id}/`)
 export const apiCreateProject = (formData) => apiUpload('/projects/', formData)
 export const apiApproveProject = (id) =>
   apiFetch(`/projects/${id}/approve/`, { method: 'POST', body: '{}' })
-export const apiRejectProject = (id, reason) =>
-  apiFetch(`/projects/${id}/reject/`, { method: 'POST', body: JSON.stringify({ reason }) })
 export const apiPublishProject = (id) =>
   apiFetch(`/projects/${id}/publish/`, { method: 'POST', body: '{}' })
 // Head flags one or more procurement documents — does NOT reject the project,
