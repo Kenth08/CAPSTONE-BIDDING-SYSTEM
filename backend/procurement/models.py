@@ -74,6 +74,68 @@ PROCUREMENT_CATEGORIES = [
     "Medical Supplies", "Sports Equipment", "Books & Educational Materials",
 ]
 
+CATEGORY_NAME_MAX_LENGTH = 120
+
+
+class ProcurementCategory(models.Model):
+    """A category the Admin added on top of the built-in PROCUREMENT_CATEGORIES.
+
+    Categories drive supplier eligibility (a project is visible only to suppliers
+    who chose its category), so a project's category can't be arbitrary text:
+    nobody would match it. Instead the Admin adds a named category here, and from
+    then on it can be picked for projects AND by suppliers at registration or in
+    Settings. Added categories have no category-specific documents (only the base
+    documents); those stay defined in code (document_requirements.CATEGORY_DOCUMENTS)."""
+
+    name = models.CharField(max_length=CATEGORY_NAME_MAX_LENGTH, unique=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+def all_categories():
+    """Every valid category name: the built-in list first (in its fixed order),
+    then the Admin-added ones alphabetically."""
+    builtin = set(PROCUREMENT_CATEGORIES)
+    added = [n for n in ProcurementCategory.objects.values_list("name", flat=True) if n not in builtin]
+    return list(PROCUREMENT_CATEGORIES) + added
+
+
+def known_categories(names):
+    """`names` kept in order, minus any that aren't a category. Built-in names
+    are checked without touching the database, so the common case (every name
+    built in) costs no query; this runs once per supplier in list views."""
+    names = list(names or [])
+    builtin = set(PROCUREMENT_CATEGORIES)
+    rest = {n for n in names if n not in builtin}
+    if rest:
+        rest = set(ProcurementCategory.objects.filter(name__in=rest).values_list("name", flat=True))
+    return [n for n in names if n in builtin or n in rest]
+
+
+def canonical_categories(names):
+    """`names` de-duplicated and unknown ones dropped, in all_categories() order:
+    built-ins in their fixed order, then added ones alphabetically."""
+    chosen = set(known_categories(names))
+    builtin = [c for c in PROCUREMENT_CATEGORIES if c in chosen]
+    return builtin + sorted(chosen - set(PROCUREMENT_CATEGORIES))
+
+
+def find_category(name):
+    """The existing category name matching `name` ignoring case and spacing,
+    or None. Stops 'it equipment' becoming a second 'IT Equipment'."""
+    key = " ".join(str(name or "").split()).casefold()
+    return next((c for c in all_categories() if c.casefold() == key), None)
+
+
 # Documents the Admin must upload before a procurement can be submitted for
 # approval: (model field, human label, required).
 PROCUREMENT_DOCUMENT_FIELDS = [
@@ -326,7 +388,7 @@ class Project(SecureUploadsMixin, models.Model):
     # see ProjectViewSet.publish.
     bidding_period_days = models.PositiveSmallIntegerField(null=True, blank=True)
     type = models.CharField(max_length=120, blank=True)
-    # Procurement category (one of PROCUREMENT_CATEGORIES) — drives supplier eligibility.
+    # Procurement category (one of all_categories()) — drives supplier eligibility.
     category = models.CharField(max_length=120, blank=True)
     delivery_location = models.CharField(max_length=255, blank=True)
     # Expected delivery date. NOT set by the Admin directly — like `deadline`,

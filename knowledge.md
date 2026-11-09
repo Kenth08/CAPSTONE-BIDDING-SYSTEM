@@ -59,6 +59,12 @@ A published project is only visible to verified suppliers whose business
 category matches the project's `category` (see `frontend/src/constants/categories.js`
 and `eligible_types`). One bid per supplier per project (DB constraint).
 
+Categories are the built-in `PROCUREMENT_CATEGORIES` plus any the Admin adds from the
+Planning form (`ProcurementCategory`, `GET/POST /api/categories/`). A project's category
+must be one of these, never free text, because nobody could match it. A new category
+has no suppliers until they add it (registration, or a category request in Settings)
+and has only the base documents.
+
 ### Required project documents
 
 Purchase Request, Technical Specifications, Terms of Reference, Approved Budget

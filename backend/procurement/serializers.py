@@ -17,7 +17,8 @@ from .files import SUPPLIER_VISIBLE_PROJECT_FIELDS, protected_file_url
 from .models import (
     AWARD_DOCUMENT_FIELDS,
     BID_DOCUMENT_FIELDS,
-    PROCUREMENT_CATEGORIES,
+    canonical_categories,
+    known_categories,
     PROCUREMENT_DOCUMENT_FIELDS,
     PRODUCT_IMAGES_REVIEW_KEY,
     PRODUCT_IMAGES_REVIEW_LABEL,
@@ -179,18 +180,18 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
 
 def clean_business_types(value):
     """Validate a requested category list and return it de-duplicated, in the
-    canonical PROCUREMENT_CATEGORIES order (so the same set always compares and
+    canonical all_categories() order (so the same set always compares and
     stores identically). Raises serializers.ValidationError."""
     if not isinstance(value, list) or not value:
         raise serializers.ValidationError({"business_types": "Select at least one business type."})
     if not all(isinstance(v, str) for v in value):
         raise serializers.ValidationError({"business_types": "Invalid business type list."})
-    invalid = [v for v in value if v not in PROCUREMENT_CATEGORIES]
+    valid = set(known_categories(value))
+    invalid = [v for v in value if v not in valid]
     if invalid:
         raise serializers.ValidationError(
             {"business_types": f"Unknown business type(s): {', '.join(invalid)}."})
-    chosen = set(value)
-    return [c for c in PROCUREMENT_CATEGORIES if c in chosen]
+    return canonical_categories(value)
 
 
 class SupplierMeUpdateSerializer(serializers.ModelSerializer):
@@ -308,7 +309,7 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
         def sent(field):
             return creating or field in attrs
 
-        if sent("category") and attrs.get("category") not in PROCUREMENT_CATEGORIES:
+        if sent("category") and not known_categories([attrs.get("category")]):
             raise serializers.ValidationError({"category": "Select a valid procurement category."})
         required_fields = {
             "name": "Procurement Name", "type": "Procurement Type",

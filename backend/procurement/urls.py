@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .categories import CategoryView
 from .dashboard import AdminSummaryView, HeadSummaryView, PublicSummaryView
 from .files import ProtectedFileLinkView, ProtectedFileView, PublicNoticeOfAwardView
 from .views import (
@@ -29,6 +30,7 @@ router.register(r"notifications", NotificationViewSet, basename="notification")
 # Public, unauthenticated endpoint (declared before the router so it isn't
 # shadowed by an authenticated route).
 urlpatterns = [
+    path("categories/", CategoryView.as_view(), name="categories"),
     path("public/procurement/", PublicProcurementView.as_view(), name="public-procurement"),
     # Read-only dashboard summaries (see procurement/dashboard.py).
     path("public/summary/", PublicSummaryView.as_view(), name="public-summary"),

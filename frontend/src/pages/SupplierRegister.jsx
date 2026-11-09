@@ -5,7 +5,7 @@ import {
   FileText, Info, Loader2, Pencil, RefreshCw, Shield, Trash2, X,
 } from 'lucide-react'
 import { apiRegisterSupplier } from '../api'
-import { CATEGORIES } from '../constants/categories'
+import { useCategories } from '../store/categoriesStore'
 import {
   appendCategoryDocs, checkDocFile, pastExpiryProblem, todayIso,
   useCategoryDocState, useCategoryRequirements,
@@ -21,7 +21,6 @@ const STEPS = [
 ]
 
 // Shared with the procurement category list so eligibility matching lines up.
-const BUSINESS_TYPES = CATEGORIES
 
 // key = backend field name, required = must upload to register.
 // `expiry` / `extra` place a related form field inside the document's card.
@@ -445,6 +444,7 @@ function Stepper({ step, onSelect, disabled }) {
 
 // ── Step 1: Basic Info ────────────────────────────────────────────────────────
 function StepBasic({ form, set, businessTypes, toggleType, showPass, setShowPass, showConfirm, setShowConfirm, errors = {}, catReq }) {
+  const allCategories = useCategories()
   const text = (name, label, extra = {}) => {
     const { hint, transform, ...rest } = extra
     return (
@@ -511,7 +511,7 @@ function StepBasic({ form, set, businessTypes, toggleType, showPass, setShowPass
           aria-describedby={errors.business_types ? 'sr-business_types-err' : undefined}>
           <legend className="sr-visually-hidden">Business categories (required)</legend>
           <div className="sr-checks">
-            {BUSINESS_TYPES.map(t => (
+            {allCategories.map(t => (
               <label key={t} className={businessTypes.includes(t) ? 'on' : ''}>
                 <input type="checkbox" checked={businessTypes.includes(t)} onChange={() => toggleType(t)}
                   aria-invalid={errors.business_types ? true : undefined} />

@@ -14,7 +14,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from procurement.document_requirements import (
     EXPIRY_SUFFIX, UPLOAD_PREFIX, category_requirements, validate_future_expiry,
 )
-from procurement.models import PROCUREMENT_CATEGORIES, Supplier, SupplierCategoryDocument
+from procurement.models import Supplier, SupplierCategoryDocument, known_categories
 from procurement.validators import validate_upload
 
 from . import lockout, mfa
@@ -158,11 +158,11 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
     def validate_business_types(self, value):
         if not isinstance(value, list) or not value:
             raise serializers.ValidationError("Select at least one business category.")
-        if len(value) > len(PROCUREMENT_CATEGORIES):
+        if len(value) > 100:
             raise serializers.ValidationError("Too many categories selected.")
         if not all(isinstance(item, str) for item in value):
             raise serializers.ValidationError("Invalid category list.")
-        if not set(value).issubset(PROCUREMENT_CATEGORIES):
+        if not set(value).issubset(known_categories(value)):
             raise serializers.ValidationError("Select only valid procurement categories.")
         return value
 
