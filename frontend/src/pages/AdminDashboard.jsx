@@ -1316,10 +1316,11 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
   const catRequiredDone = catRequired.filter(d => catDocs.files[d.key]).length
 
   return (
-    <div className="ad-modal-overlay" onClick={onClose}>
+    // No click-outside-to-close: onClose resets the whole registration form, so a
+    // stray click on the backdrop used to wipe everything typed and uploaded.
+    <div className="ad-modal-overlay">
       <div
         className="ad-modal ad-modal-wizard"
-        onClick={e => e.stopPropagation()}
         style={{ maxWidth: 720 }}
         role="dialog"
         aria-modal="true"

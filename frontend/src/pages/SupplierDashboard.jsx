@@ -435,14 +435,17 @@ function BidModal({ project, profile, onClose, onSubmit }) {
   const isLast = step === BID_STEPS.length - 1
 
   return (
-    <div className="sd-modal-overlay" onClick={() => !submitting && onClose()}>
-      <form className="sd-modal sd-modal-lg" onClick={e => e.stopPropagation()} onSubmit={handleSubmit}>
+    // No click-outside-to-close: this is a long multi-step form with uploads, and
+    // a stray click (or a text selection released over the backdrop) used to
+    // discard everything. Only X and Cancel close it.
+    <div className="sd-modal-overlay">
+      <form className="sd-modal sd-modal-lg" onSubmit={handleSubmit}>
         <div className="sd-modal-header">
           <div>
             <h3>Submit Bid</h3>
             <p className="sd-muted sd-small">{project.id} · {project.name}</p>
           </div>
-          <button type="button" className="sd-modal-close" onClick={onClose}><X size={18} /></button>
+          <button type="button" className="sd-modal-close" onClick={onClose} disabled={submitting} aria-label="Close"><X size={18} /></button>
         </div>
 
         {/* Stepper — same pattern as the supplier registration form */}
