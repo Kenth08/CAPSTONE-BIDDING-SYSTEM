@@ -149,9 +149,9 @@ class PublishRequiresHeadApprovalTests(APITestCase):
         return self.client.post(f"/api/projects/{project.pk}/publish/")
 
     def test_cannot_publish_a_rejected_procurement(self):
-        project = make_project(status=Project.Status.PENDING_HEAD)
-        self.client.force_authenticate(user=self.head)
-        self.client.post(f"/api/projects/{project.pk}/reject/", {"reason": "no"}, format="json")
+        # The Head can no longer reject, but procurements rejected before that
+        # change still exist and must stay unpublishable.
+        project = make_project(status=Project.Status.REJECTED)
 
         res = self._publish(project)
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
@@ -779,7 +779,8 @@ class HeadDecisionStateTests(APITestCase):
         for state in (Project.Status.AWARDED, Project.Status.PUBLISHED, Project.Status.CLOSED,
                       Project.Status.APPROVED, Project.Status.REJECTED,
                       Project.Status.NEEDS_REVISION, Project.Status.DRAFT):
-            for action in ("approve", "reject", "request-revision"):
+            # "reject" is retired and refused in every state (HeadRejectRetiredTests).
+            for action in ("approve", "request-revision"):
                 with self.subTest(state=state, action=action):
                     project = make_project(status=state)
                     res = self._decide(project, action)
@@ -798,7 +799,7 @@ class HeadDecisionStateTests(APITestCase):
         self.assertEqual(project.status, Project.Status.AWARDED)
 
     def test_each_decision_still_works_on_a_pending_procurement(self):
-        expected = {"approve": Project.Status.APPROVED, "reject": Project.Status.REJECTED,
+        expected = {"approve": Project.Status.APPROVED,
                     "request-revision": Project.Status.NEEDS_REVISION}
         for action, outcome in expected.items():
             with self.subTest(action=action):
@@ -815,6 +816,72 @@ class HeadDecisionStateTests(APITestCase):
         self.assertEqual(self.client.post(f"/api/projects/{project.pk}/publish/").status_code, 400)
         self.assertEqual(BlockchainAnchor.objects.filter(
             entity_id=str(project.pk), stage=BlockchainAnchor.Stage.BIDDING_OPEN).count(), 1)
+
+
+class HeadRejectRetiredTests(APITestCase):
+    """The Head can no longer reject a procurement: it was planned and approved
+    before it was filed, so the review can approve it or request a revision, not
+    cancel it. /reject/ stays as an endpoint that always refuses, so a stale
+    client or a direct API call can't reject behind the UI's back."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.head = make_head()
+
+    def _reject(self, project, user):
+        self.client.force_authenticate(user=user)
+        return self.client.post(f"/api/projects/{project.pk}/reject/", {"reason": "no"}, format="json")
+
+    def test_head_reject_on_a_pending_procurement_is_refused_and_changes_nothing(self):
+        from .models import Notification
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        notifications = Notification.objects.count()
+
+        res = self._reject(project, self.head)
+
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, res.data)
+        self.assertIn("request a revision", res.data["detail"])
+        project.refresh_from_db()
+        self.assertEqual(project.status, Project.Status.PENDING_HEAD)
+        self.assertEqual(project.reject_reason, "")
+        self.assertIsNone(project.reviewed_at)
+        self.assertFalse(BlockchainAnchor.objects.filter(entity_id=str(project.pk)).exists())
+        self.assertEqual(Notification.objects.count(), notifications)
+        self.assertFalse(AuditLog.objects.filter(action="project.rejected").exists())
+        self.assertTrue(AuditLog.objects.filter(action="project.reject_refused").exists())
+
+    def test_reject_is_refused_in_every_state(self):
+        for state in Project.Status.values:
+            with self.subTest(state=state):
+                project = make_project(status=state)
+                res = self._reject(project, self.head)
+                self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, res.data)
+                project.refresh_from_db()
+                self.assertEqual(project.status, state)
+
+    def test_admin_still_cannot_reject(self):
+        project = make_project(status=Project.Status.PENDING_HEAD)
+        res = self._reject(project, self.admin)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        project.refresh_from_db()
+        self.assertEqual(project.status, Project.Status.PENDING_HEAD)
+
+    def test_the_head_can_still_approve_and_request_revision(self):
+        self.client.force_authenticate(user=self.head)
+        approved = make_project(status=Project.Status.PENDING_HEAD)
+        res = self.client.post(f"/api/projects/{approved.pk}/approve/", {}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        revised = make_project(status=Project.Status.PENDING_HEAD)
+        res = self.client.post(f"/api/projects/{revised.pk}/request-revision/",
+                               {"documents": {"purchase_request": "blurry"}}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+
+    def test_the_head_rejected_stage_stays_in_the_on_chain_vocabulary(self):
+        # Rule 1: stages are written on-chain, so old HEAD_REJECTED anchors must
+        # keep resolving even though no new one can be created.
+        self.assertIn("HEAD_REJECTED", BlockchainAnchor.Stage.values)
+        self.assertIn("rejected", Project.Status.values)
 
 
 class AwardPreconditionTests(APITestCase):
