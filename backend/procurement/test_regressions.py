@@ -3185,3 +3185,138 @@ class PageSpeedQueryBudgetTests(APITestCase):
         self.assertEqual(chain["pending"], len(rows) - 3 + 1)
         self.assertEqual(res.data["kpis"]["anchors_pending"], chain["pending"])
         self.assertEqual(len(chain["pending_items"]), min(8, chain["pending"]))
+
+
+class SigningNonceRaceTests(APITestCase):
+    """Documents issued at the same moment were signed with the same nonce, and
+    the node dropped all but one: PC-QZK7-TPPF-G5Y8's Notice of Award and Notice
+    to Proceed (2026-11-09) never reached the chain. Choosing the nonce, signing
+    and sending now happen under one lock, and a worker never reuses a nonce it
+    just sent, even when the node hasn't counted it yet."""
+
+    from .tests import ServerSideSigningTests as _Base
+    _fake_web3 = _Base._fake_web3
+    TX_HASH = _Base.TX_HASH
+    del _Base
+
+    def setUp(self):
+        blockchain._last_nonce.clear()
+        self.addCleanup(blockchain._last_nonce.clear)
+
+    def _anchor(self, n):
+        return BlockchainAnchor.objects.create(
+            entity_type=BlockchainAnchor.EntityType.AWARD, entity_ref="PC-QZK7-TPPF-G5Y8",
+            stage=BlockchainAnchor.Stage.NOA_ISSUED, data_hash="0x" + f"{n:02x}" * 32,
+        )
+
+    def _web3(self, pending=34, **kw):
+        Web3, w3, captured = self._fake_web3(**kw)
+        hashes = iter("0x" + f"{i:02x}" * 32 for i in range(0xa0, 0xff))
+        Web3.to_hex.side_effect = lambda _: next(hashes)
+        nonces = []
+        build = w3.eth.contract.return_value.functions.recordEvent.return_value.build_transaction
+        build.side_effect = lambda params: nonces.append(params["nonce"]) or dict(params)
+        # A stale, load-balanced node: it never counts what was just sent.
+        w3.eth.get_transaction_count.return_value = pending
+        return Web3, w3, nonces
+
+    def _send(self, Web3, anchor):
+        with mock.patch("procurement.blockchain._load_web3", return_value=Web3), \
+             mock.patch("procurement.blockchain.SERVER_SIGNING_ENABLED", True), \
+             mock.patch("procurement.blockchain.BLOCKCHAIN_PRIVATE_KEY", "0x" + "22" * 32), \
+             mock.patch("procurement.blockchain.LEDGER_CONTRACT_ADDRESS", "0x" + "33" * 20):
+            return blockchain.submit_anchor_server_side(anchor)
+
+    def test_back_to_back_sends_never_share_a_nonce_even_on_a_stale_node(self):
+        Web3, _, nonces = self._web3(pending=34)
+        for n in range(3):
+            self.assertIsNotNone(self._send(Web3, self._anchor(n)))
+        self.assertEqual(nonces, [34, 35, 36])
+
+    def test_the_node_count_wins_when_it_is_ahead(self):
+        Web3, w3, nonces = self._web3(pending=34)
+        self._send(Web3, self._anchor(1))
+        w3.eth.get_transaction_count.return_value = 40   # e.g. sent from elsewhere
+        self._send(Web3, self._anchor(2))
+        self.assertEqual(nonces, [34, 40])
+
+    def test_a_refused_send_does_not_use_up_a_nonce(self):
+        from web3.exceptions import Web3RPCError
+        Web3, w3, nonces = self._web3(pending=34, send_raises=Web3RPCError(
+            "{'code': -32000, 'message': 'insufficient funds for gas * price + value'}"))
+        self.assertIsNone(self._send(Web3, self._anchor(1)))
+        w3.eth.send_raw_transaction.side_effect = None
+        self._send(Web3, self._anchor(2))
+        self.assertEqual(nonces, [34, 34])
+
+    def test_the_memory_expires_so_a_lost_nonce_is_reused(self):
+        Web3, _, nonces = self._web3(pending=34)
+        self._send(Web3, self._anchor(1))
+        with mock.patch("procurement.blockchain.NONCE_MEMORY_SECONDS", 0):
+            self._send(Web3, self._anchor(2))
+        self.assertEqual(nonces, [34, 34])
+
+    def test_a_busy_lock_leaves_the_anchor_unsent_and_retryable(self):
+        Web3, w3, nonces = self._web3()
+        anchor = self._anchor(1)
+        with mock.patch("procurement.blockchain.SIGNING_LOCK_WAIT_SECONDS", 0.05):
+            blockchain._process_signing_lock.acquire()
+            try:
+                self.assertIsNone(self._send(Web3, anchor))
+            finally:
+                blockchain._process_signing_lock.release()
+        anchor.refresh_from_db()
+        self.assertEqual(anchor.tx_hash, "")
+        self.assertEqual(nonces, [])
+        w3.eth.send_raw_transaction.assert_not_called()
+
+    def test_signing_waits_for_a_send_in_another_thread(self):
+        import threading
+        with mock.patch("procurement.blockchain.SIGNING_LOCK_WAIT_SECONDS", 2):
+            blockchain._process_signing_lock.acquire()
+            threading.Timer(0.2, blockchain._process_signing_lock.release).start()
+            with blockchain._signing_lock() as held:
+                self.assertTrue(held)
+
+    def test_postgres_takes_and_releases_the_advisory_lock(self):
+        from django.db import connection
+        cursor = mock.MagicMock()
+        cursor.fetchone.return_value = (True,)
+        cm = mock.MagicMock()
+        cm.__enter__.return_value = cursor
+        with mock.patch.object(connection, "vendor", "postgresql"), \
+             mock.patch.object(connection, "cursor", return_value=cm):
+            with blockchain._signing_lock() as held:
+                self.assertTrue(held)
+        sql = [c.args[0] for c in cursor.execute.call_args_list]
+        self.assertEqual(sql, ["SELECT pg_try_advisory_lock(%s)", "SELECT pg_advisory_unlock(%s)"])
+        self.assertFalse(blockchain._process_signing_lock.locked())
+
+    def test_postgres_lock_held_by_another_worker_gives_up_after_the_wait(self):
+        from django.db import connection
+        cursor = mock.MagicMock()
+        cursor.fetchone.return_value = (False,)
+        cm = mock.MagicMock()
+        cm.__enter__.return_value = cursor
+        with mock.patch.object(connection, "vendor", "postgresql"), \
+             mock.patch.object(connection, "cursor", return_value=cm), \
+             mock.patch("procurement.blockchain.SIGNING_LOCK_WAIT_SECONDS", 0.3):
+            with blockchain._signing_lock() as held:
+                self.assertFalse(held)
+        self.assertNotIn("SELECT pg_advisory_unlock(%s)", [c.args[0] for c in cursor.execute.call_args_list])
+
+    def test_a_database_without_advisory_locks_falls_back_to_the_process_lock(self):
+        from django.db import connection
+        with mock.patch.object(connection, "vendor", "postgresql"), \
+             mock.patch.object(connection, "cursor", side_effect=RuntimeError("no advisory locks")), \
+             self.assertLogs("procurement.blockchain", level="WARNING"):
+            with blockchain._signing_lock() as held:
+                self.assertTrue(held)
+        self.assertFalse(blockchain._process_signing_lock.locked())
+
+    def test_after_a_send_it_waits_briefly_for_the_node_to_count_it(self):
+        w3 = mock.MagicMock()
+        w3.eth.get_transaction_count.side_effect = [34, 34, 35]
+        with mock.patch("procurement.blockchain.NONCE_VISIBLE_WAIT_SECONDS", 2):
+            blockchain._wait_until_node_counts(w3, "0x" + "11" * 20, 34)
+        self.assertEqual(w3.eth.get_transaction_count.call_count, 3)
