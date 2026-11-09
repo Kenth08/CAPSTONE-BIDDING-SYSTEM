@@ -19,7 +19,8 @@ import {
   useProjects, createProject, publishProject, refreshProjects, isExpired, deadlineLabel, deliveryLabel,
   resubmitProjectDocuments,
 } from '../store/projectsStore'
-import { CATEGORIES } from '../constants/categories'
+import { findCategory, normalizeCategory } from '../constants/categories'
+import { addCategory, useCategories } from '../store/categoriesStore'
 import CategoryDocumentFields, {
   appendCategoryDocs, categoryDocsProblem, pastExpiryProblem, todayIso,
   useCategoryDocState, useCategoryRequirements,
@@ -709,6 +710,32 @@ function PlanningPage() {
   const [toast, setToast] = useState(null)      // { type, message }
   const [viewProject, setViewProject] = useState(null) // project shown in detail modal
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  const categories = useCategories()
+  const [addingCategory, setAddingCategory] = useState(false)
+  const typedCategory = normalizeCategory(form.category)
+  const knownCategory = findCategory(categories, typedCategory)
+  const isNewCategory = Boolean(typedCategory) && !knownCategory
+
+  // Adds the typed name to the shared category list (or picks the existing one
+  // it matches ignoring case) and returns the stored name, or null on failure.
+  const saveCategory = async () => {
+    if (knownCategory) { set('category', knownCategory); return knownCategory }
+    if (!typedCategory) return null
+    if (typedCategory.includes(',')) { setSubmitErr("A category name can't contain a comma."); return null }
+    setAddingCategory(true)
+    try {
+      const name = await addCategory(typedCategory)
+      set('category', name)
+      setSubmitErr('')
+      setToast({ type: 'success', message: `Category "${name}" added.` })
+      return name
+    } catch (err) {
+      setSubmitErr(err.message || 'Could not add the category.')
+      return null
+    } finally {
+      setAddingCategory(false)
+    }
+  }
 
   const onDoc = (key, file) => {
     if (!file) return
@@ -733,13 +760,15 @@ function PlanningPage() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     const missingDocs = REQUIRED_PROCUREMENT_DOCS.filter(d => !files[d.key])
-    if (!form.category) { setSubmitErr('Select a procurement category.'); return }
+    if (!typedCategory) { setSubmitErr('Enter or select a procurement category.'); return }
     if (missingDocs.length) {
       setSubmitErr(`Upload all required documents (${missingDocs.length} missing).`); return
     }
+    const category = await saveCategory()
+    if (!category) return
     setSubmitErr(''); setSubmitting(true)
     try {
-      await createProject(form, files)
+      await createProject({ ...form, category }, files)
       resetForm()
       setToast({ type: 'success', message: 'Procurement submitted to the Head for approval.' })
     } catch (err) {
@@ -791,10 +820,32 @@ function PlanningPage() {
               </div>
               <div className="ad-form-group">
                 <label>Procurement Category<span className="ui-req" aria-hidden="true">*</span></label>
-                <select value={form.category} onChange={e => set('category', e.target.value)} required>
-                  <option value="" disabled>Select a category…</option>
-                  {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-                </select>
+                <div className="ad-category-input">
+                  <input
+                    value={form.category}
+                    onChange={e => set('category', e.target.value)}
+                    onBlur={() => { if (knownCategory && knownCategory !== form.category) set('category', knownCategory) }}
+                    list="ad-category-options"
+                    placeholder="Type or pick a category…"
+                    maxLength={120}
+                    autoComplete="off"
+                    required
+                  />
+                  {isNewCategory && (
+                    <button type="button" className="ad-btn-primary-sm" onClick={saveCategory} disabled={addingCategory}>
+                      <Plus size={14} /> {addingCategory ? 'Adding…' : 'Add'}
+                    </button>
+                  )}
+                </div>
+                <datalist id="ad-category-options">
+                  {categories.map(c => <option key={c} value={c} />)}
+                </datalist>
+                {isNewCategory && (
+                  <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
+                    "{typedCategory}" is a new category. It is added when you submit. No supplier
+                    is registered for it yet, so suppliers must add it to their categories before they can bid.
+                  </span>
+                )}
               </div>
               <div className="ad-form-group">
                 <label>Procurement Type</label>
@@ -1220,6 +1271,7 @@ const ASSISTED_STEPS = ['Basic Info', 'Documents', 'Declaration', 'Review']
 
 function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, removeFile, error, setError, submitting, onSubmit, onClose, catReq, catDocs }) {
   const [step, setStep] = useState(0)
+  const categories = useCategories()
 
   const validateStep = () => {
     if (step === 0) {
@@ -1339,7 +1391,7 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                   Select at least one category the supplier can bid on.
                 </p>
                 <div className="ad-checks" role="group" aria-label="Business type">
-                  {CATEGORIES.map(t => (
+                  {categories.map(t => (
                     <label key={t} className={types.includes(t) ? 'on' : ''}>
                       <input type="checkbox" checked={types.includes(t)} onChange={() => toggleType(t)} />
                       {t}

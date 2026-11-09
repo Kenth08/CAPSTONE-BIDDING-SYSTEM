@@ -42,7 +42,7 @@ from .canonical import NonCanonicalPayload, validate_canonical
 from .serializers import ProjectSerializer
 from .document_requirements import CATEGORY_DOCUMENTS, requirements_for, validate_registry
 from .models import (
-    AwardDocumentVersion, CommitmentOpening,
+    AwardDocumentVersion, CommitmentOpening, PROCUREMENT_CATEGORIES, ProcurementCategory,
     PROCUREMENT_DOCUMENT_KEYS, ProjectDocumentVersion,
     BID_DOCUMENT_KEYS, SUPPLIER_DOCUMENT_FIELDS, SUPPLIER_DOCUMENT_KEYS, Award, Bid, BidProductImage,
     BlockchainAnchor, Notification, Project, Supplier, SupplierCategoryDocument,
@@ -5764,3 +5764,74 @@ class RenewalReviewTests(_TempMediaMixin, APITestCase):
         self.assertEqual(reviews["mayors_permit"]["status"], "needs_revision")
         self.assertEqual(reviews["tax_clearance_certificate"]["status"], "renewed")
         self.assertEqual(reviews["valid_id"]["status"], "approved")
+
+
+class ProcurementCategoryTests(APITestCase):
+    """The Admin can add a category beyond the built-in list; it then works for
+    projects and for supplier eligibility like any built-in one."""
+
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+
+    def test_list_is_public_and_starts_with_builtins(self):
+        res = self.client.get("/api/categories/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["categories"], PROCUREMENT_CATEGORIES)
+
+    def test_admin_adds_a_category(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post("/api/categories/", {"name": "  Security   Services "}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        self.assertEqual(res.data["name"], "Security Services")
+        self.assertIn("Security Services", self.client.get("/api/categories/").data["categories"])
+
+    def test_adding_an_existing_name_returns_it_instead_of_a_duplicate(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post("/api/categories/", {"name": "it equipment"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["name"], "IT Equipment")
+        self.assertFalse(res.data["created"])
+        self.assertFalse(ProcurementCategory.objects.exists())
+
+    def test_rejects_blank_and_comma_names(self):
+        self.client.force_authenticate(user=self.admin)
+        for name in ["", "   ", "Paint, Brushes"]:
+            res = self.client.post("/api/categories/", {"name": name}, format="json")
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST, name)
+
+    def test_only_admin_can_add(self):
+        supplier = make_supplier()
+        for user in (None, make_head(), supplier.user):
+            self.client.force_authenticate(user=user)
+            res = self.client.post("/api/categories/", {"name": "Security Services"}, format="json")
+            self.assertIn(res.status_code, (401, 403))
+        self.assertFalse(ProcurementCategory.objects.exists())
+
+    def test_project_category_must_be_known(self):
+        self.client.force_authenticate(user=self.admin)
+        body = {"name": "Guards", "type": "Services", "category": "Security Services",
+                "delivery_location": "HQ", "budget": "1000", "bidding_period_days": 10,
+                "delivery_period_days": 30}
+        res = self.client.post("/api/projects/", body, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("category", res.data)
+
+    def test_added_category_drives_supplier_eligibility(self):
+        ProcurementCategory.objects.create(name="Security Services")
+        supplier = make_supplier(categories=["IT Equipment"])
+        make_project(status=Project.Status.PUBLISHED, category="Security Services")
+
+        self.client.force_authenticate(user=supplier.user)
+        self.assertEqual(len(self.client.get("/api/projects/").json()), 0)
+        res = self.client.patch("/api/suppliers/me/",
+                                {"business_types": ["IT Equipment", "Security Services"]}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        supplier.refresh_from_db()
+        # Built-ins keep their fixed order; added categories follow.
+        self.assertEqual(supplier.pending_business_types, ["IT Equipment", "Security Services"])
+
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(f"/api/suppliers/{supplier.pk}/approve-categories/")
+        self.client.force_authenticate(user=supplier.user)
+        self.assertEqual(len(self.client.get("/api/projects/").json()), 1)

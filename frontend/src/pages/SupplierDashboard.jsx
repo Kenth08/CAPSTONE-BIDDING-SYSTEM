@@ -13,7 +13,7 @@ import {
   apiListNotifications, apiMarkNotificationsRead, apiListAwards,
   apiUpdateMySupplier, apiChangePassword, apiResendVerification, apiUploadCategoryDocuments,
 } from '../api'
-import { CATEGORIES } from '../constants/categories'
+import { useCategories } from '../store/categoriesStore'
 import CategoryDocumentFields, {
   appendCategoryDocs, categoryDocsProblem, checkDocFile, pastExpiryProblem, todayIso,
   useCategoryDocState, useCategoryRequirements,
@@ -2420,6 +2420,7 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry, setToast,
 }
 
 function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetry }) {
+  const allCategories = useCategories()
   const [fullName, setFullName] = useState('')
   const [repName, setRepName] = useState('')
   const [phone, setPhone] = useState('')
@@ -2586,7 +2587,7 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
           </span>
           <CategoryRequestBanner profile={profile} onWithdraw={withdrawRequest} withdrawing={withdrawing} />
           <div className="sd-chips">
-            {CATEGORIES.map(t => (
+            {allCategories.map(t => (
               <button
                 type="button"
                 key={t}

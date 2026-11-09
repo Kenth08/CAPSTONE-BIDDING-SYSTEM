@@ -163,6 +163,24 @@ export async function apiDocumentRequirements(categories) {
   return res.json()
 }
 
+// Every procurement category: the built-in list plus any the Admin added.
+// Public (supplier registration has no login yet). Returns { categories: [...] }.
+export async function apiListCategories() {
+  let res
+  try {
+    res = await fetch(`${API_URL}/categories/`)
+  } catch {
+    throw new Error('Cannot reach the server. Please check your connection and try again.')
+  }
+  if (!res.ok) throw new Error('Could not load the categories.')
+  return res.json()
+}
+
+// Admin only. Adding a name that already exists (ignoring case) returns that one.
+// Returns { name, created, categories }.
+export const apiAddCategory = (name) =>
+  apiFetch('/categories/', { method: 'POST', body: JSON.stringify({ name }) })
+
 // Multi-step supplier registration with document uploads (multipart/form-data).
 // `data` is a FormData instance — do NOT set Content-Type; the browser adds the
 // correct multipart boundary automatically.

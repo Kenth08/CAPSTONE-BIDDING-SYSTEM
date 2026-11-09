@@ -26,7 +26,10 @@ import re
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 
-from .models import PROCUREMENT_CATEGORIES, SUPPLIER_DOCUMENT_FIELDS, SUPPLIER_DOCUMENT_KEYS, Supplier
+from .models import (
+    PROCUREMENT_CATEGORIES, SUPPLIER_DOCUMENT_FIELDS, SUPPLIER_DOCUMENT_KEYS, Supplier, canonical_categories,
+    known_categories,
+)
 
 
 def _doc(key, label, *, required, has_expiry, help_text=""):
@@ -147,12 +150,12 @@ CATEGORY_DOCUMENT_INDEX = {
 
 
 def unknown_categories(categories):
-    return [c for c in (categories or []) if c not in PROCUREMENT_CATEGORIES]
+    valid = set(known_categories(categories))
+    return [c for c in (categories or []) if c not in valid]
 
 
 def _canonical(categories):
-    chosen = set(categories or [])
-    return [c for c in PROCUREMENT_CATEGORIES if c in chosen]
+    return canonical_categories(categories)
 
 
 def base_requirements():
@@ -181,7 +184,7 @@ def category_requirements(categories):
 def requirements_for(categories):
     """Base documents + the unique category documents for `categories`.
 
-    Raises ValueError naming any category that isn't in PROCUREMENT_CATEGORIES."""
+    Raises ValueError naming any category that isn't a known category."""
     unknown = unknown_categories(categories)
     if unknown:
         raise ValueError(f"Unknown business category: {', '.join(unknown)}.")
@@ -339,11 +342,11 @@ def document_categories(supplier):
     categories = list(supplier.business_types or [])
     if supplier.category_request_status == Supplier.CategoryRequest.PENDING:
         categories += [c for c in (supplier.pending_business_types or []) if c not in categories]
-    return [c for c in categories if c in PROCUREMENT_CATEGORIES]
+    return known_categories(categories)
 
 
 def approved_categories(supplier):
-    return [c for c in (supplier.business_types or []) if c in PROCUREMENT_CATEGORIES]
+    return known_categories(supplier.business_types)
 
 
 def allowed_review_keys(supplier):
