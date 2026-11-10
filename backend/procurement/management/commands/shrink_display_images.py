@@ -6,7 +6,8 @@
 New uploads are already scaled (procurement/uploads.py, DISPLAY PHOTOS). This
 does the same for older procurement reference images and bid product photos,
 which were stored at full camera size: 2.7 MB each on the live system, fetched
-again by every dashboard that shows them.
+again by every dashboard that shows them. A photo with no transparency is
+stored as JPEG when that is smaller (see prepare_display_image).
 
 Safe for the ledger: neither kind of photo is part of any anchored payload, so
 no hash changes. Each photo is written under a new random name and the row is
@@ -23,7 +24,7 @@ from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand
 
 from procurement.models import BidProductImage, Project
-from procurement.uploads import DISPLAY_IMAGE_MAX_SIDE, random_storage_name, strip_image_metadata
+from procurement.uploads import display_filename, prepare_display_image, random_storage_name
 
 # Below this a photo is already small enough to leave alone.
 MIN_BYTES_WORTH_SHRINKING = 400 * 1024
@@ -45,7 +46,8 @@ class Command(BaseCommand):
         ]
         changed = saved_bytes = 0
         for model, field, folder, queryset in targets:
-            for record in queryset.only("pk", field).iterator():
+            loaded = ["pk", field] + (["original_filenames"] if model is Project else [])
+            for record in queryset.only(*loaded).iterator():
                 result = self._shrink(model, record, field, folder, apply)
                 if result:
                     changed += 1
@@ -70,18 +72,28 @@ class Command(BaseCommand):
             return 0
         ext = os.path.splitext(old_name)[1]
         try:
-            smaller = strip_image_metadata(data, ext, DISPLAY_IMAGE_MAX_SIDE)
+            prepared = prepare_display_image(data, ext)
         except Exception as exc:  # noqa: BLE001
             self.stdout.write(self.style.WARNING(f"{label}: can't re-encode {old_name} ({exc})"))
             return 0
-        if smaller is None or len(smaller) > len(data) * (1 - MIN_SAVING):
+        if prepared is None:
             return 0
-        self.stdout.write(f"{label}: {len(data) / 1e6:.2f} MB -> {len(smaller) / 1e6:.2f} MB")
+        smaller, new_ext = prepared
+        if len(smaller) > len(data) * (1 - MIN_SAVING):
+            return 0
+        converted = f" (as {new_ext[1:].upper()})" if new_ext != ext.lower() else ""
+        self.stdout.write(f"{label}: {len(data) / 1e6:.2f} MB -> {len(smaller) / 1e6:.2f} MB{converted}")
         if not apply:
             return len(data) - len(smaller)
-        new_name = storage.save(random_storage_name(folder, old_name), ContentFile(smaller))
-        # update(), not save(): nothing else about the record may change.
-        model.objects.filter(pk=record.pk).update(**{field: new_name})
+        new_name = storage.save(random_storage_name(folder, "x" + new_ext), ContentFile(smaller))
+        # update(), not save(): nothing else about the record may change. The
+        # download name follows the new format, so a JPEG isn't offered as .png.
+        changes = {field: new_name}
+        names = getattr(record, "original_filenames", None)
+        if converted and isinstance(names, dict) and names.get(field):
+            changes["original_filenames"] = {
+                **names, field: display_filename(os.path.splitext(names[field])[0] + new_ext)}
+        model.objects.filter(pk=record.pk).update(**changes)
         try:
             storage.delete(old_name)
         except Exception as exc:  # noqa: BLE001 — the row already points at the new file

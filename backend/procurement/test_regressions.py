@@ -3614,3 +3614,85 @@ class StorageRoundTripTests(_TempMediaMixin, APITestCase):
             self.assertEqual(row.sha256, document_state(getattr(project, row.key))[1])
         record_project_document_versions(project)          # nothing changed: no new rows
         self.assertEqual(ProjectDocumentVersion.objects.filter(project=project).count(), 5)
+
+
+def _noisy_png(width, height, *, transparent=False):
+    import os as _os
+
+    from PIL import Image
+    img = Image.frombytes("RGB", (width, height), _os.urandom(width * height * 3))
+    if transparent:
+        img = img.convert("RGBA")
+        img.putpixel((0, 0), (0, 0, 0, 0))
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _image_format(data):
+    from PIL import Image
+    with Image.open(io.BytesIO(data)) as img:
+        return img.format
+
+
+class DisplayPhotoJpegTests(_TempMediaMixin, APITestCase):
+    """PNG is lossless, so scaling alone left the live 2.7 MB reference photos
+    at 2.1 MB. An opaque PNG display photo is stored as JPEG instead."""
+
+    def setUp(self):
+        cache.clear()
+        self._use_temp_media()
+
+    def test_an_opaque_png_is_stored_as_a_much_smaller_jpeg(self):
+        from .uploads import prepare_display_image
+        png = _noisy_png(1200, 800)
+        data, ext = prepare_display_image(png, ".png")
+        self.assertEqual((ext, _image_format(data)), (".jpg", "JPEG"))
+        self.assertLess(len(data), len(png) / 2)
+
+    def test_a_png_with_transparency_keeps_its_format(self):
+        from .uploads import prepare_display_image
+        data, ext = prepare_display_image(_noisy_png(400, 300, transparent=True), ".png")
+        self.assertEqual((ext, _image_format(data)), (".png", "PNG"))
+
+    def test_an_uploaded_png_reference_image_is_stored_and_named_as_jpeg(self):
+        self.client.force_authenticate(user=make_admin())
+        png = SimpleUploadedFile("site photo.png", _noisy_png(1000, 700), content_type="image/png")
+        res = self.client.post("/api/projects/", _project_form(reference_image=png), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        project = Project.objects.get(pk=res.data["id"])
+        self.assertTrue(project.reference_image.name.endswith(".jpg"))
+        self.assertEqual(project.original_filenames["reference_image"], "site_photo.jpg")
+        with project.reference_image.open("rb") as fh:
+            self.assertEqual(_image_format(fh.read()), "JPEG")
+        # Evidence documents are untouched by any of this.
+        self.assertTrue(project.purchase_request.name.endswith(".pdf"))
+
+    def test_a_png_product_photo_is_stored_as_jpeg(self):
+        from .models import BidProductImage
+        from .views import save_product_images
+        bid = Bid.objects.create(project=make_project(), supplier=make_supplier(), amount=1000)
+        upload = SimpleUploadedFile("p.png", _noisy_png(900, 900), content_type="image/png")
+        save_product_images(bid, [(upload, ".png", "")])
+        self.assertTrue(BidProductImage.objects.get(bid=bid).image.name.endswith(".jpg"))
+
+    def test_the_command_converts_old_png_photos_and_their_download_name(self):
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+        project = make_project()
+        name = default_storage.save("procurement_images/old.png", ContentFile(_noisy_png(1800, 1200)))
+        Project.objects.filter(pk=project.pk).update(
+            reference_image=name, original_filenames={"reference_image": "Screenshot.png"})
+
+        out = io.StringIO()
+        call_command("shrink_display_images", stdout=out)
+        self.assertIn("(as JPG)", out.getvalue())
+        call_command("shrink_display_images", "--apply", stdout=io.StringIO())
+
+        project.refresh_from_db()
+        self.assertTrue(project.reference_image.name.endswith(".jpg"))
+        self.assertEqual(project.original_filenames["reference_image"], "Screenshot.jpg")
+        self.assertFalse(default_storage.exists(name))
+        with project.reference_image.open("rb") as fh:
+            data = fh.read()
+        self.assertEqual((_image_format(data), _image_size(data)), ("JPEG", (1600, 1067)))
