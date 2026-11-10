@@ -1,6 +1,15 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .bac_views import (
+    BACStatusView,
+    EvaluateBidView,
+    EvaluationProjectDetailView,
+    EvaluationProjectsView,
+    MembershipViewSet,
+    PostQualifyView,
+    ResolutionViewSet,
+)
 from .categories import CategoryView
 from .dashboard import AdminSummaryView, HeadSummaryView, PublicSummaryView
 from .files import ProtectedFileLinkView, ProtectedFileView, PublicNoticeOfAwardView
@@ -26,6 +35,9 @@ router.register(r"bids", BidViewSet)
 router.register(r"awards", AwardViewSet)
 router.register(r"documents", DocumentViewSet)
 router.register(r"notifications", NotificationViewSet, basename="notification")
+# BAC Committee workflow (procurement/bac_views.py).
+router.register(r"bac/memberships", MembershipViewSet, basename="bac-membership")
+router.register(r"bac/resolutions", ResolutionViewSet, basename="bac-resolution")
 
 # Public, unauthenticated endpoint (declared before the router so it isn't
 # shadowed by an authenticated route).
@@ -37,6 +49,11 @@ urlpatterns = [
     path("dashboard/admin-summary/", AdminSummaryView.as_view(), name="dashboard-admin-summary"),
     path("dashboard/head-summary/", HeadSummaryView.as_view(), name="dashboard-head-summary"),
     path("anchors/send-next/", AnchorNextPendingView.as_view(), name="anchors-send-next"),
+    path("bac/status/", BACStatusView.as_view(), name="bac-status"),
+    path("bac/projects/", EvaluationProjectsView.as_view(), name="bac-projects"),
+    path("bac/projects/<int:pk>/", EvaluationProjectDetailView.as_view(), name="bac-project"),
+    path("bac/bids/<int:pk>/evaluate/", EvaluateBidView.as_view(), name="bac-evaluate"),
+    path("bac/bids/<int:pk>/post-qualify/", PostQualifyView.as_view(), name="bac-post-qualify"),
     # One procurement's public result (winner + date only) — no login.
     path(
         "public/procurement/<str:code>/",

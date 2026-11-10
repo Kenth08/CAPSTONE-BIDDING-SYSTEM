@@ -45,6 +45,7 @@ from .blockchain import (
 from .canonical import NonCanonicalPayload
 from .models import Award, Bid, BlockchainAnchor
 from .payload_v3 import validate_project_stage
+from .permissions import INTERNAL_ROLES
 from .record import PUBLIC_STATUSES, public_date
 
 PACKET_VERSION = 1
@@ -117,7 +118,7 @@ def may_see_packet(anchor, project, role, supplier=None):
     anchor must belong to `project` — callers look it up by code first."""
     if anchor.entity_ref != project.code:
         return False
-    if role in {"admin", "head"}:
+    if role in INTERNAL_ROLES:
         return True
     if is_public_packet(anchor, project):
         return True

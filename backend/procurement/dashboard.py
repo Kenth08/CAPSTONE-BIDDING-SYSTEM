@@ -27,7 +27,7 @@ from .blockchain import ETHERSCAN_TX_URL, anchor_summary
 from .document_requirements import approved_categories, expiring_documents, missing_documents
 from .models import Award, Bid, BlockchainAnchor, Project, Supplier
 from .payload_v3_reader import completeness
-from .permissions import IsAdminRole, IsHeadRole
+from .permissions import IsAdminOrStaffRole, IsHeadRole
 from .verification import INCOMPLETE_STATES
 from .views import close_expired_published_projects
 
@@ -78,9 +78,9 @@ def incomplete_evidence_count():
 
 
 class AdminSummaryView(APIView):
-    """Everything the Admin dashboard home shows, in one request."""
+    """Everything the Admin (and the Staff) dashboard home shows, in one request."""
 
-    permission_classes = [IsAdminRole]
+    permission_classes = [IsAdminOrStaffRole]
 
     def get(self, request):
         close_expired_published_projects()

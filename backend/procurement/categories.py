@@ -16,14 +16,15 @@ from rest_framework.views import APIView
 from accounts.audit import log_action
 
 from .models import CATEGORY_NAME_MAX_LENGTH, ProcurementCategory, all_categories, find_category
-from .permissions import IsAdminRole
+from .permissions import IsPreparerRole
 
 
 class CategoryView(APIView):
     def get_permissions(self):
         if self.request.method == "GET":
             return [permissions.AllowAny()]
-        return [IsAdminRole()]
+        # New categories are added from the Planning form, by whoever prepares.
+        return [IsPreparerRole()]
 
     def get_authenticators(self):
         # The list is public; don't let a stale token turn a GET into a 401.

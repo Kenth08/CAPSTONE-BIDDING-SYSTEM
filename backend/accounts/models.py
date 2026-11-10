@@ -6,14 +6,19 @@ from django.db import models
 class User(AbstractUser):
     """Custom user with a procurement role.
 
-    The frontend currently stores `localStorage.role` as one of
-    admin / head / supplier. This replaces that with a real account.
+    The role decides which dashboard opens and which endpoints answer. Values are
+    append-only: they are stored on every account and in every issued token.
+    STAFF and BAC belong to the separation-of-duties workflow
+    (settings.BAC_WORKFLOW_ENABLED); a BAC account's position (Chairperson,
+    Vice-Chairperson, Member) is its procurement.BACMembership, not its role.
     """
 
     class Role(models.TextChoices):
         ADMIN = "admin", "Admin"
         HEAD = "head", "Head"
         SUPPLIER = "supplier", "Supplier"
+        STAFF = "staff", "Procurement Staff"
+        BAC = "bac", "BAC Committee"
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.SUPPLIER)
     full_name = models.CharField(max_length=150, blank=True)

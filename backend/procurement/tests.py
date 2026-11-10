@@ -5835,3 +5835,305 @@ class ProcurementCategoryTests(APITestCase):
         self.client.post(f"/api/suppliers/{supplier.pk}/approve-categories/")
         self.client.force_authenticate(user=supplier.user)
         self.assertEqual(len(self.client.get("/api/projects/").json()), 1)
+
+
+# ── Separation of duties: Staff, BAC Committee, Head award approval ───────────
+# (settings.BAC_WORKFLOW_ENABLED, procurement/bac.py, docs/BAC_ROLES_PLAN.md)
+
+from .models import BACMembership, BACResolution, BACVote, BACVoteImmutable  # noqa: E402
+
+
+def make_user(username, role, full_name=""):
+    return User.objects.create_user(username=username, email=f"{username}@example.com",
+                                    password="pw", role=role, full_name=full_name or username.title())
+
+
+@override_settings(BAC_WORKFLOW_ENABLED=True)
+class BACWorkflowTests(APITestCase):
+    PASS = {"eligibility_ok": True, "technical_ok": True, "financial_ok": True, "remarks": "Complete."}
+    FAIL = {"eligibility_ok": True, "technical_ok": False, "financial_ok": True,
+            "remarks": "Specs not met."}
+
+    def setUp(self):
+        cache.clear()
+        self._media = tempfile.mkdtemp()
+        self._override = override_settings(MEDIA_ROOT=self._media)
+        self._override.enable()
+        self.admin = make_admin()
+        self.head = make_head()
+        self.staff = make_user("staff", User.Role.STAFF)
+        self.members = []
+        for n, position in enumerate(["chair", "vice_chair", "member", "member", "member"], start=1):
+            user = make_user(f"bac{n}", User.Role.BAC, f"Member {n}")
+            self.members.append(BACMembership.objects.create(
+                user=user, position=position, designated_on=timezone.localdate(),
+                designation_reference="OO-2026-001", recorded_by=self.admin))
+        self.project = make_project(status=Project.Status.CLOSED)
+        Project.objects.filter(pk=self.project.pk).update(deadline=timezone.localdate() - timedelta(days=1))
+        self.project.refresh_from_db()
+        self.low = Bid.objects.create(project=self.project, supplier=make_supplier(), amount=800)
+        self.mid = Bid.objects.create(project=self.project, supplier=make_supplier(), amount=900)
+        self.high = Bid.objects.create(project=self.project, supplier=make_supplier(), amount=1000)
+
+    def tearDown(self):
+        self._override.disable()
+        shutil.rmtree(self._media, ignore_errors=True)
+
+    # helpers
+    def as_user(self, user):
+        self.client.force_authenticate(user=user)
+        return self.client
+
+    def evaluate(self, bid, members, verdict):
+        for m in members:
+            res = self.as_user(m.user).post(f"/api/bac/bids/{bid.id}/evaluate/", verdict, format="json")
+            self.assertIn(res.status_code, (200, 201), res.data)
+
+    def everyone_passes_everything(self):
+        for bid in (self.low, self.mid, self.high):
+            self.evaluate(bid, self.members, self.PASS)
+
+    def draft_resolution(self, justification="the lowest bid is responsive and passed post-qualification;"):
+        return self.as_user(self.staff).post("/api/bac/resolutions/", {
+            "project": self.project.id, "meeting_date": str(timezone.localdate()),
+            "meeting_mode": "in_person", "venue": "BAC Room", "justification": justification,
+        }, format="json")
+
+    def adopted_resolution(self):
+        self.everyone_passes_everything()
+        res = self.as_user(self.members[0].user).post(
+            f"/api/bac/bids/{self.low.id}/post-qualify/",
+            {"result": "passed", "remarks": "Site visit and documents verified."}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        res = self.draft_resolution()
+        self.assertEqual(res.status_code, 201, res.data)
+        rid = res.data["id"]
+        self.assertEqual(self.as_user(self.staff).post(f"/api/bac/resolutions/{rid}/open-voting/").status_code, 200)
+        for m in self.members[:3]:
+            res = self.as_user(m.user).post(f"/api/bac/resolutions/{rid}/vote/", {
+                "choice": "approve", "comment": f"{m.user.full_name}: lowest responsive bid."}, format="json")
+            self.assertEqual(res.status_code, 201, res.data)
+        return BACResolution.objects.get(pk=rid)
+
+    # the switch
+    @override_settings(BAC_WORKFLOW_ENABLED=False)
+    def test_with_the_switch_off_bac_actions_refuse_and_admin_keeps_working(self):
+        res = self.as_user(self.members[0].user).post(
+            f"/api/bac/bids/{self.low.id}/evaluate/", self.PASS, format="json")
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(self.as_user(self.admin).post(f"/api/bids/{self.low.id}/qualify/").status_code, 200)
+
+    def test_with_the_switch_on_admin_can_no_longer_prepare_evaluate_or_award(self):
+        client = self.as_user(self.admin)
+        self.assertEqual(client.post("/api/projects/", {}, format="json").status_code, 403)
+        self.assertEqual(client.post(f"/api/projects/{self.project.id}/publish/").status_code, 403)
+        self.assertEqual(client.post(f"/api/bids/{self.low.id}/qualify/").status_code, 403)
+        self.assertEqual(client.post(f"/api/bids/{self.low.id}/select-winner/").status_code, 403)
+        # Staff may prepare: the request reaches validation instead of a 403.
+        self.assertNotEqual(self.as_user(self.staff).post("/api/projects/", {}, format="json").status_code, 403)
+        # Nobody can use the one-person award any more, Staff and Head included.
+        Bid.objects.filter(pk=self.low.pk).update(status=Bid.Status.QUALIFIED)
+        for user in (self.staff, self.head):
+            self.assertEqual(self.as_user(user).post(f"/api/bids/{self.low.id}/select-winner/").status_code, 403)
+
+    # evaluation
+    def test_bid_status_follows_the_majority_of_members(self):
+        self.evaluate(self.low, self.members[:2], self.PASS)
+        self.low.refresh_from_db()
+        self.assertEqual(self.low.status, Bid.Status.UNDER_REVIEW)
+        self.evaluate(self.low, self.members[2:3], self.PASS)
+        self.low.refresh_from_db()
+        self.assertEqual(self.low.status, Bid.Status.QUALIFIED)
+        self.evaluate(self.high, self.members[:3], self.FAIL)
+        self.high.refresh_from_db()
+        self.assertEqual(self.high.status, Bid.Status.DISQUALIFIED)
+
+    def test_failing_check_needs_remarks_and_bids_stay_sealed_until_the_deadline(self):
+        client = self.as_user(self.members[0].user)
+        res = client.post(f"/api/bac/bids/{self.low.id}/evaluate/", {**self.FAIL, "remarks": ""}, format="json")
+        self.assertEqual(res.status_code, 400)
+        Project.objects.filter(pk=self.project.pk).update(
+            status=Project.Status.PUBLISHED, deadline=timezone.localdate() + timedelta(days=3))
+        res = client.post(f"/api/bac/bids/{self.low.id}/evaluate/", self.PASS, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(client.get(f"/api/bac/projects/{self.project.id}/").status_code, 409)
+
+    def test_only_seated_members_evaluate_and_members_see_others_only_after_their_own(self):
+        outsider = make_user("bac9", User.Role.BAC)
+        res = self.as_user(outsider).post(f"/api/bac/bids/{self.low.id}/evaluate/", self.PASS, format="json")
+        self.assertEqual(res.status_code, 403)
+        self.evaluate(self.low, self.members[:1], self.FAIL)
+        detail = self.as_user(self.members[1].user).get(f"/api/bac/projects/{self.project.id}/").json()
+        row = next(b for b in detail["bids"] if b["id"] == self.low.id)
+        self.assertNotIn("remarks", row["evaluations"][0])
+        detail = self.as_user(self.head).get(f"/api/bac/projects/{self.project.id}/").json()
+        row = next(b for b in detail["bids"] if b["id"] == self.low.id)
+        self.assertEqual(row["evaluations"][0]["remarks"], "Specs not met.")
+
+    # ranking and post-qualification
+    def test_ranking_is_lowest_first_and_only_the_chair_post_qualifies_the_candidate(self):
+        self.everyone_passes_everything()
+        ranking = self.as_user(self.staff).get(f"/api/bac/projects/{self.project.id}/").json()["ranking"]
+        self.assertEqual([r["bid_id"] for r in ranking["rows"]], [self.low.id, self.mid.id, self.high.id])
+        self.assertEqual(ranking["candidate_id"], self.low.id)
+        body = {"result": "failed", "remarks": "Could not verify the bank reference."}
+        self.assertEqual(self.as_user(self.members[1].user).post(
+            f"/api/bac/bids/{self.low.id}/post-qualify/", body, format="json").status_code, 403)
+        chair = self.as_user(self.members[0].user)
+        self.assertEqual(chair.post(f"/api/bac/bids/{self.mid.id}/post-qualify/", body,
+                                    format="json").status_code, 400)
+        res = chair.post(f"/api/bac/bids/{self.low.id}/post-qualify/", body, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["ranking"]["candidate_id"], self.mid.id)
+        self.low.refresh_from_db()
+        self.assertEqual(self.low.status, Bid.Status.DISQUALIFIED)
+        # A member revising their evaluation can't bring a failed bid back.
+        self.evaluate(self.low, self.members[:1], self.PASS)
+        self.low.refresh_from_db()
+        self.assertEqual(self.low.status, Bid.Status.DISQUALIFIED)
+
+    # resolution, votes, Head
+    def test_full_flow_adopts_freezes_and_the_head_awards_with_the_same_anchors(self):
+        res = self.adopted_resolution()
+        self.assertEqual(res.status, BACResolution.Status.ADOPTED)
+        self.assertEqual(res.recommended_bid_id, self.low.id)
+        with res.resolution_file.open("rb") as fh:
+            frozen = fh.read()
+        self.assertEqual(hashlib.sha256(frozen).hexdigest(), res.resolution_sha256)
+        self.assertTrue(frozen.startswith(b"%PDF"))
+        # The record links the frozen file; the Head may download it, a supplier may not.
+        url = self.as_user(self.head).get(f"/api/bac/resolutions/{res.id}/").json()["resolution_file_url"]
+        path = f"/api/files/bacresolution/{res.id}/resolution_file/"
+        self.assertTrue(url.endswith(path), url)
+        got = self.as_user(self.head).get(path)
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(hashlib.sha256(b"".join(got.streaming_content)).hexdigest(), res.resolution_sha256)
+        self.assertEqual(self.as_user(self.low.supplier.user).get(path).status_code, 404)
+        # Admin, Staff and BAC members can't approve the award; the Head can.
+        for user in (self.admin, self.staff, self.members[0].user):
+            self.assertEqual(self.as_user(user).post(f"/api/bac/resolutions/{res.id}/approve/").status_code, 403)
+        out = self.as_user(self.head).post(f"/api/bac/resolutions/{res.id}/approve/", {}, format="json")
+        self.assertEqual(out.status_code, 200, out.data)
+        self.project.refresh_from_db()
+        self.low.refresh_from_db()
+        self.assertEqual(self.project.status, Project.Status.AWARDED)
+        self.assertIsNotNone(self.project.awarded_at)
+        self.assertEqual(self.low.status, Bid.Status.WINNER)
+        stages = [a["stage"] for a in out.data["anchor_sequence"]]
+        self.assertEqual(stages, ["EVALUATION_COMPLETED", "BID_SUBMITTED", "AWARDED"])
+        # Approving twice is refused; the award is made once.
+        self.assertEqual(self.as_user(self.head).post(f"/api/bac/resolutions/{res.id}/approve/").status_code, 400)
+        self.assertEqual(Award.objects.filter(project=self.project).count(), 1)
+        # Staff issue the BAC Resolution: it is the frozen file, byte for byte.
+        award = Award.objects.get(project=self.project)
+        out = self.as_user(self.staff).post(f"/api/awards/{award.id}/documents/generate/",
+                                            {"key": "award_resolution"}, format="json")
+        self.assertEqual(out.status_code, 200, out.data)
+        award.refresh_from_db()
+        with award.award_resolution.open("rb") as fh:
+            self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), res.resolution_sha256)
+        self.assertEqual(out.data["anchor"]["stage"], "RESOLUTION_ISSUED")
+
+    def test_votes_need_a_comment_and_can_never_be_changed(self):
+        self.everyone_passes_everything()
+        self.as_user(self.members[0].user).post(f"/api/bac/bids/{self.low.id}/post-qualify/",
+                                               {"result": "passed", "remarks": "Verified."}, format="json")
+        rid = self.draft_resolution().data["id"]
+        self.as_user(self.staff).post(f"/api/bac/resolutions/{rid}/open-voting/")
+        voter = self.as_user(self.members[3].user)
+        self.assertEqual(voter.post(f"/api/bac/resolutions/{rid}/vote/",
+                                    {"choice": "approve", "comment": "ok"}, format="json").status_code, 400)
+        self.assertEqual(voter.post(f"/api/bac/resolutions/{rid}/vote/", {
+            "choice": "disapprove", "comment": "Delivery schedule is too tight."}, format="json").status_code, 201)
+        self.assertEqual(voter.post(f"/api/bac/resolutions/{rid}/vote/", {
+            "choice": "approve", "comment": "Changed my mind about it."}, format="json").status_code, 400)
+        vote = BACVote.objects.get(resolution_id=rid)
+        self.assertEqual((vote.voter_name, vote.voter_position), ("Member 4", "member"))
+        vote.comment = "edited"
+        with self.assertRaises(BACVoteImmutable):
+            vote.save()
+        with self.assertRaises(BACVoteImmutable):
+            vote.delete()
+
+    def test_the_head_can_return_it_and_a_new_resolution_can_follow(self):
+        res = self.adopted_resolution()
+        client = self.as_user(self.head)
+        self.assertEqual(client.post(f"/api/bac/resolutions/{res.id}/return/", {"remarks": "short"},
+                                     format="json").status_code, 400)
+        out = client.post(f"/api/bac/resolutions/{res.id}/return/",
+                          {"remarks": "Please re-check the delivery schedule."}, format="json")
+        self.assertEqual(out.status_code, 200)
+        res.refresh_from_db()
+        self.assertEqual((res.status, res.head_decision), ("returned", "returned"))
+        self.project.refresh_from_db()
+        self.assertNotEqual(self.project.status, Project.Status.AWARDED)
+        again = self.draft_resolution("re-checked the delivery schedule with the bidder.")
+        self.assertEqual(again.status_code, 201, again.data)
+        self.assertTrue(again.data["number"].endswith("-2"))
+
+    # designations and accounts
+    def test_seat_rules_head_excluded_five_seats_one_chair(self):
+        client = self.as_user(self.admin)
+        body = {"user": self.head.id, "position": "member", "designated_on": "2026-01-05",
+                "designation_reference": "OO-2"}
+        self.assertEqual(client.post("/api/bac/memberships/", body, format="json").status_code, 400)
+        extra = make_user("bac6", User.Role.BAC)
+        res = client.post("/api/bac/memberships/", {**body, "user": extra.id}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("5 seats", res.data["detail"])
+        self.members[4].active = False
+        self.members[4].save()
+        res = client.post("/api/bac/memberships/", {**body, "user": extra.id, "position": "chair"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        res = client.post("/api/bac/memberships/", {**body, "user": extra.id}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(self.as_user(self.staff).post("/api/bac/memberships/", body,
+                                                       format="json").status_code, 403)
+
+    def test_records_survive_a_resignation(self):
+        res = self.adopted_resolution()
+        out = self.as_user(self.admin).post(f"/api/bac/memberships/{self.members[1].id}/end/",
+                                            {"end_reason": "Resigned"}, format="json")
+        self.assertEqual(out.status_code, 200)
+        record = self.as_user(self.admin).get(f"/api/bac/resolutions/{res.id}/").json()
+        vice = next(v for v in record["votes"] if v["voter_position"] == "vice_chair")
+        self.assertFalse(vice["member_active"])
+        self.assertIn("lowest responsive bid", vice["comment"])
+        self.assertEqual(self.as_user(self.members[0].user).get("/api/bac/resolutions/").status_code, 200)
+        supplier = self.low.supplier.user
+        self.assertEqual(self.as_user(supplier).get("/api/bac/resolutions/").status_code, 403)
+        self.assertEqual(self.as_user(supplier).get(f"/api/bac/projects/{self.project.id}/").status_code, 403)
+
+    def test_bac_members_see_no_bids_before_the_deadline(self):
+        member = self.as_user(self.members[2].user)
+        self.assertEqual(len(member.get(f"/api/bids/?project={self.project.id}").json()), 3)
+        Project.objects.filter(pk=self.project.pk).update(
+            status=Project.Status.PUBLISHED, deadline=timezone.localdate() + timedelta(days=2))
+        self.assertEqual(member.get(f"/api/bids/?project={self.project.id}").json(), [])
+        self.assertEqual(member.get(f"/api/bids/{self.low.id}/").status_code, 404)
+
+    def test_evaluated_bids_cannot_be_deleted(self):
+        self.evaluate(self.low, self.members[:1], self.PASS)
+        res = self.as_user(self.admin).delete(f"/api/bids/{self.low.id}/")
+        self.assertEqual(res.status_code, 400)
+        self.assertTrue(Bid.objects.filter(pk=self.low.pk).exists())
+
+    def test_admin_manages_staff_bac_and_head_accounts_only(self):
+        client = self.as_user(self.admin)
+        body = {"username": "newstaff", "email": "newstaff@example.com", "full_name": "New Staff",
+                "role": "staff", "password": "Correct-Horse-Battery-9"}
+        res = client.post("/api/auth/users/", body, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertNotIn("password", res.data)
+        self.assertTrue(User.objects.get(username="newstaff").check_password("Correct-Horse-Battery-9"))
+        res = client.post("/api/auth/users/", {**body, "username": "boss", "email": "b@example.com",
+                                               "role": "admin"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        res = client.patch(f"/api/auth/users/{self.members[0].user.id}/", {"is_active": False}, format="json")
+        self.assertEqual(res.status_code, 400)
+        res = client.patch(f"/api/auth/users/{self.staff.id}/", {"is_active": False, "role": "admin"},
+                           format="json")
+        self.assertEqual(res.status_code, 200)
+        self.staff.refresh_from_db()
+        self.assertEqual((self.staff.is_active, self.staff.role), (False, "staff"))
+        self.assertEqual(self.as_user(self.head).get("/api/auth/users/").status_code, 403)

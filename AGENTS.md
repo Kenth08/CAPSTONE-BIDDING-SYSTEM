@@ -56,7 +56,9 @@ npm run dev
 - `backend/procurement/project_documents.py` — `ProjectDocumentVersion` history and the five-document manifest
 - `backend/procurement/openings.py` — encrypted `CommitmentOpening` rows, `COMMITMENT_KEY` handling, access and audit. Commands: `rotate_commitment_openings`, `check_commitment_openings`
 - `backend/procurement/management/commands/audit_ledger.py` — read-only check of the whole database against the on-chain ledger; incident steps in [RECOVERY.md](RECOVERY.md)
-- `backend/procurement/permissions.py` — role permissions (admin / head / supplier)
+- `backend/procurement/permissions.py` — role permissions (admin / staff / bac / head / supplier); `INTERNAL_ROLES`, `bac_workflow_on()` and `preparer_roles()` decide who prepares, evaluates and awards
+- `backend/procurement/bac.py`, `bac_views.py` — BAC Committee workflow behind `BAC_WORKFLOW_ENABLED` (off by default): designations, majority evaluation, ranking, post-qualification, write-once votes, frozen resolution PDF, Head award approval (`/api/bac/...`)
+- `backend/accounts/user_admin.py` — Admin creates and deactivates Staff, BAC and Head accounts (`/api/auth/users/`)
 - `backend/accounts/` — custom User (role field), JWT auth, MFA, password reset, `audit.log_action`, throttling
 - `backend/accounts/idempotency.py` — records how each write sent with an `Idempotency-Key` ended (`RequestOutcome`), so the browser can recover an answer the host cut at 30 s (`GET /api/auth/requests/<key>/`); frontend side in `frontend/src/utils/requestOutcome.js`
 - `backend/config/middleware.py` — `SlowRequestLogMiddleware` logs requests over `SLOW_REQUEST_SECONDS` (default 3) with their query count and time

@@ -10,6 +10,7 @@ import { getToken, getRole } from './api'
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard'))
 const SupplierDashboard = lazy(() => import('./pages/SupplierDashboard'))
 const HeadDashboard = lazy(() => import('./pages/HeadDashboard'))
+const BacDashboard = lazy(() => import('./pages/BacDashboard'))
 const ForgotPasswordPage = lazy(() => import('./pages/ForgotPasswordPage'))
 const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage'))
 const VerifyEmailPage = lazy(() => import('./pages/VerifyEmailPage'))
@@ -62,6 +63,10 @@ function App() {
           <Route path="/admin/*"    element={<ProtectedRoute role="admin"><AdminDashboard /></ProtectedRoute>} />
           <Route path="/supplier/*" element={<ProtectedRoute role="supplier"><SupplierDashboard /></ProtectedRoute>} />
           <Route path="/head/*"     element={<ProtectedRoute role="head"><HeadDashboard /></ProtectedRoute>} />
+          {/* Separation of duties: Procurement Staff share the Admin's
+              procurement screens under /staff; the BAC Committee has its own. */}
+          <Route path="/staff/*"    element={<ProtectedRoute role="staff"><AdminDashboard workspace="staff" /></ProtectedRoute>} />
+          <Route path="/bac/*"      element={<ProtectedRoute role="bac"><BacDashboard /></ProtectedRoute>} />
         </Routes>
       </Suspense>
     </Router>

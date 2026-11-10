@@ -5,6 +5,7 @@ import {
   ChevronDown, LogOut,
   ClipboardCheck, AlertCircle, AlertTriangle, FolderOpen, Eye,
   ThumbsUp, FileText, Menu, X, Image as ImageIcon, ChevronRight, ShieldCheck, Link2, Loader2, Trophy,
+  Gavel, ScrollText,
 } from 'lucide-react'
 import { apiLogout, apiHeadSummary } from '../api'
 import {
@@ -34,18 +35,26 @@ import { runAnchor, isAnchorBusy, useAnchorActivity } from '../blockchain/anchor
 import { ANCHOR_STATES, anchorState } from '../blockchain/anchorState'
 import { daysSince, greeting, peso, todayLong } from '../utils/format'
 import SecureImg from '../components/ui/SecureImg'
+import AwardApprovalsPage from './head/AwardApprovalsPage'
+import BacRecordsPage from './bac/BacRecordsPage'
+import { useBacStatus } from '../utils/workspace'
 import '../style/HeadDashboard.css'
 
-const NAV_SECTIONS = (pendingCount) => [
+// Award Approvals and BAC Records appear once separation of duties is on
+// (utils/workspace.useBacStatus): then the Head approves the award the BAC
+// Committee recommends.
+const NAV_SECTIONS = (pendingCount, workflowOn) => [
   { label: 'Overview', items: [
     { icon: LayoutDashboard, label: 'Dashboard', to: '/head' },
   ] },
   { label: 'Approvals', items: [
     { icon: Clock, label: 'Pending Approval', to: '/head/pending', badge: pendingCount },
     { icon: CheckCircle2, label: 'Reviewed Projects', to: '/head/approved' },
+    ...(workflowOn ? [{ icon: Gavel, label: 'Award Approvals', to: '/head/awards' }] : []),
   ] },
   { label: 'Outcomes', items: [
     { icon: Trophy, label: 'Results', to: '/head/results' },
+    ...(workflowOn ? [{ icon: ScrollText, label: 'BAC Records', to: '/head/bac-records' }] : []),
   ] },
 ]
 
@@ -688,6 +697,7 @@ export default function HeadDashboard() {
   const { projects } = useProjects()   // shared store — no extra request
   const pendingCount = projects.filter(p => p.status === 'pending_head').length
   const [navOpen, setNavOpen] = useState(false)
+  const { workflow_enabled: workflowOn } = useBacStatus()
   useEffect(() => { setNavOpen(false) }, [loc.pathname])
 
   const PAGE_TITLES = {
@@ -695,6 +705,8 @@ export default function HeadDashboard() {
     '/head/pending': 'Pending Approval',
     '/head/approved': 'Reviewed Projects',
     '/head/results': 'Results',
+    '/head/awards': 'Award Approvals',
+    '/head/bac-records': 'BAC Records',
   }
   const title = PAGE_TITLES[loc.pathname] || (loc.pathname.startsWith('/head/record/') ? 'Procurement Record' : 'Dashboard')
 
@@ -710,7 +722,7 @@ export default function HeadDashboard() {
       <AppSidebar
         workspace="Head Workspace"
         logoIcon={ClipboardCheck}
-        sections={NAV_SECTIONS(pendingCount)}
+        sections={NAV_SECTIONS(pendingCount, workflowOn)}
         isActive={(to) => loc.pathname === to || (to === '/head/results' && loc.pathname.startsWith('/head/record/'))}
         open={navOpen}
         onClose={() => setNavOpen(false)}
@@ -730,6 +742,8 @@ export default function HeadDashboard() {
             <Route path="pending" element={<PendingPage />} />
             <Route path="approved" element={<ApprovedPage />} />
             <Route path="results" element={<ResultsPage />} />
+            <Route path="awards" element={<AwardApprovalsPage />} />
+            <Route path="bac-records" element={<BacRecordsPage className="hd-content" />} />
             <Route path="record/:id" element={<ProcurementRecordPage className="hd-content" backTo="/head/results" backLabel="Back to results" />} />
             <Route path="record/:id/anchor/:anchorId" element={<ProjectAnchorDetailPage className="hd-content" />} />
             <Route path="*" element={<HeadHome />} />

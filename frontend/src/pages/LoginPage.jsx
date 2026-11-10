@@ -24,6 +24,8 @@ export default function LoginPage() {
   const goToDashboard = (userRole) => {
     if (userRole === 'admin') navigate('/admin')
     else if (userRole === 'head') navigate('/head')
+    else if (userRole === 'staff') navigate('/staff')
+    else if (userRole === 'bac') navigate('/bac')
     else navigate('/supplier')
   }
 

@@ -70,6 +70,8 @@ from .models import (
     SUPPLIER_DOCUMENT_KEYS,
     Award,
     AwardDocumentVersion,
+    BACMembership,
+    BACResolution,
     Bid,
     BidAttachment,
     BidProductImage,
@@ -111,6 +113,10 @@ ALLOWED_FIELDS = {
     "awardversion": {"file"},
     "attachment": {"file"},
     "bidimage": {"image"},
+    # BAC Committee records (procurement/bac.py): meeting minutes and the
+    # frozen resolution PDF, and the scanned designation of each seat.
+    "bacresolution": {"minutes", "resolution_file"},
+    "bacmembership": {"designation_document"},
 }
 
 # Project documents a bidder needs in order to prepare a bid. The Purchase
@@ -123,7 +129,13 @@ SUPPLIER_VISIBLE_PROJECT_FIELDS = {
 
 # Award documents the Head may read. The Head approves procurements and sees
 # their outcome, but never evaluates bids or reviews supplier registrations.
-HEAD_KINDS = {"project", "award", "awardversion"}
+HEAD_KINDS = {"project", "award", "awardversion", "bacresolution", "bacmembership"}
+
+# What a BAC Committee member may read: the files they evaluate (bids and the
+# bidders' registration documents), the procurement documents and outcome,
+# and the committee's own records.
+BAC_KINDS = {"project", "bid", "attachment", "bidimage", "supplier", "supplierdoc",
+             "award", "awardversion", "bacresolution", "bacmembership"}
 
 
 def _supplier_of(user):
@@ -137,10 +149,12 @@ def _can_read(user, kind, record, field):
     if not (user and user.is_authenticated and user.is_active):
         return False
     role = getattr(user, "role", None)
-    if role == "admin":
+    if role in {"admin", "staff"}:
         return True
     if role == "head":
         return kind in HEAD_KINDS
+    if role == "bac":
+        return kind in BAC_KINDS
     if role != "supplier":
         return False
 
@@ -195,6 +209,8 @@ _LOOKUPS = {
     "awardversion": lambda: AwardDocumentVersion.objects.select_related("award__supplier", "award__project"),
     "attachment": lambda: BidAttachment.objects.select_related("bid"),
     "bidimage": lambda: BidProductImage.objects.select_related("bid"),
+    "bacresolution": lambda: BACResolution.objects.all(),
+    "bacmembership": lambda: BACMembership.objects.all(),
 }
 
 

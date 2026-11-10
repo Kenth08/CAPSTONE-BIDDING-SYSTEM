@@ -16,6 +16,8 @@ is tamper-evident and publicly verifiable.
 |------|--------------|
 | **Admin** (BAC / procurement office) | Creates projects, reviews supplier registrations, publishes approved projects, evaluates bids, selects winners, issues post-award documents, views reports |
 | **Head** (department head) | Approves submitted projects or requests document revisions. Can't reject: the project was approved before it was filed, so the Head's review can correct it but not cancel it (`/reject/` answers 403) |
+| **Procurement Staff** (`staff`, BAC Secretariat) | With `BAC_WORKFLOW_ENABLED`: creates, submits and publishes projects, drafts BAC Resolutions and opens voting, issues the BAC Resolution, NOA and NTP. Never votes. Shares the Admin's procurement screens at `/staff` |
+| **BAC Committee** (`bac`) | With `BAC_WORKFLOW_ENABLED`: five seats (`BACMembership`: one Chairperson, one Vice-Chairperson, three Members), recorded by the Admin from the Head's office order. Every member evaluates every bid; the Chairperson records post-qualification; members vote on the resolution with a required comment |
 | **Supplier** | Registers with compliance documents, bids on projects matching their business category, resubmits flagged documents |
 | **Public** | No login: views open biddings, awarded contracts, and verifies the blockchain trail at `/public` |
 
@@ -71,6 +73,23 @@ and has only the base documents.
 Purchase Request, Technical Specifications, Terms of Reference, Approved Budget
 document, Bid Evaluation Criteria. The Head can flag individual documents for
 revision without rejecting the project.
+
+## Separation of duties (`BAC_WORKFLOW_ENABLED`)
+
+Off (the default): the original workflow above, the Admin prepares, evaluates and awards.
+On: Staff prepare and publish; the Admin manages accounts and BAC designations and
+oversees read-only; the BAC Committee evaluates (a bid qualifies or is disqualified by
+3 of 5 members), the system ranks qualified bids lowest first, the Chairperson
+post-qualifies the top candidate (a failure moves the next one up), Staff draft the
+resolution for the Lowest Calculated Responsive Bid, members vote with a comment, and
+3 approvals adopt it. Adoption generates the resolution PDF (ranking, post-qualification,
+every vote and comment) and stores its SHA-256; it is never regenerated. The Head then
+approves the award, which runs the original award code and writes the same anchors
+(`EVALUATION_COMPLETED`, `BID_SUBMITTED`, `AWARDED`), or returns it with remarks.
+Staff issue the BAC Resolution from that frozen file, so `RESOLUTION_ISSUED` fingerprints
+exactly what was adopted. No stage, payload or contract changed. Names, votes and
+comments stay in the database. Votes are write-once, and seats are ended, never deleted.
+Rules: `procurement/bac.py`; endpoints `/api/bac/...` in `bac_views.py`.
 
 ## Blockchain anchoring model
 
@@ -160,7 +179,8 @@ prevention, prepared versus published) are in [SECURITY.md](SECURITY.md), sectio
 | Production | Render (`render.yaml`, gunicorn) | Vercel | Supabase Postgres + Supabase Storage |
 
 Key env vars: backend `SECRET_KEY`, `DEBUG`, `DB_*`, `FRONTEND_URL` (CORS), `EMAIL_*`,
-`AWS_*`, `LEDGER_CONTRACT_ADDRESS`, `SEPOLIA_RPC_URL`, `BLOCKCHAIN_*`, `COMMITMENT_KEY`;
+`AWS_*`, `LEDGER_CONTRACT_ADDRESS`, `SEPOLIA_RPC_URL`, `BLOCKCHAIN_*`, `COMMITMENT_KEY`,
+`BAC_WORKFLOW_ENABLED` (separation of duties, default off);
 frontend `VITE_API_URL`, `VITE_LEDGER_ADDRESS`, `VITE_SEPOLIA_RPC_URL`.
 Full tables in [README.md](README.md#environment-variables).
 

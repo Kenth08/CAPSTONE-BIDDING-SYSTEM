@@ -19,6 +19,7 @@ import { toast } from '../../components/ui/Toaster'
 import { ListSkeleton, Skeleton } from '../../components/Skeleton'
 import { amount, greeting, peso, pesoCompact, todayLong } from '../../utils/format'
 import { getCached, loadCached } from '../../utils/sessionCache'
+import { canPrepare, useBacStatus, ws } from '../../utils/workspace'
 
 const ATTN_ICON = {
   evaluate: Gavel, revision: FileWarning, verify: UserCheck, category: Users,
@@ -75,7 +76,7 @@ function Pipeline({ stages, loading }) {
     <div className="rf-pipeline" role="list" aria-label="Projects by stage">
       {stages.map((s) => (
         <button key={s.key} type="button" role="listitem" className={`rf-pipe-stage${s.count === 0 ? ' is-empty' : ''}`}
-          onClick={() => navigate(`/admin/projects?stage=${s.key}`)}
+          onClick={() => navigate(`${ws('')}/projects?stage=${s.key}`)}
           aria-label={`${s.label}: ${s.count} project${s.count === 1 ? '' : 's'}. Show them`}>
           <span className="rf-pipe-count">{s.count}</span>
           <span className="rf-pipe-label">{s.label}</span>
@@ -122,7 +123,7 @@ function ChainStatus({ unchecked, verified }) {
         </strong>
         <p>
           {checking
-            ? <>Open a procurement&apos;s record and press Check on-chain to confirm them. <Link to="/admin/projects" className="rf-card-link">Go to Projects</Link></>
+            ? <>Open a procurement&apos;s record and press Check on-chain to confirm them. <Link to={ws('/projects')} className="rf-card-link">Go to Projects</Link></>
             : 'The server has read each transaction back from the ledger.'}
         </p>
       </div>
@@ -278,6 +279,7 @@ function ChainHealth({ chain, loading, onAnchored }) {
 const SUMMARY_CACHE = 'admin:summary'
 
 export default function AdminHome() {
+  const bac = useBacStatus()
   // A revisit shows the last summary at once; the effect below refreshes it.
   const [data, setData] = useState(() => getCached(SUMMARY_CACHE) ?? null)
   const [loading, setLoading] = useState(() => getCached(SUMMARY_CACHE) === undefined)
@@ -316,7 +318,9 @@ export default function AdminHome() {
           <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => { setLoading(true); load({ fresh: true }) }}>
             <RefreshCw size={13} /> Refresh
           </button>
-          <Link to="/admin/planning" className="ui-btn ui-btn--primary ui-btn--sm"><FolderOpen size={13} /> New procurement</Link>
+          {canPrepare(ws('').startsWith('/staff') ? 'staff' : 'admin', bac.workflow_enabled) && (
+            <Link to={ws('/planning')} className="ui-btn ui-btn--primary ui-btn--sm"><FolderOpen size={13} /> New procurement</Link>
+          )}
         </div>
       </div>
 
@@ -335,27 +339,27 @@ export default function AdminHome() {
       {(data || !error) && <>
       <KpiRow cols={6}>
         <KpiCard label="Open biddings" icon={Gavel} tone="info" loading={loading}
-          value={k.open_biddings ?? 0} to="/admin/projects?stage=published"
+          value={k.open_biddings ?? 0} to={ws('/projects?stage=published')}
           context={k.closing_this_week ? `${k.closing_this_week} closing this week` : 'None closing this week'} />
         <KpiCard label="Bids to evaluate" icon={ClipboardCheck} loading={loading}
           tone={k.bids_awaiting_on_closed ? 'danger' : k.bids_awaiting_evaluation ? 'warning' : 'neutral'}
-          value={k.bids_awaiting_evaluation ?? 0} to="/admin/bids"
+          value={k.bids_awaiting_evaluation ?? 0} to={ws('/bids')}
           context={k.bids_awaiting_on_closed ? `${k.bids_awaiting_on_closed} on closed biddings` : 'Undecided bids'} />
         <KpiCard label="Suppliers to verify" icon={UserCheck} loading={loading}
           tone={k.suppliers_awaiting_verification ? 'warning' : 'neutral'}
-          value={k.suppliers_awaiting_verification ?? 0} to="/admin/suppliers"
+          value={k.suppliers_awaiting_verification ?? 0} to={ws('/suppliers')}
           context={k.category_requests ? `+${k.category_requests} category request${k.category_requests === 1 ? '' : 's'}` : 'Registrations waiting'} />
         <KpiCard label="Incomplete documents" icon={FileWarning} loading={loading}
           title="Suppliers with documents missing, expired or expiring within 30 days"
           tone={k.suppliers_incomplete_documents ? 'danger' : 'neutral'}
-          value={k.suppliers_incomplete_documents ?? 0} to="/admin/suppliers"
+          value={k.suppliers_incomplete_documents ?? 0} to={ws('/suppliers')}
           context="Missing or expiring ≤30 days" />
         <KpiCard label="Not yet on-chain" icon={Link2} loading={loading}
           tone={k.anchors_pending ? 'warning' : 'neutral'}
-          value={k.anchors_pending ?? 0} to="/admin#chain"
+          value={k.anchors_pending ?? 0} to={ws('#chain')}
           context={k.anchors_pending ? 'Waiting for a signature' : data?.chain?.anchored ? 'All steps reported' : 'Nothing recorded yet'} />
         <KpiCard label="Open budgets (ABC)" icon={Wallet} loading={loading}
-          value={pesoCompact(k.open_abc)} title={peso(k.open_abc)} to="/admin/projects?stage=published"
+          value={pesoCompact(k.open_abc)} title={peso(k.open_abc)} to={ws('/projects?stage=published')}
           context={`Across ${k.open_biddings ?? 0} open bidding${k.open_biddings === 1 ? '' : 's'}`} />
       </KpiRow>
 
@@ -372,18 +376,18 @@ export default function AdminHome() {
         <section className="rf-card" aria-labelledby="closing-h">
           <div className="rf-card-head">
             <div><h3 id="closing-h">Closing soon</h3></div>
-            <Link to="/admin/projects?stage=published" className="rf-card-link">All open <ChevronRight size={13} /></Link>
+            <Link to={ws('/projects?stage=published')} className="rf-card-link">All open <ChevronRight size={13} /></Link>
           </div>
           {loading ? <div className="rf-card-body"><ListSkeleton rows={3} height={44} /></div>
             : !data?.closing_soon?.length ? (
               <EmptyState compact icon={Gavel} title="No open biddings"
                 description="Publish an approved procurement to open it for bidding."
-                action={<Link to="/admin/projects" className="ui-btn ui-btn--secondary ui-btn--sm">Go to Projects</Link>} />
+                action={<Link to={ws('/projects')} className="ui-btn ui-btn--secondary ui-btn--sm">Go to Projects</Link>} />
             ) : (
               <ul className="rf-list">
                 {data.closing_soon.map((p) => (
                   <li key={p.id}>
-                    <Link to={`/admin/bids/${p.id}`} className="rf-list-row" style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}>
+                    <Link to={`${ws('')}/bids/${p.id}`} className="rf-list-row" style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}>
                       <span style={{ minWidth: 0 }}>
                         <span className="rf-list-title" style={{ display: 'block' }}>{p.name}</span>
                         <span className="rf-list-sub"><span className="rf-code">{p.code}</span>{p.bids} bid{p.bids === 1 ? '' : 's'}</span>
@@ -411,7 +415,7 @@ export default function AdminHome() {
         <section className="rf-card" aria-labelledby="sav-h">
           <div className="rf-card-head">
             <div><h3 id="sav-h">Savings against the ABC</h3><p>Approved budget vs awarded amount</p></div>
-            <Link to="/admin/awards" className="rf-card-link">Awards <ChevronRight size={13} /></Link>
+            <Link to={ws('/awards')} className="rf-card-link">Awards <ChevronRight size={13} /></Link>
           </div>
           {loading ? <div className="rf-card-body"><ListSkeleton rows={3} height={40} /></div>
             : !savings?.rows?.length ? (

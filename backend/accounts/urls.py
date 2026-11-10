@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from .idempotency import RequestOutcomeView
+from .user_admin import ManagedUserDetailView, ManagedUserListCreateView
 from .views import (
     AdminAssistedSupplierRegisterView,
     ChangePasswordView,
@@ -32,6 +33,8 @@ urlpatterns = [
     path("password/reset/confirm/", PasswordResetConfirmView.as_view(), name="password-reset-confirm"),
     path("verify-email/confirm/", EmailVerifyConfirmView.as_view(), name="verify-email-confirm"),
     path("verify-email/resend/", ResendVerificationEmailView.as_view(), name="verify-email-resend"),
+    path("users/", ManagedUserListCreateView.as_view(), name="managed-users"),
+    path("users/<int:pk>/", ManagedUserDetailView.as_view(), name="managed-user"),
     path("users/<int:pk>/unlock/", UnlockAccountView.as_view(), name="unlock-account"),
     path("requests/<str:key>/", RequestOutcomeView.as_view(), name="request-outcome"),
 ]

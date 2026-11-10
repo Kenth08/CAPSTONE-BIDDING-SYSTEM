@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
+import { ws, useBacStatus, canPrepare } from '../utils/workspace'
 import { Routes, Route, Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
   Search, ChevronRight, ChevronLeft, LogOut, Shield, RefreshCw,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
   CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock, ArrowLeft,
-  Upload, ShieldCheck, Link2, Copy, Loader2, Hash,
+  Upload, ShieldCheck, Link2, Copy, Loader2, Hash, Gavel, ScrollText, UserCog, Landmark,
 } from 'lucide-react'
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
@@ -45,6 +46,10 @@ import { runAnchor, runAnchorSequence } from '../blockchain/anchorStore'
 import { ANCHOR_STATES, anchorState } from '../blockchain/anchorState'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import AdminHome from './admin/AdminHome'
+import UsersPage from './admin/UsersPage'
+import BacCommitteePage from './admin/BacCommitteePage'
+import BacRecordsPage from './bac/BacRecordsPage'
+import BacMeetingsPage from './staff/BacMeetingsPage'
 import InfoTip from '../components/ui/InfoTip'
 import MoreInfo from '../components/ui/MoreInfo'
 import Toaster from '../components/ui/Toaster'
@@ -59,21 +64,36 @@ import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import SecureImg from '../components/ui/SecureImg'
 import '../style/AdminDashboard.css'
 
-const NAV_SECTIONS = [
-  { label: 'Overview', items: [
-    { icon: LayoutDashboard, label: 'Dashboard', to: '/admin' },
-  ] },
-  { label: 'Procurement', items: [
-    { icon: Calendar,   label: 'Planning', to: '/admin/planning' },
-    { icon: FolderOpen, label: 'Projects', to: '/admin/projects' },
-    { icon: Pencil,     label: 'Bids',     to: '/admin/bids' },
-    { icon: Award,      label: 'Awards',   to: '/admin/awards' },
-  ] },
-  { label: 'Management', items: [
-    { icon: Users,     label: 'Suppliers', to: '/admin/suppliers' },
-    { icon: BarChart2, label: 'Reports',   to: '/admin/reports' },
-  ] },
-]
+const workspaceRole = () => (ws('').startsWith('/staff') ? 'staff' : 'admin')
+
+// The menu for whoever is signed in. This file serves both the Admin (/admin)
+// and Procurement Staff (/staff). With separation of duties on
+// (utils/workspace.useBacStatus) the Admin oversees and manages accounts and
+// Staff prepare; with it off the Admin keeps every original page.
+function navSections(role, workflowOn) {
+  const prepare = canPrepare(role, workflowOn)
+  const procurement = [
+    ...(prepare ? [{ icon: Calendar, label: 'Planning', to: ws('/planning') }] : []),
+    { icon: FolderOpen, label: 'Projects', to: ws('/projects') },
+    { icon: Pencil,     label: 'Bids',     to: ws('/bids') },
+    ...(role === 'staff' ? [{ icon: Gavel, label: 'BAC Meetings', to: ws('/bac-meetings') }] : []),
+    { icon: Award,      label: 'Awards',   to: ws('/awards') },
+    ...(role === 'admin' ? [{ icon: ScrollText, label: 'BAC Records', to: ws('/bac-records') }] : []),
+  ]
+  const management = [
+    ...(role === 'admin' ? [
+      { icon: UserCog,  label: 'Users',         to: ws('/users') },
+      { icon: Landmark, label: 'BAC Committee', to: ws('/bac-committee') },
+    ] : []),
+    { icon: Users,     label: 'Suppliers', to: ws('/suppliers') },
+    { icon: BarChart2, label: 'Reports',   to: ws('/reports') },
+  ]
+  return [
+    { label: 'Overview', items: [{ icon: LayoutDashboard, label: 'Dashboard', to: ws('') }] },
+    { label: role === 'admin' && workflowOn ? 'Oversight' : 'Procurement', items: procurement },
+    { label: 'Management', items: management },
+  ]
+}
 
 const STATUS_LABEL = {
   draft: 'Draft', pending_head: 'Pending', needs_revision: 'Needs Revision', approved: 'Approved', rejected: 'Rejected',
@@ -154,6 +174,7 @@ const PIPELINE_STAGES = {
 }
 
 function ProjectsPage() {
+  const { workflow_enabled: workflowOn } = useBacStatus()
   const { projects, loading } = useProjects()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
@@ -215,7 +236,7 @@ function ProjectsPage() {
               <span className="sr-only">Search projects</span>
               <input placeholder="Search title or reference" value={search} onChange={e => setSearch(e.target.value)} />
             </label>
-            <button className="ad-btn-history" onClick={() => navigate('/admin/projects/history')}>
+            <button className="ad-btn-history" onClick={() => navigate(ws('/projects/history'))}>
               <Clock size={13} /> History{historyCount > 0 ? ` (${historyCount})` : ''}
             </button>
           </div>
@@ -253,7 +274,7 @@ function ProjectsPage() {
                   <td><StatusBadge domain="project" status={p.status} /></td>
                   <td className="ad-actions-col">
                     <div className="ad-actions">
-                      {p.status === 'approved' && (
+                      {p.status === 'approved' && canPrepare(workspaceRole(), workflowOn) && (
                         <PublishButton
                           project={p}
                           onPublished={(proj) => setToast({
@@ -262,7 +283,7 @@ function ProjectsPage() {
                           })}
                         />
                       )}
-                      <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/bids/${p.id}`)}>
+                      <button className="ad-btn-view-sm" onClick={() => navigate(`${ws('')}/bids/${p.id}`)}>
                         <Eye size={13} /> View Bids
                       </button>
                     </div>
@@ -315,7 +336,7 @@ function ProjectHistoryPage() {
     <div className="ad-content">
       <div className="ad-card">
         <div className="ad-card-header">
-          <button className="ad-btn-view-sm" onClick={() => navigate('/admin/projects')}>
+          <button className="ad-btn-view-sm" onClick={() => navigate(ws('/projects'))}>
             <ArrowLeft size={12} /> Back to Projects
           </button>
           <div className="ad-toolbar">
@@ -353,10 +374,10 @@ function ProjectHistoryPage() {
                     <StatusBadge tone={p.status === 'awarded' ? 'success' : 'neutral'} label={closedLabel(p)} />
                   </td>
                   <td className="ad-actions-col">
-                    <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/bids/${p.id}`)}>
+                    <button className="ad-btn-view-sm" onClick={() => navigate(`${ws('')}/bids/${p.id}`)}>
                       <Eye size={13} /> View Bids
                     </button>
-                    <button className="ad-btn-view-sm" onMouseEnter={() => prefetchRecord(p.id)} onClick={() => navigate(`/admin/record/${p.id}`)}>
+                    <button className="ad-btn-view-sm" onMouseEnter={() => prefetchRecord(p.id)} onClick={() => navigate(`${ws('')}/record/${p.id}`)}>
                       <ShieldCheck size={13} /> Record
                     </button>
                   </td>
@@ -2298,7 +2319,7 @@ function BidsPage() {
                   ? 'Projects appear here once the Head approves them and you publish them for bidding.'
                   : 'Try a different search term, type, or status filter.'}
                 action={biddable.length === 0
-                  ? <Link to="/admin/projects" className="ad-btn-cancel">Go to Projects</Link>
+                  ? <Link to={ws('/projects')} className="ad-btn-cancel">Go to Projects</Link>
                   : <button type="button" className="ad-btn-cancel" onClick={() => update({ q: '', type: 'All', status: 'all' })}>Clear filters</button>}
               />
             </div>
@@ -2306,8 +2327,8 @@ function BidsPage() {
             <div
               className="ad-bid-card"
               key={p.id}
-              onClick={() => navigate(`/admin/bids/${p.id}`)}
-              onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); navigate(`/admin/bids/${p.id}`) } }}
+              onClick={() => navigate(`${ws('')}/bids/${p.id}`)}
+              onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); navigate(`${ws('')}/bids/${p.id}`) } }}
               role="button"
               tabIndex={0}
               aria-label={`Evaluate bids for ${p.name}`}
@@ -2658,7 +2679,7 @@ function BidProductGallery({ bid }) {
 // Full bid detail modal (admin evaluation) — opened by clicking a supplier's row.
 // Shows every field, with images previewed inline so the admin doesn't have to
 // download each one to check it.
-function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqualify, onMarkWinner, onRequestRevision, confirm, onConfirmWinner, onCancelConfirm, onClose }) {
+function BidDetailModal({ bid, awarded, readOnly = false, busyId, projectName, onQualify, onDisqualify, onMarkWinner, onRequestRevision, confirm, onConfirmWinner, onCancelConfirm, onClose }) {
   const files = collectBidFiles(bid)
   const images = files.filter(f => isImageFile(f.name))
   const docs = files.filter(f => !isImageFile(f.name))
@@ -2676,7 +2697,9 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
     return out
   }
   const hasFlaggedDocs = (bid.documents || []).some(d => d.review_status === 'needs_revision')
-  const canDecide = bid.status !== 'winner' && !awarded
+  // readOnly: the BAC workflow is on, so the committee evaluates and the Head
+  // awards (pages/BacDashboard.jsx, pages/head/AwardApprovalsPage.jsx).
+  const canDecide = bid.status !== 'winner' && !awarded && !readOnly
 
   return (
     <div className="ad-modal-overlay" onClick={onClose}>
@@ -2930,6 +2953,7 @@ function bidDocState(b) {
 function BidEvaluationPage() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { workflow_enabled: workflowOn } = useBacStatus()
   const [project, setProject] = useState(null)
   const [bids, setBids] = useState([])
   const [award, setAward] = useState(null)       // for the post-award stepper stages
@@ -3143,7 +3167,7 @@ function BidEvaluationPage() {
             <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => setViewBid(b)}>
               <Eye size={13} /> Review
             </button>
-            {!awarded && b.status !== 'winner' && (
+            {!awarded && !workflowOn && b.status !== 'winner' && (
               <>
                 {b.status !== 'qualified' && (
                   <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy} onClick={() => ask('qualify', b)}>
@@ -3179,7 +3203,7 @@ function BidEvaluationPage() {
     <div className="ad-content">
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
 
-      <button className="ad-back-link" onClick={() => navigate('/admin/bids')}>
+      <button className="ad-back-link" onClick={() => navigate(ws('/bids'))}>
         <ArrowLeft size={14} /> Back to bid evaluation
       </button>
 
@@ -3200,7 +3224,7 @@ function BidEvaluationPage() {
         <div className="ad-card">
           <EmptyState icon={Search} title="Procurement not found"
             description="It may have been removed, or the link is incorrect."
-            action={<button className="ad-btn-cancel" onClick={() => navigate('/admin/projects')}><ArrowLeft size={14} /> Back to projects</button>} />
+            action={<button className="ad-btn-cancel" onClick={() => navigate(ws('/projects'))}><ArrowLeft size={14} /> Back to projects</button>} />
         </div>
       ) : (
         <>
@@ -3227,7 +3251,7 @@ function BidEvaluationPage() {
                 <button className="ad-btn-timeline" onClick={() => setShowTimeline(true)}>
                   <Clock size={14} /> View Timeline
                 </button>
-                <button className="ad-btn-timeline" onMouseEnter={() => prefetchRecord(project.id)} onClick={() => navigate(`/admin/record/${project.id}`)}
+                <button className="ad-btn-timeline" onMouseEnter={() => prefetchRecord(project.id)} onClick={() => navigate(`${ws('')}/record/${project.id}`)}
                   title="The whole procurement, with blockchain evidence for each step">
                   <ShieldCheck size={14} /> Procurement record
                 </button>
@@ -3238,6 +3262,19 @@ function BidEvaluationPage() {
             </div>
           </section>
 
+          {workflowOn && (
+            <div className="ad-card ad-bac-note" role="note">
+              <Landmark size={16} aria-hidden="true" />
+              <div>
+                <strong>Evaluated by the BAC Committee</strong>
+                <p className="ad-muted ad-small" style={{ margin: '2px 0 0' }}>
+                  Each of the five members evaluates every bid; a bid qualifies when three of them pass it.
+                  The committee then post-qualifies the lowest bid and votes on a resolution, and the Head approves the award.
+                  {workspaceRole() === 'staff' ? ' Draft the resolution from BAC Meetings once a bid passes post-qualification.' : ''}
+                </p>
+              </div>
+            </div>
+          )}
           <section aria-labelledby="bids-h" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div className="rf-greeting">
               <div>
@@ -3285,6 +3322,7 @@ function BidEvaluationPage() {
         <BidDetailModal
           bid={viewBid}
           awarded={awarded}
+          readOnly={workflowOn}
           busyId={busyId}
           projectName={project.name}
           onQualify={(b) => { setViewBid(null); ask('qualify', b) }}
@@ -3326,7 +3364,7 @@ function BidEvaluationPage() {
 // (with its blockchain state) once it has. Re-uploading is allowed and appends a
 // NEW anchor rather than rewriting the old one, so a replacement is visible in
 // the trail instead of silently overwriting history.
-function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
+function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor, readOnly = false }) {
   const inputRef = useRef(null)
   const issued = !!doc.url
   const shortLabel = doc.label.replace(/ \(.*\)/, '')
@@ -3387,7 +3425,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
           )}
           {/* Replace the generated notice with the signed scan once it comes
               back. Appends a new anchor, so both versions stay in the trail. */}
-          <button
+          {!readOnly && <button
             className="ui-icon-btn ad-award-doc-upload"
             disabled={busy}
             onClick={() => inputRef.current?.click()}
@@ -3396,7 +3434,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
             aria-label={`Replace ${shortLabel} with the signed copy`}
           >
             {busy ? <Loader2 size={13} className="ui-spin" /> : <Upload size={13} />}
-          </button>
+          </button>}
         </>
       ) : (
         // Not issued yet: generate it from the award record (the normal path —
@@ -3407,6 +3445,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
             <FileText size={13} aria-hidden="true" /> <span>{shortLabel}</span>
           </span>
           <span className="ad-award-doc-chain is-pending">Pending</span>
+          {!readOnly && <>
           <button className="ad-award-doc-gen" disabled={busy} onClick={() => onGenerate(award, doc)}>
             {busy ? <><Loader2 size={12} className="ui-spin" /> Working…</> : <>Generate</>}
           </button>
@@ -3420,6 +3459,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
           >
             <Upload size={13} />
           </button>
+          </>}
         </>
       )}
     </div>
@@ -3429,6 +3469,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
 const AWARDS_CACHE = 'admin:awards'
 
 function AwardsPage() {
+  const { workflow_enabled: workflowOn } = useBacStatus()
   // A revisit shows the last list at once; the effect below refreshes it.
   const [awards, setAwards] = useState(() => getCached(AWARDS_CACHE) || [])
   const [loading, setLoading] = useState(() => getCached(AWARDS_CACHE) === undefined)
@@ -3556,7 +3597,7 @@ function AwardsPage() {
                 description={search
                   ? 'Try a different supplier, project, or ref code.'
                   : 'Awards appear here after you mark a winning bid in Bid Evaluation.'}
-                action={!search && <Link to="/admin/bids" className="ad-btn-cancel">Go to Bid Evaluation</Link>} />
+                action={!search && <Link to={ws('/bids')} className="ad-btn-cancel">Go to Bid Evaluation</Link>} />
             ) : filtered.map(a => (
               <tr key={a.id}>
                 <td className="ad-bold">{a.supplier_name}</td>
@@ -3564,7 +3605,7 @@ function AwardsPage() {
                   <div className="ad-cell-stack">
                     <span>{a.project_name}</span>
                     <RefCode code={a.project_code} />
-                    <Link to={`/admin/record/${a.project}`} onMouseEnter={() => prefetchRecord(a.project)} className="ad-btn-view-sm" style={{ alignSelf: 'flex-start' }}>
+                    <Link to={`${ws('')}/record/${a.project}`} onMouseEnter={() => prefetchRecord(a.project)} className="ad-btn-view-sm" style={{ alignSelf: 'flex-start' }}>
                       <ShieldCheck size={12} /> Procurement record
                     </Link>
                   </div>
@@ -3583,6 +3624,7 @@ function AwardsPage() {
                         onUpload={uploadDoc}
                         onGenerate={generateDoc}
                         onAnchor={anchorDoc}
+                        readOnly={!canPrepare(workspaceRole(), workflowOn)}
                       />
                     ))}
                   </div>
@@ -3849,10 +3891,13 @@ function ReportsPage() {
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 
-export default function AdminDashboard() {
+export default function AdminDashboard({ workspace = 'admin' }) {
   const loc = useLocation()
   const navigate = useNavigate()
   const [navOpen, setNavOpen] = useState(false)
+  const bacStatus = useBacStatus()
+  const workflowOn = bacStatus.workflow_enabled
+  const base = `/${workspace}`
   // Close the mobile drawer whenever the route changes.
   useEffect(() => { setNavOpen(false) }, [loc.pathname])
 
@@ -3865,49 +3910,53 @@ export default function AdminDashboard() {
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = 0 }, [loc.pathname])
 
   const PAGE_TITLES = {
-    '/admin':           'Dashboard',
-    '/admin/projects':  'Projects',
-    '/admin/projects/history': 'Bidding History',
-    '/admin/planning':  'Planning',
-    '/admin/suppliers': 'Suppliers',
-    '/admin/bids':      'Bids',
-    '/admin/awards':    'Awards',
-    '/admin/reports':   'Reports',
+    '':           'Dashboard',
+    '/projects':  'Projects',
+    '/projects/history': 'Bidding History',
+    '/planning':  'Planning',
+    '/suppliers': 'Suppliers',
+    '/bids':      'Bids',
+    '/awards':    'Awards',
+    '/reports':   'Reports',
+    '/users':     'Users',
+    '/bac-committee': 'BAC Committee',
+    '/bac-records':   'BAC Records',
+    '/bac-meetings':  'BAC Meetings',
   }
-  const title = PAGE_TITLES[loc.pathname]
-    || (loc.pathname.startsWith('/admin/bids/') ? 'Bid Evaluation'
-      : loc.pathname.startsWith('/admin/record/') ? 'Procurement Record' : 'Dashboard')
+  const rel = loc.pathname.slice(base.length).replace(/\/$/, '')
+  const title = PAGE_TITLES[rel]
+    || (rel.startsWith('/bids/') ? 'Bid Evaluation'
+      : rel.startsWith('/record/') ? 'Procurement Record' : 'Dashboard')
 
-  // Breadcrumbs: Admin › Section › (sub-page)
+  // Breadcrumbs: Admin (or Staff) › Section › (sub-page)
   const CRUMB_SECTIONS = {
     projects: 'Projects', planning: 'Planning', suppliers: 'Suppliers',
     bids: 'Bids', awards: 'Awards', reports: 'Reports', record: 'Procurement Record',
+    users: 'Users', 'bac-committee': 'BAC Committee', 'bac-records': 'BAC Records', 'bac-meetings': 'BAC Meetings',
   }
   const [, , section, sub] = loc.pathname.split('/')
-  const crumbs = [{ label: 'Admin', to: '/admin' }]
+  const crumbs = [{ label: workspace === 'staff' ? 'Staff' : 'Admin', to: base }]
   if (!section || !CRUMB_SECTIONS[section]) crumbs.push({ label: 'Dashboard' })
   else {
-    // /admin/record has no index page of its own, so that crumb is plain text.
-    crumbs.push({ label: CRUMB_SECTIONS[section], to: section === 'record' ? undefined : `/admin/${section}` })
+    // .../record has no index page of its own, so that crumb is plain text.
+    crumbs.push({ label: CRUMB_SECTIONS[section], to: section === 'record' ? undefined : `${base}/${section}` })
     if (sub) crumbs.push({ label: section === 'bids' ? 'Evaluation' : section === 'record' ? `#${sub}` : sub === 'history' ? 'History' : sub })
   }
 
-  // "/admin/projects/history" and "/admin/bids/:id" keep their parent highlighted.
-  const isActive = (to) => to === '/admin' ? loc.pathname === '/admin' : loc.pathname === to || loc.pathname.startsWith(`${to}/`)
+  // ".../projects/history" and ".../bids/:id" keep their parent highlighted.
+  const isActive = (to) => to === base ? loc.pathname === base : loc.pathname === to || loc.pathname.startsWith(`${to}/`)
 
   const u = storedUser()
-  const user = {
-    name: u.full_name || u.username || 'System Administrator',
-    email: u.email || '',
-    role: 'Administrator',
-  }
+  const user = workspace === 'staff'
+    ? { name: u.full_name || u.username || 'Procurement Staff', email: u.email || '', role: 'Procurement Staff' }
+    : { name: u.full_name || u.username || 'System Administrator', email: u.email || '', role: 'Administrator' }
 
   return (
     <div className="ad-layout">
       <AppSidebar
-        workspace="Admin Workspace"
+        workspace={workspace === 'staff' ? 'Staff Workspace' : 'Admin Workspace'}
         logoIcon={Shield}
-        sections={NAV_SECTIONS}
+        sections={navSections(workspace, workflowOn)}
         isActive={isActive}
         open={navOpen}
         onClose={() => setNavOpen(false)}
@@ -3931,9 +3980,13 @@ export default function AdminDashboard() {
             <Route path="bids"      element={<BidsPage />} />
             <Route path="bids/:id"  element={<BidEvaluationPage />} />
             <Route path="awards"    element={<AwardsPage />} />
-            <Route path="record/:id" element={<ProcurementRecordPage className="ad-content" backTo="/admin/awards" backLabel="Back to awards" />} />
+            <Route path="record/:id" element={<ProcurementRecordPage className="ad-content" backTo={`${base}/awards`} backLabel="Back to awards" />} />
             <Route path="record/:id/anchor/:anchorId" element={<ProjectAnchorDetailPage className="ad-content" />} />
             <Route path="reports"   element={<ReportsPage />} />
+            {workspace === 'admin' && <Route path="users" element={<UsersPage />} />}
+            {workspace === 'admin' && <Route path="bac-committee" element={<BacCommitteePage />} />}
+            {workspace === 'admin' && <Route path="bac-records" element={<BacRecordsPage className="ad-content" />} />}
+            {workspace === 'staff' && <Route path="bac-meetings" element={<BacMeetingsPage />} />}
             <Route path="*"         element={<AdminHome />} />
           </Routes>
         </div>

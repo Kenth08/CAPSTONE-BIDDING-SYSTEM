@@ -446,6 +446,15 @@ ADMIN_URL = f'{ADMIN_URL}/' if ADMIN_URL else ''
 MFA_REQUIRED = os.environ.get(
     'MFA_REQUIRED', 'False' if (DEBUG or RUNNING_TESTS) else 'True').lower() == 'true'
 
+# Separation of duties (docs/BAC_ROLES_PLAN.md). Off: the original workflow,
+# where the Admin prepares projects, qualifies bids and selects the winner. On:
+# Procurement Staff prepare and publish, the five-member BAC Committee evaluates
+# and votes, the Head approves the award, and the Admin only oversees.
+# Off by default so a deploy changes nothing until the Staff and BAC accounts
+# exist; turn it on with BAC_WORKFLOW_ENABLED=True once they do. Read it with
+# procurement.permissions.bac_workflow_on() so tests can override it.
+BAC_WORKFLOW_ENABLED = os.environ.get('BAC_WORKFLOW_ENABLED', 'False').lower() == 'true'
+
 # ── Security headers ─────────────────────────────────────────────────────────
 # This backend serves JSON, file downloads and the Django admin; the SPA's own
 # headers are set by Vercel (frontend/vercel.json). Django's defaults already

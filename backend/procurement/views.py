@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import status as http_status
 from rest_framework import mixins, serializers, viewsets
@@ -60,6 +60,7 @@ from .document_requirements import (
     validate_future_expiry,
 )
 from .document_alerts import send_document_alerts
+from .bac import frozen_resolution_bytes
 from .documents import DOCUMENT_BUILDERS
 from .models import (
     AWARD_DOCUMENT_FIELDS,
@@ -76,6 +77,7 @@ from .models import (
     SUPPLIER_DOCUMENT_FIELDS,
     SUPPLIER_DOCUMENT_KEYS,
     Award,
+    BACResolution,
     Bid,
     BidAttachment,
     BidProductImage,
@@ -89,7 +91,18 @@ from .models import (
 from rest_framework import permissions
 
 from .notifications import email_user, notify_admins, notify_heads, notify_supplier, notify_users
-from .permissions import IsAdminOrHeadRole, IsAdminRole, IsHeadRole, IsSupplierRole
+from .permissions import (
+    INTERNAL_ROLES,
+    IsAdminOrHeadRole,
+    IsAdminOrStaffRole,
+    IsAdminRole,
+    IsAnchorSignerRole,
+    IsBidReviewerRole,
+    IsHeadRole,
+    IsLegacyEvaluatorRole,
+    IsPreparerRole,
+    IsSupplierRole,
+)
 from .serializers import (
     AwardSerializer,
     BidSerializer,
@@ -405,7 +418,10 @@ class AnchorNextPendingView(APIView):
     A row whose fingerprint is already recorded (on the ledger, or by a transaction
     on an identical row) is skipped, because sending it would add a permanent
     duplicate. For example, a MetaMask transaction whose hash never reached us.
-    "Can't tell" stops the run instead of counting as "not there"."""
+    "Can't tell" stops the run instead of counting as "not there".
+
+    Admin only, with or without the BAC workflow: sending the backlog is system
+    operation, not a procurement decision, and one sender keeps it one at a time."""
 
     permission_classes = [IsAdminRole]
 
@@ -730,9 +746,14 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated()]
         # Both Admin and Head cause project transitions, so both may attach the
         # resulting transaction hash.
-        if self.action in {"anchor", "verify_chain"}:
+        if self.action == "anchor":
             return [IsAdminOrHeadRole()]
-        return [IsAdminRole()]
+        if self.action == "verify_chain":
+            return [IsAnchorSignerRole()]
+        # Creating, editing, submitting, publishing, resubmitting: whoever
+        # prepares procurements (Staff; also the Admin while the BAC workflow
+        # is off, see permissions.preparer_roles).
+        return [IsPreparerRole()]
 
     # Once bidding opens, the procurement's terms are fixed. Suppliers priced
     # their bids against this budget, these specifications and this evaluation
@@ -902,7 +923,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         — powers the blockchain status badge and the "retry anchoring" button."""
         project = self.get_object()
         rows = list(BlockchainAnchor.objects.filter(entity_ref=project.code))
-        include_payload = getattr(request.user, "role", None) == "admin"
+        include_payload = getattr(request.user, "role", None) in {"admin", "staff"}
         deep = request.query_params.get("deep") in {"1", "true", "yes"}
         preload = None if deep else preload_verification(rows)
 
@@ -1544,7 +1565,7 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             return [permissions.AllowAny()]
         if self.action in self.SUPPLIER_ACTIONS:
             return [IsSupplierRole()]
-        return [IsAdminRole()]
+        return [IsAdminOrStaffRole()]
 
     @action(detail=False, methods=["get"], url_path="document-requirements")
     def document_requirements(self, request):
@@ -2201,6 +2222,13 @@ class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         # scopes suppliers to their own bids, so this can't touch anyone else's.
         if self.action in {"list", "retrieve", "destroy", "anchor"}:
             return [permissions.IsAuthenticated()]
+        # The original one-person evaluation and award: the Admin, only while
+        # the BAC workflow is off. With it on, the BAC Committee evaluates
+        # (bac_views.py) and the Head approves the award.
+        if self.action in {"qualify", "disqualify", "select_winner"}:
+            return [IsLegacyEvaluatorRole()]
+        if self.action == "request_revision":
+            return [IsBidReviewerRole()]
         return [IsAdminRole()]
 
     def list(self, request, *args, **kwargs):
@@ -2235,6 +2263,14 @@ class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         bids: those are the evidence behind the Award and its anchors.
         """
         bid = self.get_object()
+        # Evaluated by the BAC Committee, or named in a resolution: the bid is
+        # part of the committee's record (evaluations, votes, the frozen PDF).
+        if bid.evaluations.exists() or BACResolution.objects.filter(recommended_bid=bid).exists():
+            return Response(
+                {"detail": "The BAC Committee has evaluated this bid, so it is part of the "
+                           "procurement record and cannot be deleted or withdrawn."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
         if bid.status == Bid.Status.WINNER or bid.project.status == Project.Status.AWARDED:
             if getattr(request.user, "role", None) != "supplier":
                 return Response(
@@ -2268,7 +2304,19 @@ class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         role = getattr(self.request.user, "role", None)
         if role == "supplier":
             qs = qs.filter(supplier__user=self.request.user)
-        elif role != "admin":
+        elif role in {"admin", "staff"}:
+            pass
+        elif role == "bac":
+            # Bids stay sealed until the deadline: a committee member sees them
+            # only once bidding has closed (as bac.bidding_closed decides).
+            qs = qs.filter(
+                Q(project__status__in=[Project.Status.CLOSED, Project.Status.AWARDED])
+                | Q(project__status=Project.Status.PUBLISHED, project__deadline__lt=timezone.localdate()))
+        elif role == "head" and self.action == "anchor":
+            # With the BAC workflow on, the Head's award approval writes the
+            # winning bid's anchor, so the Head attaches its transaction.
+            pass
+        else:
             return qs.none()
         # Admin can scope to one project's bids for the evaluation screen.
         project_id = self.request.query_params.get("project")
@@ -2709,7 +2757,12 @@ class AwardViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
         # documents, anchoring, CRUD) stays with the Admin.
         if self.action in {"list", "retrieve"}:
             return [permissions.IsAuthenticated()]
-        return [IsAdminRole()]
+        # The AWARDED anchor is written by whoever made the award (the Admin,
+        # or the Head with the BAC workflow on); document anchors by whoever
+        # issues the documents.
+        if self.action == "anchor":
+            return [IsAdminOrHeadRole()]
+        return [IsPreparerRole()]
 
     def get_queryset(self):
         qs = Award.objects.select_related("project", "supplier", "supplier__user", "bid")
@@ -2718,7 +2771,7 @@ class AwardViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
             # Scoped to their OWN award: a supplier must never see another
             # supplier's contract value or award documents.
             return qs.filter(supplier__user=self.request.user)
-        if role in {"admin", "head"}:
+        if role in INTERNAL_ROLES:
             return qs
         return qs.none()
 
@@ -2776,7 +2829,13 @@ class AwardViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
                             status=http_status.HTTP_400_BAD_REQUEST)
 
         try:
-            pdf_bytes = DOCUMENT_BUILDERS[key](award)
+            # With the BAC workflow, the BAC Resolution is the one the members
+            # adopted and froze (bac.frozen_resolution_bytes), never a fresh
+            # build: the anchor must fingerprint what they actually voted on.
+            # Projects awarded the original way have none and keep the builder.
+            frozen = (frozen_resolution_bytes(award.project)
+                      if key == "award_resolution" else None)
+            pdf_bytes = frozen if frozen is not None else DOCUMENT_BUILDERS[key](award)
         except Exception:
             logger.exception("Could not generate %s for award %s", key, award.id)
             return Response(
@@ -2839,11 +2898,11 @@ class AwardViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
 
 
 class DocumentViewSet(viewsets.ModelViewSet):
-    """Admin-only: supplier compliance documents (expiry tracking)."""
+    """The procurement office only: supplier compliance documents (expiry tracking)."""
 
     queryset = Document.objects.select_related("supplier").all()
     serializer_class = DocumentSerializer
-    permission_classes = [IsAdminRole]
+    permission_classes = [IsAdminOrStaffRole]
 
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):

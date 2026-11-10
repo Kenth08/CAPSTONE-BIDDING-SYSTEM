@@ -28,6 +28,7 @@ from .document_versions import document_slot, versions_for
 from .files import _can_read, _is_public, display_name, protected_file_url
 from .models import Bid, BlockchainAnchor
 from .packets import may_see_packet
+from .permissions import INTERNAL_ROLES
 from .record import PUBLIC_STATUSES, public_date
 from .verification import summarize
 
@@ -49,7 +50,7 @@ def may_view_anchor(anchor, project, role, supplier=None):
         return False
     if role is None:
         return project.status in PUBLIC_STATUSES
-    if role in {"admin", "head"}:
+    if role in INTERNAL_ROLES:
         return True
     if role == "supplier" and supplier is not None:
         if anchor.entity_type != EntityType.BID:
