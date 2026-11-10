@@ -1,9 +1,12 @@
+import { cachedBlob, clearBlobCache } from './utils/blobCache'
 import { protectedFilePath } from './utils/fileUrls'
+import { LOST_ANSWER_STATUSES, newRequestKey, waitForOutcome } from './utils/requestOutcome'
 import { clearRecentGets, recentGet } from './utils/requestCache'
 import { onSessionReset, resetSessionCache } from './utils/sessionCache'
 
 // Answers belong to whoever was signed in when they were requested.
 onSessionReset(clearRecentGets)
+onSessionReset(clearBlobCache)
 
 // Central API layer for talking to the Django backend.
 // In production set VITE_API_URL (e.g. https://api.yourdomain.com/api); locally
@@ -185,15 +188,14 @@ export const apiAddCategory = (name) =>
 // `data` is a FormData instance — do NOT set Content-Type; the browser adds the
 // correct multipart boundary automatically.
 export async function apiRegisterSupplier(formData) {
-  let res
-  try {
-    res = await fetch(`${API_URL}/auth/register/supplier/`, {
-      method: 'POST',
-      body: formData,
-    })
-  } catch {
-    throw new Error('Cannot reach the server. Please check your connection and try again.')
-  }
+  // One key for this submission: if the answer is lost, the page asks how it
+  // ended instead of reporting a failure (see utils/requestOutcome.js).
+  const key = newRequestKey()
+  const res = await fetchOrRecover(`${API_URL}/auth/register/supplier/`, {
+    method: 'POST',
+    body: formData,
+    headers: { 'Idempotency-Key': key },
+  }, key)
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     const msg = Object.entries(err)
@@ -392,19 +394,61 @@ export async function apiFetch(path, options = {}) {
   }
 }
 
+const CANNOT_REACH = 'Cannot reach the server. Please check your connection and try again.'
+
+// ── Lost answers ──────────────────────────────────────────────────────────────
+// The live host cuts a request at 30 seconds and answers with an error the page
+// can't read, while the server usually goes on and saves. So every write carries
+// an Idempotency-Key, and when its answer is lost the page asks the server how
+// it ended (backend/accounts/idempotency.py) instead of calling it a failure.
+// The same key is reused for the one retry after a token refresh.
+
+async function fetchOutcome(key) {
+  const ask = (token) => fetch(`${API_URL}/auth/requests/${encodeURIComponent(key)}/`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  let res = await ask(getToken())
+  if (res.status === 401) {
+    const renewed = await refreshAccessToken()
+    if (renewed) res = await ask(renewed)
+  }
+  if (!res.ok) throw new Error(`Status check failed (${res.status}).`)
+  return res.json()
+}
+
+async function recoveredResponse(key) {
+  const { status, body } = await waitForOutcome(() => fetchOutcome(key))
+  const text = body === null || status === 204 ? null : JSON.stringify(body)
+  return new Response(text, { status, headers: { 'Content-Type': 'application/json' } })
+}
+
+/** fetch(), plus: with a `key`, a lost answer is recovered from the server. */
+async function fetchOrRecover(url, init, key) {
+  let res
+  try {
+    res = await fetch(url, init)
+  } catch {
+    // Otherwise the browser's bare "Failed to fetch" reaches the user.
+    if (!key) throw new Error(CANNOT_REACH)
+    return recoveredResponse(key)
+  }
+  if (key && LOST_ANSWER_STATUSES.has(res.status)) return recoveredResponse(key)
+  return res
+}
+
 async function sendRequest(path, options) {
+  const isWrite = (options.method || 'GET').toUpperCase() !== 'GET'
+  const key = isWrite ? newRequestKey() : null
   const send = (token) =>
-    fetch(`${API_URL}${path}`, {
+    fetchOrRecover(`${API_URL}${path}`, {
       ...options,
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(key ? { 'Idempotency-Key': key } : {}),
         ...options.headers,
       },
-    }).catch(() => {
-      // Otherwise the browser's bare "Failed to fetch" reaches the user.
-      throw new Error('Cannot reach the server. Please check your connection and try again.')
-    })
+    }, key)
 
   let res = await send(getToken())
   if (res.status === 401) {
@@ -439,10 +483,15 @@ export async function apiFileDownloadLink(url) {
   return data.url
 }
 
-/** Fetch a protected file's bytes with the JWT (inline images). Resolves to a Blob. */
+/** Fetch a protected file's bytes with the JWT (inline images). Resolves to a Blob.
+ * Kept for the session (utils/blobCache.js), so a photo is downloaded once. */
 export async function apiFetchFileBlob(url) {
   const path = protectedFilePath(url)
   if (!path) throw new Error('This image link is not valid.')
+  return cachedBlob(path, () => fetchFileBlob(path))
+}
+
+async function fetchFileBlob(path) {
   const send = (token) =>
     fetch(`${API_URL}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
   let res = await send(getToken())
@@ -462,18 +511,22 @@ async function apiUpload(path, formData, method = 'POST') {
     return await sendUpload(path, formData, method)
   } finally {
     clearRecentGets()
+    // An upload is how a photo behind an unchanged address gets replaced.
+    clearBlobCache()
   }
 }
 
 async function sendUpload(path, formData, method) {
+  const key = newRequestKey()
   const send = (token) =>
-    fetch(`${API_URL}${path}`, {
+    fetchOrRecover(`${API_URL}${path}`, {
       method,
       body: formData,
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    }).catch(() => {
-      throw new Error('Cannot reach the server. Please check your connection and try again.')
-    })
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'Idempotency-Key': key,
+      },
+    }, key)
 
   let res = await send(getToken())
   if (res.status === 401) {

@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
+from .idempotency import RequestOutcomeView
 from .views import (
     AdminAssistedSupplierRegisterView,
     ChangePasswordView,
@@ -32,4 +33,5 @@ urlpatterns = [
     path("verify-email/confirm/", EmailVerifyConfirmView.as_view(), name="verify-email-confirm"),
     path("verify-email/resend/", ResendVerificationEmailView.as_view(), name="verify-email-resend"),
     path("users/<int:pk>/unlock/", UnlockAccountView.as_view(), name="unlock-account"),
+    path("requests/<str:key>/", RequestOutcomeView.as_view(), name="request-outcome"),
 ]

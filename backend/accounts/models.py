@@ -117,3 +117,46 @@ class AuditLog(models.Model):
     def __str__(self):
         who = self.user.username if self.user else "system"
         return f"{who} · {self.action} · {self.created_at:%Y-%m-%d %H:%M}"
+
+
+class RequestOutcome(models.Model):
+    """How one write request from the browser ended, so the browser can find out
+    when it never received the answer.
+
+    The live host cuts any request that takes longer than 30 seconds and sends
+    the browser an error, but the server keeps working and usually finishes.
+    The browser then said "Cannot reach the server" about a procurement, bid
+    or registration that had in fact been saved, people tried again, and
+    duplicates followed. Now the browser sends a random Idempotency-Key with a
+    write, accounts/idempotency.py records here how it ended, and after a cut
+    connection the browser asks GET /api/auth/requests/<key>/ instead of
+    guessing.
+
+    Rows are only for that question and are pruned after
+    RequestOutcome.RETENTION. Requests whose answer is a credential (sign-in,
+    token refresh, download links) are never recorded."""
+
+    class State(models.TextChoices):
+        PENDING = "pending", "Pending"
+        DONE = "done", "Done"
+
+    key = models.CharField(max_length=64, unique=True)
+    method = models.CharField(max_length=8)
+    path = models.CharField(max_length=300)
+    # Who made the request, once authentication has run. Only that user may
+    # read the outcome; a row with no user (a registration) needs only the key.
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE,
+        related_name="+")
+    state = models.CharField(max_length=10, choices=State.choices, default=State.PENDING)
+    status_code = models.PositiveSmallIntegerField(null=True, blank=True)
+    # The JSON response body, as sent. Empty when it wasn't JSON or was too big.
+    body = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "request_outcomes"
+
+    def __str__(self):
+        return f"{self.method} {self.path} [{self.state}]"

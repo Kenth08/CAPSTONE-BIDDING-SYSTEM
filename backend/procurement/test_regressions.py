@@ -3320,3 +3320,297 @@ class SigningNonceRaceTests(APITestCase):
         with mock.patch("procurement.blockchain.NONCE_VISIBLE_WAIT_SECONDS", 2):
             blockchain._wait_until_node_counts(w3, "0x" + "11" * 20, 34)
         self.assertEqual(w3.eth.get_transaction_count.call_count, 3)
+
+
+# ── 2026-11-10 presentation: timeouts, duplicates and slow pages ──────────────
+# The live host cut writes at 30 s and the browser called saved records failures;
+# retries made a duplicate procurement and a registration that collided with
+# itself (500). See accounts/idempotency.py.
+
+def _noisy_jpeg(width, height, quality=95):
+    """A photo-like JPEG that doesn't compress away (random pixels)."""
+    import os as _os
+
+    from PIL import Image
+    img = Image.frombytes("RGB", (width, height), _os.urandom(width * height * 3))
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=quality)
+    return out.getvalue()
+
+
+def _image_size(data):
+    from PIL import Image
+    with Image.open(io.BytesIO(data)) as img:
+        return img.size
+
+
+class _TempMediaMixin:
+    def _use_temp_media(self):
+        import shutil
+        media = tempfile.mkdtemp()
+        override = override_settings(MEDIA_ROOT=media)
+        override.enable()
+        self.addCleanup(override.disable)
+        self.addCleanup(shutil.rmtree, media, ignore_errors=True)
+
+
+def _project_form(**extra):
+    return {
+        "name": "Test procurement", "type": "Goods", "category": "IT Equipment",
+        "delivery_location": "HQ", "budget": "1000",
+        "bidding_period_days": 10, "delivery_period_days": 30,
+        "purchase_request": dummy_pdf(), "technical_specifications": dummy_pdf(),
+        "terms_of_reference": dummy_pdf(), "approved_budget_document": dummy_pdf(),
+        "bid_evaluation_criteria": dummy_pdf(), **extra,
+    }
+
+
+class RequestOutcomeTests(_TempMediaMixin, APITestCase):
+    """A write sent with Idempotency-Key leaves a record of how it ended, which
+    the browser reads after a cut connection instead of submitting again."""
+
+    KEY = "3f0c1d2e-4b5a-4c6d-8e9f-0a1b2c3d4e5f"
+
+    def setUp(self):
+        cache.clear()
+        self._use_temp_media()
+        self.admin = make_admin()
+        self.client.force_authenticate(user=self.admin)
+
+    def _create(self, key=KEY):
+        return self.client.post("/api/projects/", _project_form(), format="multipart",
+                                HTTP_IDEMPOTENCY_KEY=key)
+
+    def test_a_finished_write_can_be_read_back_by_its_key(self):
+        res = self._create()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        outcome = self.client.get(f"/api/auth/requests/{self.KEY}/")
+        self.assertEqual(outcome.data["state"], "done")
+        self.assertEqual(outcome.data["status"], 201)
+        self.assertEqual(outcome.data["body"]["id"], res.data["id"])
+
+    def test_the_same_key_never_creates_a_second_procurement(self):
+        self.assertEqual(self._create().status_code, status.HTTP_201_CREATED)
+        again = self._create()
+        self.assertEqual(again.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(again.json()["code"], "duplicate_request")
+        self.assertEqual(Project.objects.count(), 1)
+
+    def test_a_key_still_running_is_refused_and_reported_pending(self):
+        from accounts.models import RequestOutcome
+        RequestOutcome.objects.create(key=self.KEY, method="POST", path="/api/projects/")
+        self.assertEqual(self._create().status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(Project.objects.count(), 0)
+        self.assertEqual(self.client.get(f"/api/auth/requests/{self.KEY}/").data["state"], "pending")
+
+    def test_a_failed_request_may_be_sent_again_with_its_key(self):
+        """api.js resends the same request (same key) after refreshing an
+        expired token, so a 4xx must not lock the key."""
+        bad = self.client.post("/api/projects/", {"name": ""}, format="multipart",
+                               HTTP_IDEMPOTENCY_KEY=self.KEY)
+        self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._create().status_code, status.HTTP_201_CREATED)
+        self.assertEqual(self.client.get(f"/api/auth/requests/{self.KEY}/").data["status"], 201)
+
+    def test_a_dead_workers_pending_key_is_released_after_a_while(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from accounts.models import RequestOutcome
+        row = RequestOutcome.objects.create(key=self.KEY, method="POST", path="/api/projects/")
+        RequestOutcome.objects.filter(pk=row.pk).update(created_at=timezone.now() - timedelta(hours=1))
+        self.assertEqual(self.client.get(f"/api/auth/requests/{self.KEY}/").data["state"], "unknown")
+        self.assertEqual(self._create().status_code, status.HTTP_201_CREATED)
+
+    def test_another_user_cannot_read_the_outcome(self):
+        self._create()
+        self.client.force_authenticate(user=make_head())
+        self.assertEqual(self.client.get(f"/api/auth/requests/{self.KEY}/").data, {"state": "unknown"})
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get(f"/api/auth/requests/{self.KEY}/").data, {"state": "unknown"})
+
+    def test_an_unknown_or_malformed_key_is_unknown(self):
+        self.assertEqual(self.client.get(f"/api/auth/requests/{self.KEY}/").data["state"], "unknown")
+        self.assertEqual(self.client.get("/api/auth/requests/short/").data["state"], "unknown")
+
+    def test_requests_without_the_header_are_untouched(self):
+        from accounts.models import RequestOutcome
+        res = self.client.post("/api/projects/", _project_form(), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(RequestOutcome.objects.exists())
+
+    def test_credentials_are_never_recorded(self):
+        from accounts.idempotency import is_recorded
+        from accounts.models import RequestOutcome
+        for path in ("/api/auth/login/", "/api/auth/refresh/", "/api/auth/mfa/verify/",
+                     "/api/auth/password/reset/confirm/", "/api/auth/logout/",
+                     "/api/files/project/1/purchase_request/link/"):
+            self.assertFalse(is_recorded("POST", path), path)
+        self.assertTrue(is_recorded("POST", "/api/auth/register/supplier/"))
+        self.assertTrue(is_recorded("POST", "/api/projects/7/approve/"))
+        self.assertFalse(is_recorded("GET", "/api/projects/"))
+        self.client.force_authenticate(user=None)
+        self.client.post("/api/auth/login/", {"identifier": "admin", "password": "pw"},
+                         format="json", HTTP_IDEMPOTENCY_KEY=self.KEY)
+        self.assertFalse(RequestOutcome.objects.exists())
+
+    def test_a_registration_outcome_needs_only_the_key(self):
+        self.client.force_authenticate(user=None)
+        res = self.client.post("/api/auth/register/supplier/", registration_payload(),
+                               format="multipart", HTTP_IDEMPOTENCY_KEY=self.KEY)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        outcome = self.client.get(f"/api/auth/requests/{self.KEY}/")
+        self.assertEqual((outcome.data["state"], outcome.data["status"]), ("done", 201))
+
+    def test_recording_failures_never_break_the_request(self):
+        from django.db import DatabaseError
+        with mock.patch("accounts.idempotency.RequestOutcome.objects.create",
+                        side_effect=DatabaseError("no such table")), \
+             self.assertLogs("accounts.idempotency", level="ERROR"):
+            res = self._create()
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_the_browser_may_send_the_header_cross_origin(self):
+        """Without this the preflight refuses every write from the live site."""
+        res = self.client.options(
+            "/api/projects/", HTTP_ORIGIN="http://localhost:3000",
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS="authorization,idempotency-key")
+        self.assertEqual(res.status_code, 200)
+        allowed = [h.strip().lower() for h in res["Access-Control-Allow-Headers"].split(",")]
+        self.assertIn("idempotency-key", allowed)
+        self.assertIn("authorization", allowed)
+
+
+class RegistrationRaceTests(_TempMediaMixin, APITestCase):
+    """Two submissions of one registration both passed validate_email; the
+    second hit the unique username and answered a bare 500."""
+
+    def setUp(self):
+        cache.clear()
+        self._use_temp_media()
+
+    def test_a_concurrent_duplicate_gets_the_normal_email_taken_message(self):
+        from accounts.serializers import SupplierRegisterSerializer
+        with mock.patch.object(SupplierRegisterSerializer, "validate_email", lambda self, value: value):
+            first = self.client.post("/api/auth/register/supplier/", registration_payload(), format="multipart")
+            cache.clear()
+            second = self.client.post("/api/auth/register/supplier/", registration_payload(), format="multipart")
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already exists", str(second.data["email"]))
+        self.assertEqual(get_user_model().objects.filter(email="new.supplier@example.com").count(), 1)
+
+
+class DisplayPhotoScalingTests(_TempMediaMixin, APITestCase):
+    """A 2.7 MB reference photo was downloaded again by every dashboard; on a
+    slow network that alone took minutes per page."""
+
+    def setUp(self):
+        cache.clear()
+        self._use_temp_media()
+
+    def test_a_reference_image_is_scaled_down_on_upload(self):
+        self.client.force_authenticate(user=make_admin())
+        big = SimpleUploadedFile("photo.jpg", _noisy_jpeg(3000, 2000, quality=40), content_type="image/jpeg")
+        res = self.client.post("/api/projects/", _project_form(reference_image=big), format="multipart")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED, res.data)
+        project = Project.objects.get(pk=res.data["id"])
+        with project.reference_image.open("rb") as fh:
+            self.assertEqual(_image_size(fh.read()), (1600, 1067))
+
+    def test_a_small_image_keeps_its_size_and_documents_are_never_scaled(self):
+        from .uploads import DISPLAY_IMAGE_MAX_SIDE, strip_image_metadata
+        small = _noisy_jpeg(800, 600)
+        self.assertEqual(_image_size(strip_image_metadata(small, ".jpg", DISPLAY_IMAGE_MAX_SIDE)), (800, 600))
+        # Without max_side (every evidence document), a big scan keeps every pixel.
+        self.assertEqual(_image_size(strip_image_metadata(_noisy_jpeg(2400, 1800), ".jpg")), (2400, 1800))
+        self.assertNotIn("purchase_request", Project.DISPLAY_IMAGE_FIELDS)
+
+    def test_bid_product_photos_are_scaled(self):
+        from .models import BidProductImage
+        from .views import save_product_images
+        supplier = make_supplier()
+        bid = Bid.objects.create(project=make_project(), supplier=supplier, amount=1000)
+        upload = SimpleUploadedFile("p.jpg", _noisy_jpeg(2400, 2400), content_type="image/jpeg")
+        save_product_images(bid, [(upload, ".jpg", "")])
+        stored = BidProductImage.objects.get(bid=bid)
+        with stored.image.open("rb") as fh:
+            self.assertEqual(_image_size(fh.read()), (1600, 1600))
+
+    def test_the_command_shrinks_old_photos_only_with_apply(self):
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+        project = make_project()
+        name = default_storage.save("procurement_images/old.jpg", ContentFile(_noisy_jpeg(3000, 2000)))
+        Project.objects.filter(pk=project.pk).update(reference_image=name)
+
+        out = io.StringIO()
+        call_command("shrink_display_images", stdout=out)
+        self.assertIn("1 photo(s) would be shrunk", out.getvalue())
+        project.refresh_from_db()
+        self.assertEqual(project.reference_image.name, name)
+
+        call_command("shrink_display_images", "--apply", stdout=io.StringIO())
+        project.refresh_from_db()
+        self.assertNotEqual(project.reference_image.name, name)
+        self.assertFalse(default_storage.exists(name))
+        with project.reference_image.open("rb") as fh:
+            self.assertEqual(_image_size(fh.read()), (1600, 1067))
+
+        out = io.StringIO()
+        call_command("shrink_display_images", "--apply", stdout=out)
+        self.assertIn("0 photo(s) shrunk", out.getvalue())
+
+
+class StorageRoundTripTests(_TempMediaMixin, APITestCase):
+    """Storage is in another region on the live system, so each lookup costs a
+    round trip: the supplier profile took about 4 s on every load."""
+
+    def setUp(self):
+        cache.clear()
+        self._use_temp_media()
+
+    def test_a_present_file_is_looked_up_once_and_a_missing_one_every_time(self):
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import FileSystemStorage
+
+        from .document_requirements import file_exists
+        supplier = make_supplier()
+        supplier.valid_id.save("id.pdf", ContentFile(b"%PDF-1.4"), save=True)
+        supplier.tax_clearance_certificate = "supplier_docs/gone.pdf"
+        with mock.patch.object(FileSystemStorage, "exists", autospec=True,
+                               side_effect=lambda storage, name: name != "supplier_docs/gone.pdf") as exists:
+            self.assertTrue(file_exists(supplier.valid_id))
+            self.assertTrue(file_exists(supplier.valid_id))
+            self.assertFalse(file_exists(supplier.tax_clearance_certificate))
+            self.assertFalse(file_exists(supplier.tax_clearance_certificate))
+        self.assertEqual(exists.call_count, 3)
+
+    def test_the_profile_asks_storage_about_each_file_once_at_most(self):
+        from django.core.files.storage import FileSystemStorage
+        supplier = make_supplier()
+        attach_base_documents(supplier)
+        self.client.force_authenticate(user=supplier.user)
+        with mock.patch.object(FileSystemStorage, "exists", autospec=True, return_value=True) as exists:
+            first = self.client.get("/api/suppliers/me/")
+            calls = exists.call_count
+            second = self.client.get("/api/suppliers/me/")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.data["documents"], second.data["documents"])
+        self.assertLessEqual(calls, len([d for d in first.data["documents"] if d["url"]]))
+        self.assertEqual(exists.call_count, calls)   # the second load asked nothing
+
+    def test_document_versions_read_together_match_reading_one_by_one(self):
+        from .models import ProjectDocumentVersion
+        from .project_documents import document_state, record_project_document_versions
+        self.client.force_authenticate(user=make_admin())
+        res = self.client.post("/api/projects/", _project_form(), format="multipart")
+        project = Project.objects.get(pk=res.data["id"])
+        rows = ProjectDocumentVersion.objects.filter(project=project)
+        self.assertEqual(rows.count(), 5)
+        for row in rows:
+            self.assertEqual(row.sha256, document_state(getattr(project, row.key))[1])
+        record_project_document_versions(project)          # nothing changed: no new rows
+        self.assertEqual(ProjectDocumentVersion.objects.filter(project=project).count(), 5)

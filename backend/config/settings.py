@@ -85,6 +85,12 @@ MIDDLEWARE = [
     # Security headers — see the "Security headers" block below.
     'django.middleware.csp.ContentSecurityPolicyMiddleware',
     'config.middleware.PermissionsPolicyMiddleware',
+    # Records how a write ended, so a browser whose connection the host cut
+    # can ask instead of guessing (accounts/idempotency.py). After
+    # authentication, inside CORS, so its 409 still reaches the page.
+    'accounts.idempotency.IdempotencyMiddleware',
+    # Last, so it times only the view and the database work behind it.
+    'config.middleware.SlowRequestLogMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -328,6 +334,10 @@ REST_FRAMEWORK = {
         'register': '10/h',
         'password_reset': '5/h',
         'email_verify': '5/h',
+        # A browser polling for a request's outcome after a cut connection
+        # (accounts/idempotency.py): one call every few seconds, for a few
+        # minutes. Keyed by IP, and a whole venue can share one.
+        'request_status': '300/min',
     },
 }
 
@@ -394,6 +404,12 @@ DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'no-reply@eprocurement
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r'^https://capstone-bidding-system[\w-]*\.vercel\.app$',
 ]
+
+# The browser sends Idempotency-Key with writes (accounts/idempotency.py);
+# without listing it, the preflight refuses every such request.
+from corsheaders.defaults import default_headers  # noqa: E402
+
+CORS_ALLOW_HEADERS = (*default_headers, 'idempotency-key')
 
 # Trust the deployed origins for CSRF (Django admin login, etc.).
 CSRF_TRUSTED_ORIGINS = []

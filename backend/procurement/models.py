@@ -359,6 +359,9 @@ class Project(SecureUploadsMixin, models.Model):
     or pending_head -> needs_revision -> pending_head (Head flags a specific
     document, Admin fixes it, it returns to the Head's queue)."""
 
+    # Scaled down on upload (see procurement/uploads.py); never anchored.
+    DISPLAY_IMAGE_FIELDS = frozenset({"reference_image"})
+
     # The uploader's original file names, {field: name}. Stored names are
     # random (procurement/uploads.py), so this is what downloads are named.
     # db_default lets the previous release keep inserting rows mid-deploy.
@@ -575,6 +578,8 @@ class BidProductImage(SecureUploadsMixin, models.Model):
     its own table (rather than more columns on Bid) so the count is flexible and
     old bids need no data migration. Never part of any anchor payload: images
     are evidence for the evaluator, not part of the hashed bid record."""
+
+    DISPLAY_IMAGE_FIELDS = frozenset({"image"})   # scaled on upload; see uploads.py
 
     bid = models.ForeignKey(Bid, on_delete=models.CASCADE, related_name="product_images")
     image = models.FileField(upload_to=bid_product_image_path, max_length=255)

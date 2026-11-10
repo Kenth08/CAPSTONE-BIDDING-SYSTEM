@@ -21,6 +21,16 @@ name, device serials. Every JPEG/PNG/WebP upload is re-encoded without that
 metadata before it is stored (after the orientation is applied, so phone photos
 don't come out sideways). This happens before the file is saved, so the
 document hash anchored on-chain is the hash of the cleaned file.
+
+DISPLAY PHOTOS
+--------------
+Photos that are only looked at (a procurement's reference image, a bid's
+product photos) are also scaled down to DISPLAY_IMAGE_MAX_SIDE pixels on the
+long side. A phone photo straight from the camera is 2-4 MB, every dashboard
+showing it downloads it again, and on a slow network that alone made pages
+take minutes. Neither kind is ever part of an anchored payload, so scaling
+them changes no hash. Documents that happen to be images (a scanned permit,
+a photographed quotation) are never scaled: their detail is the evidence.
 """
 import io
 import os
@@ -32,6 +42,9 @@ from django.utils.text import get_valid_filename
 
 IMAGE_FORMATS = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}
 DISPLAY_NAME_MAX = 120
+# Long side, in pixels, of a stored display photo. Sharp on a full-screen
+# lightbox, and a few hundred KB instead of several MB.
+DISPLAY_IMAGE_MAX_SIDE = 1600
 
 
 def random_storage_name(folder, filename):
@@ -51,9 +64,12 @@ def display_filename(raw):
     return f"{stem}{ext.lower()}"
 
 
-def strip_image_metadata(content, ext):
+def strip_image_metadata(content, ext, max_side=None):
     """Re-encode an image without EXIF/XMP/text chunks. Returns new bytes, or
     None when `ext` is not an image type (the content is left untouched).
+
+    With `max_side`, an image larger than that on its long side is also scaled
+    down to it (aspect ratio kept). Only for display photos; see DISPLAY PHOTOS.
 
     The validators have already proved the bytes decode, so a failure here is
     unexpected and is allowed to raise rather than store a file with GPS data."""
@@ -64,10 +80,17 @@ def strip_image_metadata(content, ext):
 
     with Image.open(io.BytesIO(content)) as img:
         img = ImageOps.exif_transpose(img)   # bake the rotation in before EXIF goes
+        scaled = bool(max_side) and max(img.size) > max_side
+        if scaled:
+            img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
         if fmt == "JPEG" and img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
         out = io.BytesIO()
-        options = {"JPEG": {"quality": 92, "optimize": True}, "WEBP": {"quality": 92}}.get(fmt, {})
+        # A scaled photo is for viewing, so it is saved a little smaller.
+        quality = 85 if scaled else 92
+        options = {"JPEG": {"quality": quality, "optimize": True},
+                   "WEBP": {"quality": quality},
+                   "PNG": {"optimize": True} if scaled else {}}.get(fmt, {})
         # Saving a fresh image object without passing exif=/pnginfo= drops all
         # metadata blocks; nothing is copied over implicitly.
         img.save(out, format=fmt, **options)
@@ -92,6 +115,9 @@ class SecureUploadsMixin(models.Model):
 
     # FileFields whose content is encrypted at rest. Empty by default.
     ENCRYPTED_FILE_FIELDS = frozenset()
+    # FileFields holding display photos, scaled down on upload (see DISPLAY
+    # PHOTOS above). Never list a field whose file is anchored or is evidence.
+    DISPLAY_IMAGE_FIELDS = frozenset()
 
     class Meta:
         abstract = True
@@ -108,7 +134,8 @@ class SecureUploadsMixin(models.Model):
             if not ff or getattr(ff, "_committed", True):
                 continue                       # empty, or already stored
             original = display_filename(ff.name)
-            cleaned = strip_image_metadata(_read(ff.file), os.path.splitext(ff.name)[1])
+            max_side = DISPLAY_IMAGE_MAX_SIDE if field.name in self.DISPLAY_IMAGE_FIELDS else None
+            cleaned = strip_image_metadata(_read(ff.file), os.path.splitext(ff.name)[1], max_side)
             if cleaned is not None:
                 ff.file = ContentFile(cleaned, name=ff.name)
             if has_names:
