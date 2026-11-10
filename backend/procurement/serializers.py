@@ -12,6 +12,7 @@ from .document_requirements import (
     document_status,
     expiring_documents,
     missing_documents,
+    prefetch_file_exists,
 )
 from .files import SUPPLIER_VISIBLE_PROJECT_FIELDS, protected_file_url
 from .models import (
@@ -118,6 +119,9 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
         reviews = obj.document_reviews or {}
         rows = {row.key: row for row in obj.category_documents.all()} if obj.pk else {}
         result = []
+        # One storage round trip for all of them instead of one per document.
+        prefetch_file_exists([getattr(obj, key, None) for key, _label, _required in SUPPLIER_DOCUMENT_FIELDS]
+                             + [row.file for row in rows.values()])
 
         def status_fields(req):
             status = document_status(obj, req, rows=rows)

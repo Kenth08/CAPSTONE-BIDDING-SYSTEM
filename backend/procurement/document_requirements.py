@@ -191,19 +191,84 @@ def requirements_for(categories):
     return base_requirements() + category_requirements(categories)
 
 
+# How long a positive "this file is in storage" answer is reused. Stored names
+# are random and never overwritten, so a file that was there a minute ago is
+# there now unless someone deleted it; only "present" is remembered, a missing
+# file is always asked about again.
+FILE_EXISTS_CACHE_SECONDS = 5 * 60
+# Storage lookups made at once by prefetch_file_exists.
+FILE_EXISTS_THREADS = 8
+
+
+def _exists_cache_key(field_file):
+    import hashlib  # noqa: PLC0415
+    storage = field_file.storage
+    ident = f"{type(storage).__module__}.{type(storage).__name__}:{getattr(storage, 'bucket_name', '')}:{field_file.name}"
+    return "file-exists:v1:" + hashlib.sha256(ident.encode()).hexdigest()
+
+
+def _storage_exists(field_file):
+    try:
+        found = field_file.storage.exists(field_file.name)
+    except Exception:  # noqa: BLE001 — see file_exists
+        return False
+    if found:
+        from django.core.cache import cache  # noqa: PLC0415
+        try:
+            cache.set(_exists_cache_key(field_file), True, FILE_EXISTS_CACHE_SECONDS)
+        except Exception:  # noqa: BLE001 — a cache failure only costs a lookup
+            pass
+    return found
+
+
 def file_exists(field_file):
     """True only if the FieldFile is set AND the object is really in storage.
 
     Files written to Render's ephemeral disk before S3 storage was configured
     still have a name in the database but nothing behind it; they must count as
     missing. A storage error also counts as missing — when deciding whether a
-    supplier may be verified, "couldn't confirm" is not "present"."""
+    supplier may be verified, "couldn't confirm" is not "present".
+
+    Each check is a round trip to the bucket, which on the live system is in
+    another region: a supplier's profile asks about 10-15 files, and asked one
+    after another that was about 4 seconds on every page load. A positive
+    answer is therefore reused for FILE_EXISTS_CACHE_SECONDS, and
+    prefetch_file_exists asks about several files at once."""
     if not field_file or not getattr(field_file, "name", ""):
         return False
+    from django.core.cache import cache  # noqa: PLC0415
     try:
-        return field_file.storage.exists(field_file.name)
-    except Exception:  # noqa: BLE001 — see docstring
-        return False
+        if cache.get(_exists_cache_key(field_file)):
+            return True
+    except Exception:  # noqa: BLE001 — fall through to asking storage
+        pass
+    return _storage_exists(field_file)
+
+
+def prefetch_file_exists(field_files):
+    """Ask storage about several files at once, so the file_exists() calls that
+    follow are answered from the cache. Never raises."""
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    from django.core.cache import cache  # noqa: PLC0415
+
+    pending = []
+    for field_file in field_files:
+        if not field_file or not getattr(field_file, "name", ""):
+            continue
+        try:
+            if cache.get(_exists_cache_key(field_file)):
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        pending.append(field_file)
+    if len(pending) < 2:
+        return
+    try:
+        with ThreadPoolExecutor(max_workers=min(FILE_EXISTS_THREADS, len(pending))) as pool:
+            list(pool.map(_storage_exists, pending))
+    except Exception:  # noqa: BLE001 — file_exists() will simply ask again
+        pass
 
 
 def _category_rows(supplier):

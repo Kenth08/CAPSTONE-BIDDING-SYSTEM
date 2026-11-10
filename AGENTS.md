@@ -58,6 +58,8 @@ npm run dev
 - `backend/procurement/management/commands/audit_ledger.py` — read-only check of the whole database against the on-chain ledger; incident steps in [RECOVERY.md](RECOVERY.md)
 - `backend/procurement/permissions.py` — role permissions (admin / head / supplier)
 - `backend/accounts/` — custom User (role field), JWT auth, MFA, password reset, `audit.log_action`, throttling
+- `backend/accounts/idempotency.py` — records how each write sent with an `Idempotency-Key` ended (`RequestOutcome`), so the browser can recover an answer the host cut at 30 s (`GET /api/auth/requests/<key>/`); frontend side in `frontend/src/utils/requestOutcome.js`
+- `backend/config/middleware.py` — `SlowRequestLogMiddleware` logs requests over `SLOW_REQUEST_SECONDS` (default 3) with their query count and time
 - `frontend/src/api.js` — **all** HTTP calls go through `apiFetch` / `apiUpload` wrappers here
 - `frontend/src/store/projectsStore.js` — shared project state hook (`useProjects`) + action helpers
 - `frontend/src/blockchain/` — `contract.js` (address/ABI), `anchor.js` (MetaMask + chain reads), `anchorStore.js` (progress/retry)

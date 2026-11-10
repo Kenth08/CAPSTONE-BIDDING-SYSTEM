@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.encoding import force_str
@@ -258,25 +258,37 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
         # address that already has an account, the applicant was then
         # permanently locked out of registering with their own email, with no
         # way to fix it themselves.
-        with transaction.atomic():
-            user = User(
-                username=email,
-                email=email,
-                full_name=full_name,
-                role=User.Role.SUPPLIER,
-            )
-            user.set_password(password)
-            user.save()
+        #
+        # validate_email has already refused a taken address, but two submissions
+        # of the same form can both pass it before either is saved: a browser
+        # retry after a timeout did exactly that on the live system, and the
+        # loser hit the unique username and got a bare 500. Answer it with the
+        # same message validate_email gives.
+        try:
+            with transaction.atomic():
+                user = User(
+                    username=email,
+                    email=email,
+                    full_name=full_name,
+                    role=User.Role.SUPPLIER,
+                )
+                user.set_password(password)
+                user.save()
 
-            # Fill the legacy fields the rest of the app already reads.
-            validated_data["contact"] = validated_data.get("representative_name", "")
-            validated_data["business_type"] = ", ".join(validated_data.get("business_types", []))
-            supplier = Supplier.objects.create(user=user, **validated_data)
-            # Same transaction: a supplier is never created without the
-            # category licenses it was validated with.
-            for req, upload, expiry in getattr(self, "_category_uploads", []):
-                SupplierCategoryDocument.objects.create(
-                    supplier=supplier, key=req["key"], file=upload, expiry_date=expiry)
+                # Fill the legacy fields the rest of the app already reads.
+                validated_data["contact"] = validated_data.get("representative_name", "")
+                validated_data["business_type"] = ", ".join(validated_data.get("business_types", []))
+                supplier = Supplier.objects.create(user=user, **validated_data)
+                # Same transaction: a supplier is never created without the
+                # category licenses it was validated with.
+                for req, upload, expiry in getattr(self, "_category_uploads", []):
+                    SupplierCategoryDocument.objects.create(
+                        supplier=supplier, key=req["key"], file=upload, expiry_date=expiry)
+        except IntegrityError:
+            if User.objects.filter(username=email).exists():
+                raise serializers.ValidationError(
+                    {"email": ["An account with this email already exists."]}) from None
+            raise
 
         # Both side effects are best-effort and deliberately OUTSIDE the
         # transaction: neither should be able to roll back a completed
