@@ -6137,3 +6137,163 @@ class BACWorkflowTests(APITestCase):
         self.staff.refresh_from_db()
         self.assertEqual((self.staff.is_active, self.staff.role), (False, "staff"))
         self.assertEqual(self.as_user(self.head).get("/api/auth/users/").status_code, 403)
+
+
+# ── Panel requests, phase 1: names, statement year, Others, bid terms, ───────
+# ── single-use verification links ────────────────────────────────────────────
+
+from accounts.emails import email_verification_token  # noqa: E402
+from accounts.serializers import statement_year_options  # noqa: E402
+from django.utils.encoding import force_bytes  # noqa: E402
+from django.utils.http import urlsafe_base64_encode  # noqa: E402
+
+
+class PanelPhaseOneTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self._media = tempfile.mkdtemp()
+        self._override = override_settings(MEDIA_ROOT=self._media)
+        self._override.enable()
+
+    def tearDown(self):
+        self._override.disable()
+        shutil.rmtree(self._media, ignore_errors=True)
+
+    def register(self, **changes):
+        payload = registration_payload()
+        payload.pop("full_name")
+        payload.update(changes)
+        return self.client.post("/api/auth/register/supplier/", payload, format="multipart")
+
+    # names
+    def test_registration_takes_first_middle_last_and_composes_the_display_name(self):
+        res = self.register(first_name="Juan", middle_name="Santos", last_name="Dela Cruz")
+        self.assertEqual(res.status_code, 201, res.data)
+        user = User.objects.get(email="new.supplier@example.com")
+        self.assertEqual((user.first_name, user.middle_name, user.last_name), ("Juan", "Santos", "Dela Cruz"))
+        self.assertEqual(user.full_name, "Juan Santos Dela Cruz")
+
+    def test_middle_name_is_optional_but_first_and_last_are_not(self):
+        self.assertEqual(self.register(first_name="Juan", last_name="Dela Cruz").status_code, 201)
+        cache.clear()
+        res = self.register(email="other@example.com", first_name="Juan")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("last_name", res.data)
+
+    def test_a_legacy_single_full_name_still_registers_without_guessing_parts(self):
+        res = self.client.post("/api/auth/register/supplier/", registration_payload(), format="multipart")
+        self.assertEqual(res.status_code, 201, res.data)
+        user = User.objects.get(email="new.supplier@example.com")
+        self.assertEqual((user.full_name, user.first_name, user.last_name), ("Jane Dela Cruz", "", ""))
+
+    def test_profile_update_with_parts_changes_the_name_and_without_them_leaves_it(self):
+        supplier = make_supplier()
+        supplier.user.full_name = "Ma. Cristina Dela Cruz Santos"
+        supplier.user.save()
+        self.client.force_authenticate(user=supplier.user)
+        res = self.client.patch("/api/suppliers/me/", {"phone_number": "09170000000"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        supplier.user.refresh_from_db()
+        self.assertEqual(supplier.user.full_name, "Ma. Cristina Dela Cruz Santos")
+        res = self.client.patch("/api/suppliers/me/", {"first_name": "Ma. Cristina", "middle_name": "Dela Cruz",
+                                                       "last_name": "Santos"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        supplier.user.refresh_from_db()
+        self.assertEqual(supplier.user.last_name, "Santos")
+        self.assertEqual(res.data["first_name"], "Ma. Cristina")
+
+    # statement year
+    def test_statement_year_must_be_one_of_the_last_two_completed_years(self):
+        allowed = statement_year_options()
+        self.assertEqual(allowed, [timezone.localdate().year - 1, timezone.localdate().year - 2])
+        res = self.register(first_name="Juan", last_name="Cruz", financial_statement_year=str(allowed[0] - 5))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("financial_statement_year", res.data)
+        cache.clear()
+        res = self.register(first_name="Juan", last_name="Cruz", financial_statement_year=str(allowed[0]))
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(Supplier.objects.get().financial_statement_year, allowed[0])
+
+    def test_a_year_already_on_file_is_kept(self):
+        supplier = make_supplier()
+        Supplier.objects.filter(pk=supplier.pk).update(financial_statement_year=2019)
+        self.client.force_authenticate(user=supplier.user)
+        self.assertEqual(self.client.get("/api/suppliers/me/").data["financial_statement_year"], 2019)
+
+    # Others
+    def test_others_needs_a_description_and_other_categories_clear_it(self):
+        project = make_project(status=Project.Status.DRAFT)
+        s = ProjectSerializer(project, data={"category": "Others"}, partial=True)
+        self.assertFalse(s.is_valid())
+        self.assertIn("category_other", s.errors)
+        s = ProjectSerializer(project, data={"category": "Others", "category_other": " Sound system rental "},
+                              partial=True)
+        self.assertTrue(s.is_valid(), s.errors)
+        s.save()
+        self.assertEqual(project.category_other, "Sound system rental")
+        s = ProjectSerializer(project, data={"category": "IT Equipment"}, partial=True)
+        self.assertTrue(s.is_valid(), s.errors)
+        s.save()
+        self.assertEqual(project.category_other, "")
+
+    def test_others_projects_are_open_to_every_verified_supplier(self):
+        others = make_project(category="Others")
+        Project.objects.filter(pk=others.pk).update(category_other="Sound system rental")
+        make_project(category="Furniture")
+        supplier = make_supplier(categories=["IT Equipment"])
+        self.client.force_authenticate(user=supplier.user)
+        codes = {p["code"] for p in self.client.get("/api/projects/").json()}
+        self.assertIn(others.code, codes)
+        self.assertEqual(len(codes), 1)
+
+    # delivery and warranty choices
+    def bid(self, project, supplier, **changes):
+        data = {"amount": "10000", "notes": "We can deliver within the requested timeline and specifications.",
+                "terms_accepted": "true", "interest_declared": "true", "scm_declared": "true",
+                "accuracy_confirmed": "true", "quotation_document": dummy_pdf("q.pdf")}
+        data.update(changes)
+        self.client.force_authenticate(user=supplier.user)
+        return self.client.post(f"/api/projects/{project.pk}/bid/", data, format="multipart")
+
+    def test_choices_are_validated_against_the_delivery_period(self):
+        project = make_project(status=Project.Status.DRAFT)
+        project.delivery_period_days = 30
+        project.save()
+        s = ProjectSerializer(project, data={"delivery_options": "[15, 60]"}, partial=True)
+        self.assertFalse(s.is_valid())
+        s = ProjectSerializer(project, data={"delivery_options": "[30, 15, 15]", "warranty_options": "[12, 6]"},
+                              partial=True)
+        self.assertTrue(s.is_valid(), s.errors)
+        s.save()
+        self.assertEqual((project.delivery_options, project.warranty_options), ([15, 30], [6, 12]))
+
+    def test_bidders_pick_from_the_projects_choices_and_the_label_is_kept(self):
+        project = make_project()
+        Project.objects.filter(pk=project.pk).update(delivery_options=[15, 30], warranty_options=[12, 24])
+        supplier = make_supplier()
+        self.assertEqual(self.bid(project, supplier, delivery_days="45").status_code, 400)
+        self.assertEqual(self.bid(project, supplier, delivery_timeline="2 weeks").status_code, 400)
+        res = self.bid(project, supplier, delivery_days="30", warranty_months="24")
+        self.assertIn(res.status_code, (200, 201), res.data)
+        bid = Bid.objects.get(project=project, supplier=supplier)
+        self.assertEqual((bid.delivery_days, bid.delivery_timeline), (30, "30 calendar days"))
+        self.assertEqual((bid.warranty_months, bid.warranty_period), (24, "2 years"))
+
+    def test_projects_without_choices_keep_free_text(self):
+        project = make_project()
+        supplier = make_supplier()
+        res = self.bid(project, supplier, delivery_timeline="2 weeks", warranty_period="1 year parts")
+        self.assertIn(res.status_code, (200, 201), res.data)
+        bid = Bid.objects.get(project=project, supplier=supplier)
+        self.assertEqual((bid.delivery_timeline, bid.delivery_days), ("2 weeks", None))
+
+    # verification links
+    def test_a_verification_link_works_once(self):
+        self.assertEqual(self.register(first_name="Juan", last_name="Cruz").status_code, 201)
+        user = User.objects.get(email="new.supplier@example.com")
+        body = {"uid": urlsafe_base64_encode(force_bytes(user.pk)), "token": email_verification_token.make_token(user)}
+        self.assertEqual(self.client.post("/api/auth/verify-email/confirm/", body, format="json").status_code, 200)
+        self.assertTrue(Supplier.objects.get(user=user).email_verified)
+        again = self.client.post("/api/auth/verify-email/confirm/", body, format="json")
+        self.assertEqual(again.status_code, 400)
+        self.assertIn("already used", str(again.data))

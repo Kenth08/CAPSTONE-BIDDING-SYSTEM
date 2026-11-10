@@ -21,7 +21,11 @@ class User(AbstractUser):
         BAC = "bac", "BAC Committee"
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.SUPPLIER)
+    # The display name, composed from first_name, middle_name and last_name
+    # (AbstractUser already has first_name and last_name). Accounts created
+    # before the split keep the name as typed with empty parts (accounts/names.py).
     full_name = models.CharField(max_length=150, blank=True)
+    middle_name = models.CharField(max_length=150, blank=True, default="", db_default="")
     # Set whenever the password is changed (self-service change or reset
     # confirm) so a failed login can tell the user how recently it happened.
     password_changed_at = models.DateTimeField(null=True, blank=True)

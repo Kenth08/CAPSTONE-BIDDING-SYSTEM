@@ -18,7 +18,7 @@ const ROLES = [
   { value: 'bac', label: 'BAC Committee' },
   { value: 'head', label: 'Head' },
 ]
-const EMPTY = { username: '', full_name: '', email: '', role: 'staff', password: '' }
+const EMPTY = { username: '', first_name: '', middle_name: '', last_name: '', email: '', role: 'staff', password: '' }
 
 export default function UsersPage() {
   const [users, setUsers] = useState([])
@@ -105,8 +105,16 @@ export default function UsersPage() {
                 </select>
               </div>
               <div className="bac-field">
-                <label htmlFor="nu-name">Full name</label>
-                <input id="nu-name" value={form.full_name} onChange={set('full_name')} required autoComplete="off" />
+                <label htmlFor="nu-first">First name</label>
+                <input id="nu-first" value={form.first_name} onChange={set('first_name')} required autoComplete="off" />
+              </div>
+              <div className="bac-field">
+                <label htmlFor="nu-middle">Middle name (optional)</label>
+                <input id="nu-middle" value={form.middle_name} onChange={set('middle_name')} autoComplete="off" />
+              </div>
+              <div className="bac-field">
+                <label htmlFor="nu-last">Last name</label>
+                <input id="nu-last" value={form.last_name} onChange={set('last_name')} required autoComplete="off" />
               </div>
               <div className="bac-field">
                 <label htmlFor="nu-user">Username</label>

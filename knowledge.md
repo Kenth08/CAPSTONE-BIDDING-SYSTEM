@@ -61,6 +61,15 @@ chain id, contract) and depth/finality (`chain_finalized` only if the node's
 A published project is only visible to verified suppliers whose business
 category matches the project's `category` (see `frontend/src/constants/categories.js`
 and `eligible_types`). One bid per supplier per project (DB constraint).
+The **Others** category is the exception: it needs a "please specify" description
+(`Project.category_other`) and is open to every verified supplier, since no
+registered category can match it.
+
+Bid delivery timeline and warranty period are chosen from the lists each project
+offers (`Project.delivery_options` in calendar days, `warranty_options` in months;
+`procurement/bid_terms.py`). Older projects with no lists keep free text. The bid
+keeps the readable label in `delivery_timeline` (part of the anchored bid payload)
+and the number in `delivery_days` / `warranty_months`.
 
 Categories are the built-in `PROCUREMENT_CATEGORIES` plus any the Admin adds from the
 Planning form (`ProcurementCategory`, `GET/POST /api/categories/`). A project's category

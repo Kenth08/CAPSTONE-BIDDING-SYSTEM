@@ -32,6 +32,7 @@ import StatusBadge from './ui/StatusBadge'
 import { Skeleton } from './Skeleton'
 import { fmtDate, fmtDateTime, peso } from '../utils/format'
 import { getCached, loadCached } from '../utils/sessionCache'
+import PreviewButton from './ui/FilePreview'
 import '../style/procurement-record.css'
 
 const VIEWER_NOTE = {
@@ -287,7 +288,10 @@ export function ProcurementRecordView({ record, onDeepCheck, deepBusy, anchorHre
                     <div className="pr-doc-top">
                       <span className="pr-doc-name"><FileText size={13} /> {d.label}</span>
                       {d.url
-                        ? <a className="pr-link" href={d.url}>{d.issued_at ? `Issued ${fmtDate(d.issued_at)}` : 'Download'}</a>
+                        ? <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                            <PreviewButton url={d.url} name={d.label} className="pr-link" />
+                            <a className="pr-link" href={d.url}>{d.issued_at ? `Issued ${fmtDate(d.issued_at)}` : 'Download'}</a>
+                          </span>
                         : <span className="pr-muted pr-small">Not issued yet</span>}
                     </div>
                     <div className="pr-doc-chips">

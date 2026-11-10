@@ -62,6 +62,7 @@ function fromApi(p) {
     name: p.name,
     type: p.type,
     category: p.category || '',
+    categoryOther: p.category_other || '',
     budget: fmtPeso(p.budget),
     deadline: fmtDate(p.deadline),
     deadlineRaw: p.deadline || null,  // unformatted ISO date, for chronological sorting
@@ -171,6 +172,11 @@ export async function createProject(form, files = {}) {
   fd.append('description', form.description || '')
   fd.append('type', form.type)
   fd.append('category', form.category)
+  if (form.category_other) fd.append('category_other', form.category_other.trim())
+  // Choices bidders pick from; drop any that no longer fit the delivery period.
+  const period = Number(form.delivery_period_days) || Infinity
+  if (form.delivery_options?.length) fd.append('delivery_options', JSON.stringify(form.delivery_options.filter(d => d <= period)))
+  if (form.warranty_options?.length) fd.append('warranty_options', JSON.stringify(form.warranty_options))
   fd.append('budget', parseBudget(form.budget))
   fd.append('delivery_location', form.delivery_location || '')
   if (form.bidding_period_days) fd.append('bidding_period_days', form.bidding_period_days)

@@ -38,6 +38,7 @@ import SecureImg from '../components/ui/SecureImg'
 import AwardApprovalsPage from './head/AwardApprovalsPage'
 import BacRecordsPage from './bac/BacRecordsPage'
 import { useBacStatus } from '../utils/workspace'
+import PreviewButton from '../components/ui/FilePreview'
 import '../style/HeadDashboard.css'
 
 // Award Approvals and BAC Records appear once separation of duties is on
@@ -209,7 +210,10 @@ function PendingCard({ project, onApprove, onRequestRevision, defaultExpanded = 
                             <span className="hd-doc-review-label">{d.label}</span>
                             {checked && <StatusBadge tone="warning" label="Flagged" />}
                             {d.url
-                              ? <a href={d.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="hd-doc-link" style={{ marginLeft: 'auto' }}>View</a>
+                              ? <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                                  <PreviewButton url={d.url} name={d.label} className="hd-doc-link" />
+                                  <a href={d.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="hd-doc-link">Download</a>
+                                </span>
                               : <span className="hd-muted" style={{ marginLeft: 'auto', fontSize: 12 }}>Not provided</span>}
                           </label>
                           {checked && (

@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.audit import log_action
+from accounts.names import apply_name, resolve_name
 
 from . import blockchain as chain
 from .blockchain import (
@@ -60,6 +61,7 @@ from .document_requirements import (
     validate_future_expiry,
 )
 from .document_alerts import send_document_alerts
+from . import bid_terms
 from .bac import frozen_resolution_bytes
 from .documents import DOCUMENT_BUILDERS
 from .models import (
@@ -70,6 +72,7 @@ from .models import (
     BID_DOCUMENT_FIELDS,
     BID_DOCUMENT_KEYS,
     MAX_BID_PRODUCT_IMAGES,
+    OTHERS_CATEGORY,
     PRODUCT_IMAGES_REVIEW_KEY,
     PRODUCT_IMAGES_REVIEW_LABEL,
     PROCUREMENT_DOCUMENT_FIELDS,
@@ -773,6 +776,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
     # procurement whose fundamentals are wrong is rejected and filed again.
     ANCHORED_FIELDS = (
         "name", "category", "type", "budget", "bidding_period_days", "delivery_period_days",
+        # Not in the anchored payload, but part of what the procurement IS, so
+        # it is fixed after the draft just like the category it describes.
+        "category_other", "delivery_options", "warranty_options",
     )
 
     def update(self, request, *args, **kwargs):
@@ -1053,7 +1059,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
         if getattr(self.request.user, "role", None) == "supplier":
             supplier = Supplier.objects.filter(user=self.request.user).first()
             categories = (supplier.business_types if supplier else []) or ["__no_match__"]
-            qs = qs.filter(status=Project.Status.PUBLISHED, category__in=categories)
+            # "Others" fits no registered category, so it is open to everyone.
+            qs = qs.filter(Q(category__in=categories) | Q(category=OTHERS_CATEGORY),
+                           status=Project.Status.PUBLISHED)
         return qs
 
     @action(detail=True, methods=["post"])
@@ -1090,7 +1098,18 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 {"detail": f"Please enter a valid bid amount greater than zero and no more than {MAX_BID_AMOUNT}."},
                 status=http_status.HTTP_400_BAD_REQUEST)
 
-        delivery_timeline = (data.get("delivery_timeline") or "").strip()
+        # Delivery and warranty: chosen from the project's list when it has one
+        # (procurement/bid_terms.py), free text on older projects.
+        delivery_days = warranty_months = None
+        if project.delivery_options:
+            try:
+                delivery_days = bid_terms.pick(data.get("delivery_days"), project.delivery_options,
+                                               label="delivery timeline")
+            except ValueError as exc:
+                return Response({"delivery_days": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
+            delivery_timeline = bid_terms.delivery_label(delivery_days)
+        else:
+            delivery_timeline = (data.get("delivery_timeline") or "").strip()
         if not delivery_timeline:
             return Response({"detail": "Please specify your delivery timeline."},
                             status=http_status.HTTP_400_BAD_REQUEST)
@@ -1103,7 +1122,17 @@ class ProjectViewSet(viewsets.ModelViewSet):
         additional_comments = (data.get("additional_comments") or "").strip()
         brand_name = (data.get("brand_name") or "").strip()
         model_number = (data.get("model_number") or "").strip()
-        warranty_period = (data.get("warranty_period") or "").strip()
+        if project.warranty_options and str(data.get("warranty_months") or "").strip():
+            try:
+                warranty_months = bid_terms.pick(data.get("warranty_months"), project.warranty_options,
+                                                 label="warranty period")
+            except ValueError as exc:
+                return Response({"warranty_months": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST)
+            warranty_period = bid_terms.warranty_label(warranty_months)
+        elif project.warranty_options:
+            warranty_period = ""   # warranty stays optional; only listed values are accepted
+        else:
+            warranty_period = (data.get("warranty_period") or "").strip()
 
         # Reject anything malformed/oversized up front — these fields are written
         # straight to the model below, bypassing the serializer (and therefore
@@ -1194,6 +1223,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
         bid.amount = amount
         bid.notes = notes
         bid.delivery_timeline = delivery_timeline
+        bid.delivery_days = delivery_days
+        bid.warranty_months = warranty_months
         bid.additional_comments = additional_comments
         bid.brand_name = brand_name or None
         bid.model_number = model_number or None
@@ -1630,15 +1661,16 @@ class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 categories = clean_business_types(request.data.get("business_types"))
             serializer = SupplierMeUpdateSerializer(supplier, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
+            # First / Middle / Last (or a legacy single full_name); None when the
+            # request doesn't touch the name (accounts/names.py).
+            name = resolve_name(request.data, required=False)
 
             with transaction.atomic():
                 # of=("self",): lock only the supplier row. Supplier.user is nullable, so
                 # the join is an OUTER join, and PostgreSQL refuses FOR UPDATE on that.
                 supplier = Supplier.objects.select_for_update(of=("self",)).select_related("user").get(pk=supplier.pk)
-                full_name = request.data.get("full_name")
-                if full_name is not None and supplier.user_id:
-                    supplier.user.full_name = str(full_name)[:150]
-                    supplier.user.save(update_fields=["full_name"])
+                if name is not None and supplier.user_id:
+                    supplier.user.save(update_fields=apply_name(supplier.user, name))
                 serializer.instance = supplier
                 serializer.save()
                 if categories is not None:

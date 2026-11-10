@@ -19,7 +19,12 @@ export const CATEGORIES = [
   'Medical Supplies',
   'Sports Equipment',
   'Books & Educational Materials',
+  'Others',
 ]
+
+// A procurement that fits no category. It needs a "please specify" description
+// and is open to every verified supplier (backend models.OTHERS_CATEGORY).
+export const OTHERS_CATEGORY = 'Others'
 
 // Collapse spacing and compare ignoring case, the same way the backend does
 // (models.find_category), so "it  equipment" is recognised as "IT Equipment".

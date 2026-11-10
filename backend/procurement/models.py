@@ -72,7 +72,13 @@ PROCUREMENT_CATEGORIES = [
     "Electrical Supplies", "Laboratory Equipment", "Printing Services",
     "Janitorial Supplies", "Food & Catering", "Transportation Services",
     "Medical Supplies", "Sports Equipment", "Books & Educational Materials",
+    "Others",
 ]
+
+# A procurement that fits no category. It carries a "please specify"
+# description (Project.category_other) and is open to every verified
+# supplier, since no supplier's registered categories could match it.
+OTHERS_CATEGORY = "Others"
 
 CATEGORY_NAME_MAX_LENGTH = 120
 
@@ -393,6 +399,12 @@ class Project(SecureUploadsMixin, models.Model):
     type = models.CharField(max_length=120, blank=True)
     # Procurement category (one of all_categories()) — drives supplier eligibility.
     category = models.CharField(max_length=120, blank=True)
+    # What the procurement is when category is OTHERS_CATEGORY ("please specify").
+    category_other = models.CharField(max_length=200, blank=True, default="", db_default="")
+    # Delivery (calendar days) and warranty (months) choices bidders pick from
+    # (procurement/bid_terms.py). Empty = free text, as on older projects.
+    delivery_options = models.JSONField(default=list, blank=True, db_default=[])
+    warranty_options = models.JSONField(default=list, blank=True, db_default=[])
     delivery_location = models.CharField(max_length=255, blank=True)
     # Expected delivery date. NOT set by the Admin directly — like `deadline`,
     # it's computed automatically (at AWARD time: awarded_at + delivery_period_days)
@@ -501,6 +513,10 @@ class Bid(SecureUploadsMixin, models.Model):
     #    submitted before these fields existed are never broken) ──────────────
     delivery_timeline = models.CharField(max_length=100, blank=True)
     additional_comments = models.TextField(blank=True)
+    # The chosen delivery and warranty as numbers, when the project offers
+    # choices (procurement/bid_terms.py). The text fields keep the label.
+    delivery_days = models.PositiveIntegerField(null=True, blank=True)
+    warranty_months = models.PositiveIntegerField(null=True, blank=True)
 
     # ── Product specification match (offered product details) ─────────────────
     brand_name = models.CharField(max_length=255, blank=True, null=True)

@@ -65,6 +65,7 @@ from accounts.audit import log_action
 
 from .models import (
     AWARD_DOCUMENT_KEYS,
+    OTHERS_CATEGORY,
     BID_DOCUMENT_KEYS,
     PROCUREMENT_DOCUMENT_KEYS,
     SUPPLIER_DOCUMENT_KEYS,
@@ -181,7 +182,8 @@ def _can_read(user, kind, record, field):
             field in SUPPLIER_VISIBLE_PROJECT_FIELDS
             and supplier.qualification_status == Supplier.Qualification.VERIFIED
             and record.status == Project.Status.PUBLISHED
-            and record.category in (supplier.business_types or [])
+            and (record.category in (supplier.business_types or [])
+                 or record.category == OTHERS_CATEGORY)
         )
     return False
 

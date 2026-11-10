@@ -4,6 +4,7 @@ import { CheckCircle2, FileText, Loader2, ShieldAlert, ShieldCheck } from 'lucid
 import { apiFetchFileBlob } from '../../api'
 import StatusBadge from '../ui/StatusBadge'
 import { fmtDate, fmtDateTime, peso } from '../../utils/format'
+import PreviewButton from '../ui/FilePreview'
 import '../../style/bac.css'
 
 const RESOLUTION_TONE = {
@@ -116,6 +117,7 @@ export function ResolutionFileCheck({ resolution }) {
   return (
     <div className="bac-card-body" style={{ paddingTop: 0 }}>
       <div className="bac-actions" style={{ justifyContent: 'flex-start' }}>
+        <PreviewButton url={resolution.resolution_file_url} name={`${resolution.number}.pdf`} className="ui-btn ui-btn--secondary ui-btn--sm" />
         <a className="ui-btn ui-btn--secondary ui-btn--sm" href={resolution.resolution_file_url}>
           <FileText size={13} aria-hidden="true" /> Download resolution PDF
         </a>

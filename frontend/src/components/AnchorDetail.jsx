@@ -27,6 +27,7 @@ import MoreInfo from './ui/MoreInfo'
 import StatusBadge from './ui/StatusBadge'
 import { Skeleton } from './Skeleton'
 import { normalizeProcurementCode } from '../utils/procurementCode'
+import PreviewButton from './ui/FilePreview'
 import '../style/PublicResultsPage.css'
 import '../style/procurement-record.css'
 import '../style/record-detail.css'
@@ -57,13 +58,16 @@ function ChainList({ detail }) {
 }
 
 function VersionsTable({ detail, recordHref }) {
-  const { versions, record } = detail
-  if (!versions.length) return null
+  const { record } = detail
+  if (!detail.versions.length) return null
+  // Newest first; earlier versions stay listed for the audit trail.
+  const versions = [...detail.versions].sort((a, b) => (b.number || 0) - (a.number || 0))
+  const latest = versions[0]?.number
   return (
     <section className="rf-card" aria-labelledby="rd-versions-h">
       <div className="rf-card-head"><div>
         <h3 id="rd-versions-h"><History size={15} /> Document versions</h3>
-        <p>Oldest first. Each fingerprinted issue is its own blockchain record.</p>
+        <p>Newest first. Earlier versions are kept, and each fingerprinted issue is its own blockchain record.</p>
       </div></div>
       <div className="rf-card-body rd-table-wrap">
         <table className="rd-table">
@@ -77,6 +81,7 @@ function VersionsTable({ detail, recordHref }) {
                 <tr key={`${v.anchor_id}-${v.number}`} className={here ? 'is-here' : ''}>
                   <td>
                     <strong>{versionLabel(v)}</strong>
+                    {v.number === latest && <span className="pr-chip pr-chip-db rd-here">Current</span>}
                     {here && <span className="pr-chip pr-chip-info rd-here">Viewing</span>}
                   </td>
                   <td>{v.issued_at ? recordTime(detail.viewer, v.issued_at) : <span className="rd-missing">Unknown</span>}</td>
@@ -94,7 +99,10 @@ function VersionsTable({ detail, recordHref }) {
                   </td>
                   <td>
                     {v.file_url ? (
-                      <a className="pr-link" href={v.file_url}><Download size={12} /> {v.file_name || 'Download'}</a>
+                      <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                        <PreviewButton url={v.file_url} name={v.file_name || versionLabel(v)} className="pr-link" />
+                        <a className="pr-link" href={v.file_url}><Download size={12} /> {v.file_name || 'Download'}</a>
+                      </span>
                     ) : (
                       <span className="rd-missing" title={v.file_note}>{v.file_note || 'Not available'}</span>
                     )}

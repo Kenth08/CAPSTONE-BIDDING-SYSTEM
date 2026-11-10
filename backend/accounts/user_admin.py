@@ -21,6 +21,7 @@ from rest_framework.response import Response
 from procurement.permissions import IsAdminRole
 
 from .audit import log_action
+from .names import apply_name, resolve_name
 
 User = get_user_model()
 
@@ -36,9 +37,10 @@ class ManagedUserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "username", "email", "full_name", "role", "role_label", "is_active",
+        fields = ["id", "username", "email", "full_name", "first_name", "middle_name", "last_name",
+                  "role", "role_label", "is_active",
                   "mfa_enabled", "last_login", "date_joined", "bac_position", "locked", "password"]
-        read_only_fields = ["id", "is_active", "mfa_enabled", "last_login", "date_joined"]
+        read_only_fields = ["id", "full_name", "is_active", "mfa_enabled", "last_login", "date_joined"]
 
     def get_bac_position(self, user):
         seat = next((m for m in user.bac_memberships.all() if m.active), None)
@@ -72,6 +74,7 @@ class ManagedUserSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         if self.instance is None:
+            attrs["_name"] = resolve_name(self.initial_data)
             password = attrs.get("password") or ""
             if not password:
                 raise serializers.ValidationError({"password": "Set a temporary password."})
@@ -84,7 +87,11 @@ class ManagedUserSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         password = validated_data.pop("password")
+        resolved = validated_data.pop("_name")
+        for key in ("first_name", "middle_name", "last_name"):
+            validated_data.pop(key, None)
         user = User(**validated_data)
+        apply_name(user, resolved)
         user.set_password(password)
         user.save()
         return user
@@ -96,7 +103,7 @@ class ManagedUserUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["full_name", "email", "is_active"]
+        fields = ["first_name", "middle_name", "last_name", "email", "is_active"]
 
     def validate_email(self, value):
         value = (value or "").strip()
@@ -155,6 +162,10 @@ class ManagedUserDetailView(generics.RetrieveUpdateAPIView):
                 status=status.HTTP_400_BAD_REQUEST)
         with transaction.atomic():
             serializer.save()
+            resolved = resolve_name(request.data, required=False)
+            if resolved is not None:
+                apply_name(user, resolved)
+                user.save(update_fields=["first_name", "middle_name", "last_name", "full_name"])
         changed = ", ".join(sorted(serializer.validated_data)) or "nothing"
         log_action(request, "user.deactivated" if deactivating else "user.updated",
                    entity_type="User", entity_id=user.pk,

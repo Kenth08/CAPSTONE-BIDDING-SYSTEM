@@ -25,6 +25,7 @@ import {
 import BacRecordsPage from './bac/BacRecordsPage'
 import { useBacStatus } from '../utils/workspace'
 import { fmtDate, greeting, peso, todayLong } from '../utils/format'
+import PreviewButton from '../components/ui/FilePreview'
 import '../style/AdminDashboard.css'
 import '../style/bac.css'
 
@@ -274,7 +275,10 @@ function EvaluationProject({ status }) {
               {files?.documents?.length > 0 && (
                 <div className="bac-actions" style={{ justifyContent: 'flex-start' }}>
                   {files.documents.filter(d => d.url).map(d => (
-                    <a key={d.key} href={d.url} className="ui-btn ui-btn--secondary ui-btn--sm"><FileText size={13} /> {d.label}</a>
+                    <span key={d.key} className="bac-actions" style={{ gap: 4 }}>
+                      <a href={d.url} className="ui-btn ui-btn--secondary ui-btn--sm"><FileText size={13} /> {d.label}</a>
+                      <PreviewButton url={d.url} name={d.label} />
+                    </span>
                   ))}
                 </div>
               )}

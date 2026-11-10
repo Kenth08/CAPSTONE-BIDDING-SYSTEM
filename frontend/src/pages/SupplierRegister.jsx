@@ -10,6 +10,7 @@ import {
   appendCategoryDocs, checkDocFile, pastExpiryProblem, todayIso,
   useCategoryDocState, useCategoryRequirements,
 } from '../components/CategoryDocuments'
+import { statementYearOptions } from '../utils/statementYears'
 import '../style/SupplierRegister.css'
 
 // ── Static config ─────────────────────────────────────────────────────────────
@@ -55,7 +56,7 @@ const FILE_HINT = 'PDF, JPG or PNG · max 5 MB'
 // Which step owns each server-side field, so a rejected submission sends the
 // user straight to the field that needs fixing.
 const STEP0_FIELDS = [
-  'full_name', 'email', 'password', 'confirm_password', 'company_name', 'company_address',
+  'first_name', 'middle_name', 'last_name', 'full_name', 'email', 'password', 'confirm_password', 'company_name', 'company_address',
   'phone_number', 'tin', 'representative_name', 'business_types',
 ]
 const STEP1_FIELDS = [
@@ -120,7 +121,7 @@ export default function SupplierRegister() {
   }, [error, errNonce])
 
   const [form, setForm] = useState({
-    full_name: '', email: '', password: '', confirm_password: '',
+    first_name: '', middle_name: '', last_name: '', email: '', password: '', confirm_password: '',
     company_name: '', company_address: '', phone_number: '', tin: '',
     representative_name: '', mayors_permit_expiry: '', tax_clearance_expiry: '',
     financial_statement_year: '', track_record_description: '',
@@ -179,7 +180,7 @@ export default function SupplierRegister() {
     const errs = {}
     if (s === 0) {
       const need = {
-        full_name: 'Enter your full name.', email: 'Enter your email address.',
+        first_name: 'Enter your first name.', last_name: 'Enter your last name.', email: 'Enter your email address.',
         company_name: 'Enter your company name.', company_address: 'Enter your company address.',
         phone_number: 'Enter your phone number.', tin: 'Enter your TIN.',
         representative_name: 'Enter the representative’s name.',
@@ -324,26 +325,15 @@ export default function SupplierRegister() {
 
   return (
     <div className="sr-page">
-      {/* Branding panel (compact top bar on small screens) */}
-      <aside className="sr-aside">
-        <div className="sr-aside-top">
-          <Link to="/login" className="sr-back"><ArrowLeft size={16} aria-hidden="true" /> Back to Login</Link>
-          <div className="sr-logo">
-            <span className="sr-logo-icon"><Shield size={18} aria-hidden="true" /></span>
-            <span>E-Procurement</span>
-          </div>
+      {/* Slim branding bar. The former "Join as a Supplier" side panel was
+          removed at the capstone panel's request, giving the form the full width. */}
+      <header className="sr-topbar">
+        <div className="sr-logo">
+          <span className="sr-logo-icon"><Shield size={18} aria-hidden="true" /></span>
+          <span>E-Procurement</span>
         </div>
-        <div className="sr-aside-mid">
-          <h1>Join as a<br />Supplier</h1>
-          <p>Register your company and start bidding.</p>
-          <ul className="sr-perks">
-            <li><Check size={15} aria-hidden="true" /> Fair evaluation process</li>
-            <li><Check size={15} aria-hidden="true" /> Blockchain-verified results</li>
-            <li><Check size={15} aria-hidden="true" /> Secure bid submission</li>
-          </ul>
-        </div>
-        <div className="sr-aside-foot">Your data is encrypted and only used for admin verification.</div>
-      </aside>
+        <Link to="/login" className="sr-back"><ArrowLeft size={16} aria-hidden="true" /> Back to Login</Link>
+      </header>
 
       <main className="sr-main">
         <div className="sr-main-inner">
@@ -446,10 +436,10 @@ function Stepper({ step, onSelect, disabled }) {
 function StepBasic({ form, set, businessTypes, toggleType, showPass, setShowPass, showConfirm, setShowConfirm, errors = {}, catReq }) {
   const allCategories = useCategories()
   const text = (name, label, extra = {}) => {
-    const { hint, transform, ...rest } = extra
+    const { hint, transform, optional = false, ...rest } = extra
     return (
-      <Field id={`sr-${name}`} label={label} required hint={hint} error={errors[name]}>
-        <input {...describe(`sr-${name}`, errors[name], hint)} aria-required="true"
+      <Field id={`sr-${name}`} label={label} required={!optional} hint={hint} error={errors[name]}>
+        <input {...describe(`sr-${name}`, errors[name], hint)} aria-required={optional ? undefined : 'true'}
           value={form[name]}
           onChange={e => set(name, transform ? transform(e.target.value) : e.target.value)} {...rest} />
       </Field>
@@ -476,8 +466,12 @@ function StepBasic({ form, set, businessTypes, toggleType, showPass, setShowPass
   return (
     <>
       <Section title="Account" desc="You’ll sign in with this email and password.">
+        <div className="sr-row sr-row-3">
+          {text('first_name', 'First Name', { autoComplete: 'given-name', placeholder: 'Juan' })}
+          {text('middle_name', 'Middle Name', { autoComplete: 'additional-name', placeholder: 'Santos', optional: true, hint: 'Optional' })}
+          {text('last_name', 'Last Name', { autoComplete: 'family-name', placeholder: 'Dela Cruz' })}
+        </div>
         <div className="sr-row">
-          {text('full_name', 'Full Name', { autoComplete: 'name', placeholder: 'Juan Dela Cruz' })}
           {text('email', 'Email Address', { type: 'email', autoComplete: 'email', inputMode: 'email', placeholder: 'you@company.com' })}
         </div>
         <div className="sr-row">
@@ -556,9 +550,11 @@ function StepDocuments({ form, set, files, onFile, removeFile, businessTypes, ca
       )}
       {d.extra === 'financial_statement_year' && (
         <SubField id="sr-financial_statement_year" label="Statement year" note="Optional">
-          <input id="sr-financial_statement_year" inputMode="numeric" placeholder="e.g. 2025"
-            value={form.financial_statement_year}
-            onChange={e => set('financial_statement_year', e.target.value.replace(/[^\d]/g, '').slice(0, 4))} />
+          <select id="sr-financial_statement_year" value={form.financial_statement_year}
+            onChange={e => set('financial_statement_year', e.target.value)}>
+            <option value="">Select year</option>
+            {statementYearOptions().map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
         </SubField>
       )}
     </DocCard>
@@ -703,7 +699,7 @@ function StepReview({ form, businessTypes, files, catReq, catDocs, onEdit, submi
   const ready = missing === 0 && form.declaration_accepted && !catReq.loading && !catReq.error
 
   const company = [
-    ['Full name', form.full_name], ['Email', form.email],
+    ['Full name', [form.first_name, form.middle_name, form.last_name].map(p => p.trim()).filter(Boolean).join(' ')], ['Email', form.email],
     ['Company', form.company_name], ['Address', form.company_address],
     ['TIN', form.tin], ['Phone', form.phone_number],
     ['Authorized representative', form.representative_name],

@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
 import { ws, useBacStatus, canPrepare } from '../utils/workspace'
+import { statementYearOptions } from '../utils/statementYears'
+import { WARRANTY_MONTH_PRESETS, deliveryLabel as deliveryChoiceLabel, deliveryPresetsFor, warrantyLabel } from '../utils/bidTerms'
 import { Routes, Route, Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
   Search, ChevronRight, ChevronLeft, LogOut, Shield, RefreshCw,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
   CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock, ArrowLeft,
-  Upload, ShieldCheck, Link2, Copy, Loader2, Hash, Gavel, ScrollText, UserCog, Landmark,
+  Upload, ShieldCheck, Link2, Copy, Loader2, Hash, Download, Gavel, ScrollText, UserCog, Landmark,
 } from 'lucide-react'
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
@@ -20,7 +22,7 @@ import {
   useProjects, createProject, publishProject, refreshProjects, isExpired, deadlineLabel, deliveryLabel,
   resubmitProjectDocuments,
 } from '../store/projectsStore'
-import { findCategory, normalizeCategory } from '../constants/categories'
+import { findCategory, normalizeCategory, OTHERS_CATEGORY } from '../constants/categories'
 import { addCategory, useCategories } from '../store/categoriesStore'
 import CategoryDocumentFields, {
   appendCategoryDocs, categoryDocsProblem, pastExpiryProblem, todayIso,
@@ -62,6 +64,7 @@ import ProcurementStepper from '../components/ui/ProcurementStepper'
 import ProcurementRecordPage, { prefetchRecord } from '../components/ProcurementRecord'
 import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import SecureImg from '../components/ui/SecureImg'
+import PreviewButton from '../components/ui/FilePreview'
 import '../style/AdminDashboard.css'
 
 const workspaceRole = () => (ws('').startsWith('/staff') ? 'staff' : 'admin')
@@ -417,9 +420,13 @@ function PublishButton({ project, onPublished }) {
 // ── Planning Page ─────────────────────────────────────────────────────────────
 
 const PROCUREMENT_TYPES = ['Goods', 'Services', 'Infrastructure', 'Consulting Services']
+// Adds or removes a number from a sorted list (delivery / warranty choices).
+const toggleNumber = (list, n) => (list.includes(n) ? list.filter(x => x !== n) : [...list, n].sort((a, b) => a - b))
+
 const EMPTY_PROJECT = {
-  name: '', category: '', type: 'Goods', budget: '',
+  name: '', category: '', category_other: '', type: 'Goods', budget: '',
   delivery_location: '', bidding_period_days: '', delivery_period_days: '', description: '',
+  delivery_options: [], warranty_options: [],   // choices bidders pick from (utils/bidTerms.js)
   reference_image: null,   // optional product reference photo (File)
   require_product_images: false,   // bidders must attach product photos
   product_image_instructions: '',  // optional guidance shown to bidders
@@ -459,7 +466,7 @@ const checkImage = (f) => {
 // ── Assisted Registration (admin fills the supplier's form for a walk-in
 // applicant who brought physical documents) ─────────────────────────────────
 const ASSISTED_EMPTY = {
-  full_name: '', email: '', password: '', confirm_password: '',
+  first_name: '', middle_name: '', last_name: '', email: '', password: '', confirm_password: '',
   company_name: '', company_address: '', phone_number: '', tin: '',
   representative_name: '', mayors_permit_expiry: '', tax_clearance_expiry: '',
   financial_statement_year: '', track_record_description: '',
@@ -679,7 +686,7 @@ function ProjectDetailModal({ project, onClose, setToast }) {
                           : null}
                     </div>
                     {d.url
-                      ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                      ? <span className="ad-doc-actions"><PreviewButton url={d.url} name={d.label} className="ad-doc-view" /><a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><Download size={13} /> Download</a></span>
                       : <span className="ad-doc-missing">Not uploaded</span>}
                   </div>
                   {flagged && d.review_note && (
@@ -782,6 +789,9 @@ function PlanningPage() {
     e.preventDefault()
     const missingDocs = REQUIRED_PROCUREMENT_DOCS.filter(d => !files[d.key])
     if (!typedCategory) { setSubmitErr('Enter or select a procurement category.'); return }
+    if (knownCategory === OTHERS_CATEGORY && !form.category_other.trim()) {
+      setSubmitErr('Specify what is being procured when the category is Others.'); return
+    }
     if (missingDocs.length) {
       setSubmitErr(`Upload all required documents (${missingDocs.length} missing).`); return
     }
@@ -861,6 +871,16 @@ function PlanningPage() {
                 <datalist id="ad-category-options">
                   {categories.map(c => <option key={c} value={c} />)}
                 </datalist>
+                {knownCategory === OTHERS_CATEGORY && (
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label htmlFor="ad-category-other">Please specify<span className="ui-req" aria-hidden="true">*</span></label>
+                    <input id="ad-category-other" value={form.category_other} maxLength={200} required
+                      onChange={e => set('category_other', e.target.value)} placeholder="e.g. Event sound system rental" style={{ width: '100%' }} />
+                    <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
+                      Procurements under Others are open to every verified supplier.
+                    </span>
+                  </div>
+                )}
                 {isNewCategory && (
                   <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
                     "{typedCategory}" is a new category. It is added when you submit. No supplier
@@ -902,6 +922,32 @@ function PlanningPage() {
                   Counted from the day a winner is selected.
                 </span>
               </div>
+              <fieldset className="ad-form-group ad-form-full ad-choice-group">
+                <legend>Delivery timelines bidders may offer</legend>
+                <div className="ad-choice-list">
+                  {deliveryPresetsFor(form.delivery_period_days).map(d => (
+                    <label key={d} className="ad-choice">
+                      <input type="checkbox" checked={form.delivery_options.includes(d)}
+                        onChange={() => set('delivery_options', toggleNumber(form.delivery_options, d))} />
+                      {deliveryChoiceLabel(d)}
+                    </label>
+                  ))}
+                </div>
+                <span className="ad-muted ad-small">Pick the ones the specifications allow. Leave all unticked to let bidders type their own.</span>
+              </fieldset>
+              <fieldset className="ad-form-group ad-form-full ad-choice-group">
+                <legend>Warranty periods bidders may offer</legend>
+                <div className="ad-choice-list">
+                  {WARRANTY_MONTH_PRESETS.map(m => (
+                    <label key={m} className="ad-choice">
+                      <input type="checkbox" checked={form.warranty_options.includes(m)}
+                        onChange={() => set('warranty_options', toggleNumber(form.warranty_options, m))} />
+                      {warrantyLabel(m)}
+                    </label>
+                  ))}
+                </div>
+                <span className="ad-muted ad-small">Leave all unticked to let bidders type their own.</span>
+              </fieldset>
               <div className="ad-form-group ad-form-full">
                 <label>Project Description<span className="ui-req" aria-hidden="true">*</span></label>
                 <textarea value={form.description} onChange={e => set('description', e.target.value)} rows={3} required />
@@ -1296,7 +1342,7 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
 
   const validateStep = () => {
     if (step === 0) {
-      const need = ['full_name', 'email', 'company_name', 'company_address',
+      const need = ['first_name', 'last_name', 'email', 'company_name', 'company_address',
         'phone_number', 'tin', 'representative_name']
       if (need.some(k => !form[k].trim())) return 'Please fill in all required fields.'
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return 'Enter a valid email address.'
@@ -1369,8 +1415,14 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
               <section className="ui-form-section">
                 <div className="ui-form-section-title">Account login</div>
                 <div className="ad-form-grid">
-                  <FormField id="ar-full-name" label="Full Name">
-                    <input id="ar-full-name" autoComplete="off" value={form.full_name} onChange={e => set('full_name', e.target.value)} />
+                  <FormField id="ar-first-name" label="First Name">
+                    <input id="ar-first-name" autoComplete="off" value={form.first_name} onChange={e => set('first_name', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-middle-name" label="Middle Name" required={false} hint="Optional">
+                    <input id="ar-middle-name" autoComplete="off" value={form.middle_name} onChange={e => set('middle_name', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-last-name" label="Last Name">
+                    <input id="ar-last-name" autoComplete="off" value={form.last_name} onChange={e => set('last_name', e.target.value)} />
                   </FormField>
                   <FormField id="ar-email" label="Email Address" hint="Used to sign in and receive the verification link.">
                     <input id="ar-email" type="email" autoComplete="off" inputMode="email" value={form.email} onChange={e => set('email', e.target.value)} />
@@ -1454,10 +1506,12 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                   <FormField id="ar-tc-exp" label="Tax Clearance Expiry" required={false}>
                     <input id="ar-tc-exp" type="date" min={todayIso()} value={form.tax_clearance_expiry} onChange={e => set('tax_clearance_expiry', e.target.value)} />
                   </FormField>
-                  <FormField id="ar-fs-year" label="Financial Statement Year" required={false} hint="Four-digit year, e.g. 2026.">
-                    <input id="ar-fs-year" inputMode="numeric" autoComplete="off" value={form.financial_statement_year}
-                      onChange={e => set('financial_statement_year', e.target.value.replace(/[^\d]/g, '').slice(0, 4))}
-                      placeholder="e.g. 2026" />
+                  <FormField id="ar-fs-year" label="Financial Statement Year" required={false} hint="Year of the Audited Financial Statements.">
+                    <select id="ar-fs-year" value={form.financial_statement_year}
+                      onChange={e => set('financial_statement_year', e.target.value)}>
+                      <option value="">Select year</option>
+                      {statementYearOptions().map(y => <option key={y} value={y}>{y}</option>)}
+                    </select>
                   </FormField>
                 </div>
               </section>
@@ -1632,7 +1686,12 @@ function SupplierDocView({ doc }) {
       </span>
     )
   }
-  return <a className="ad-doc-view" href={doc.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+  return (
+    <span className="ad-doc-actions">
+      <PreviewButton url={doc.url} name={doc.label} className="ad-doc-view" />
+      <a className="ad-doc-view" href={doc.url} target="_blank" rel="noreferrer"><Download size={13} /> Download</a>
+    </span>
+  )
 }
 
 // Base documents first, then one group per business category (its extra
@@ -2082,7 +2141,7 @@ function CategoryRequestPanel({ supplier, busy, onApprove, onReject }) {
                   ? <span className="cd-badge cd-badge-warn">Flagged</span>
                   : <DocExpiryBadges doc={d} />}
                 {d.url
-                  ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                  ? <span className="ad-doc-actions"><PreviewButton url={d.url} name={d.label} className="ad-doc-view" /><a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><Download size={13} /> Download</a></span>
                   : <span className="ad-doc-missing">Not uploaded</span>}
               </span>
             </li>
@@ -2821,7 +2880,7 @@ function BidDetailModal({ bid, awarded, readOnly = false, busyId, projectName, o
                               : null}
                       </div>
                       {d.url
-                        ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                        ? <span className="ad-doc-actions"><PreviewButton url={d.url} name={d.label} className="ad-doc-view" /><a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><Download size={13} /> Download</a></span>
                         : <span className="ad-doc-missing">Not uploaded</span>}
                     </div>
                     {!checked && rs === 'resubmitted' && d.review_note && (
@@ -3394,6 +3453,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor, read
       />
       {issued ? (
         <>
+          <PreviewButton url={doc.url} name={doc.label} className="ui-icon-btn ad-award-doc-upload" />
           <a className="ad-award-doc-name" href={doc.url} target="_blank" rel="noreferrer"
             title={`Issued ${issuedOn} — click to open`}>
             <FileText size={13} aria-hidden="true" /> <span>{shortLabel}</span>
