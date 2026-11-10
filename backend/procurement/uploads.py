@@ -31,6 +31,12 @@ showing it downloads it again, and on a slow network that alone made pages
 take minutes. Neither kind is ever part of an anchored payload, so scaling
 them changes no hash. Documents that happen to be images (a scanned permit,
 a photographed quotation) are never scaled: their detail is the evidence.
+
+A display photo uploaded as PNG or WebP with no transparent pixels (a
+screenshot, a photo saved as PNG) is also stored as JPEG, when that is
+smaller. PNG is lossless, so scaling alone left the live reference photos at
+2.1 MB; as JPEG they are a few hundred KB. A photo with real transparency
+keeps its format, so a logo never gets a black background.
 """
 import io
 import os
@@ -97,6 +103,41 @@ def strip_image_metadata(content, ext, max_side=None):
     return out.getvalue()
 
 
+def _has_transparency(img):
+    """True when any pixel is not fully opaque (or the file declares a
+    transparent colour, which is treated as transparent without checking)."""
+    if "transparency" in img.info:
+        return True
+    if img.mode in ("RGBA", "LA", "PA"):
+        return img.getchannel("A").getextrema()[0] < 255
+    return False
+
+
+def prepare_display_image(content, ext):
+    """A display photo ready to store: metadata stripped, scaled to
+    DISPLAY_IMAGE_MAX_SIDE and, when it has no transparency and that is
+    smaller, converted to JPEG. Returns (bytes, extension to store it under),
+    or None when `ext` is not an image type."""
+    cleaned = strip_image_metadata(content, ext, DISPLAY_IMAGE_MAX_SIDE)
+    if cleaned is None:
+        return None
+    if IMAGE_FORMATS[ext.lower()] == "JPEG":
+        return cleaned, ext.lower()
+    from PIL import Image
+
+    with Image.open(io.BytesIO(cleaned)) as img:
+        if _has_transparency(img):
+            return cleaned, ext.lower()
+        out = io.BytesIO()
+        img.convert("RGB").save(out, format="JPEG", quality=85, optimize=True)
+    jpeg = out.getvalue()
+    return (jpeg, ".jpg") if len(jpeg) < len(cleaned) else (cleaned, ext.lower())
+
+
+def _with_ext(name, ext):
+    return os.path.splitext(name)[0] + ext
+
+
 def _read(file):
     file.seek(0)
     data = file.read()
@@ -133,9 +174,17 @@ class SecureUploadsMixin(models.Model):
             ff = getattr(self, field.name)
             if not ff or getattr(ff, "_committed", True):
                 continue                       # empty, or already stored
+            ext = os.path.splitext(ff.name)[1]
+            if field.name in self.DISPLAY_IMAGE_FIELDS:
+                prepared = prepare_display_image(_read(ff.file), ext)
+                cleaned = None
+                if prepared is not None:
+                    cleaned, new_ext = prepared
+                    if new_ext != ext.lower():
+                        ff.name = _with_ext(ff.name, new_ext)   # stored as JPEG now
+            else:
+                cleaned = strip_image_metadata(_read(ff.file), ext)
             original = display_filename(ff.name)
-            max_side = DISPLAY_IMAGE_MAX_SIDE if field.name in self.DISPLAY_IMAGE_FIELDS else None
-            cleaned = strip_image_metadata(_read(ff.file), os.path.splitext(ff.name)[1], max_side)
             if cleaned is not None:
                 ff.file = ContentFile(cleaned, name=ff.name)
             if has_names:
