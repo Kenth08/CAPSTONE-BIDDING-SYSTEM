@@ -33,10 +33,11 @@ import { useNow } from '../components/ui/Countdown'
 import { signingBlocked } from '../blockchain/anchor'
 import { runAnchor, isAnchorBusy, useAnchorActivity } from '../blockchain/anchorStore'
 import { ANCHOR_STATES, anchorState } from '../blockchain/anchorState'
-import { daysSince, greeting, peso, todayLong } from '../utils/format'
+import { daysSince, peso } from '../utils/format'
 import SecureImg from '../components/ui/SecureImg'
 import AwardApprovalsPage from './head/AwardApprovalsPage'
-import { BarList, ColumnChart, SERIES, monthLabel } from '../components/charts/Charts'
+import { ColumnChart, monthLabel } from '../components/charts/Charts'
+import { DashGrid, DashHeader, Panel, StageStrip } from '../components/ui/Dashboard'
 import BacRecordsPage from './bac/BacRecordsPage'
 import { useBacStatus } from '../utils/workspace'
 import PreviewButton from '../components/ui/FilePreview'
@@ -275,6 +276,12 @@ function PendingCard({ project, onApprove, onRequestRevision, defaultExpanded = 
 
 const WAIT_WARN_DAYS = 3
 
+// Where each stage tile on the Head's dashboard opens. Stages with no list of
+// the Head's own (open, closed) stay as plain counts.
+const HEAD_STAGE_LINK = {
+  pending_head: '/head/pending', needs_revision: '/head/approved', approved: '/head/approved', awarded: '/head/results',
+}
+
 function DocChecklist({ documents = [] }) {
   return (
     <ul className="rf-checklist" aria-label="Required documents">
@@ -291,6 +298,30 @@ function DocChecklist({ documents = [] }) {
         )
       })}
     </ul>
+  )
+}
+
+// One line on the dashboard ("5 of 5 documents uploaded"), with the checklist
+// itself one click away. The Pending page shows every document in full.
+function DocSummary({ documents = [] }) {
+  const total = documents.length
+  if (!total) return null
+  const flagged = documents.filter(d => d.review_status === 'needs_revision').length
+  const missing = documents.filter(d => d.review_status !== 'needs_revision' && !d.url).length
+  const uploaded = total - missing - flagged
+  const tone = missing ? 'bad' : flagged ? 'warn' : 'ok'
+  const Icon = missing ? XCircle : flagged ? AlertTriangle : CheckCircle2
+  const parts = [`${uploaded} of ${total} documents uploaded`]
+  if (missing) parts.push(`${missing} missing`)
+  if (flagged) parts.push(`${flagged} flagged`)
+  return (
+    <details className="dash-docs">
+      <summary className={`dash-docsum is-${tone}`}>
+        <Icon size={13} aria-hidden="true" /> {parts.join(' · ')}
+        <ChevronDown size={13} className="dash-docs-caret" aria-hidden="true" />
+      </summary>
+      <DocChecklist documents={documents} />
+    </details>
   )
 }
 
@@ -311,7 +342,7 @@ function QueueItem({ project, meta, onDecide }) {
           <span>ABC <strong style={{ color: 'var(--text-strong)' }}>{project.budget}</strong></span>
           {meta?.created_by && <span>Created by {meta.created_by}</span>}
         </div>
-        <DocChecklist documents={project.documents} />
+        <DocSummary documents={project.documents} />
       </div>
       <div className="rf-queue-side">
         {days != null && (
@@ -418,12 +449,10 @@ function HeadHome() {
 
   return (
     <div className="hd-content rf-home">
-      <div className="rf-greeting">
-        <div>
-          <h2>{greeting()}, {u.full_name || u.username || 'Head'}</h2>
-          <p>{todayLong()}</p>
-        </div>
-      </div>
+      <DashHeader name={u.full_name || u.username || 'Head'}
+        actions={pending.length > 0 && (
+          <Link to="/head/pending" className="ui-btn ui-btn--primary ui-btn--sm"><ClipboardCheck size={13} aria-hidden="true" /> Review queue</Link>
+        )} />
 
       {sumError && (
         <div className="ui-callout ui-callout--danger" role="alert">
@@ -440,103 +469,89 @@ function HeadHome() {
         <KpiCard label="Waiting for my approval" icon={Clock} loading={sumLoading} to="/head/pending"
           tone={!summary ? 'neutral' : k.waiting ? (oldest >= WAIT_WARN_DAYS ? 'warning' : 'info') : 'success'} value={k.waiting ?? '—'}
           context={!summary ? 'Unavailable' : k.waiting ? `Oldest waiting ${oldest === 0 ? 'since today' : `${oldest} day${oldest === 1 ? '' : 's'}`}` : 'All caught up'} />
+        {bacOn && (
+          <KpiCard label="Awards to approve" icon={Gavel} tone={k.awards_waiting ? 'warning' : 'neutral'} loading={sumLoading}
+            value={k.awards_waiting ?? '—'} to="/head/awards" context="Adopted BAC resolutions" />
+        )}
         <KpiCard label="Approved this month" icon={CheckCircle2} tone="success" loading={sumLoading}
           value={k.approved_this_month ?? '—'} to="/head/approved" context={`Sent to ${preparer} to publish`} />
         <KpiCard label="Returned for revision" icon={AlertTriangle} tone={k.returned_for_revision ? 'warning' : 'neutral'}
           loading={sumLoading} value={k.returned_for_revision ?? '—'} to="/head/approved" context={`Waiting on ${preparer} to fix`} />
-        {bacOn ? (
-          <KpiCard label="Awards to approve" icon={Gavel} tone={k.awards_waiting ? 'warning' : 'neutral'} loading={sumLoading}
-            value={k.awards_waiting ?? '—'} to="/head/awards" context="Adopted BAC resolutions" />
-        ) : (
+        {!bacOn && (
           <KpiCard label="Rejected" icon={XCircle} tone="neutral" loading={sumLoading}
             value={k.rejected ?? '—'} to="/head/approved" context="Older projects only" />
         )}
       </KpiRow>
 
-      <div className="ch-grid-2">
-        <section className="rf-card" aria-labelledby="hd-trend-h">
-          <div className="rf-card-head">
-            <div><h3 id="hd-trend-h">My decisions</h3><p>Approved and returned for revision, last six months</p></div>
-          </div>
-          <div className="ch-card-body">
-            {sumLoading ? <Skeleton height={180} radius={8} /> : (
-              <ColumnChart mode="stacked" ariaLabel="Head decisions per month"
-                series={[{ key: 'approved', label: 'Approved' }, { key: 'revision', label: 'Returned for revision' }]}
-                data={(summary?.trend || []).map(m => ({ label: monthLabel(m.month), values: { approved: m.approved, revision: m.revision } }))} />
+      <DashGrid
+        main={<>
+          <Panel id="queue" title="Approval queue" count={pending.length} countTone="warning"
+            link={{ to: '/head/pending', label: 'Full review' }}>
+            {loading && pending.length === 0 ? (
+              <div className="rf-card-body"><ListSkeleton rows={2} height={84} /></div>
+            ) : pending.length === 0 ? (
+              <EmptyState compact icon={CheckCircle2} title="All caught up"
+                description="No procurements are waiting for your approval." />
+            ) : (
+              <ul className="rf-queue">
+                {pending.map(p => (
+                  <QueueItem key={p.id} project={p} meta={metaById[p.id]} onDecide={(type, project) => setDecide({ type, project })} />
+                ))}
+              </ul>
             )}
-          </div>
-        </section>
-        <section className="rf-card" aria-labelledby="hd-mix-h">
-          <div className="rf-card-head">
-            <div><h3 id="hd-mix-h">Where procurements are</h3><p>Every procurement by its current stage</p></div>
-          </div>
-          <div className="ch-card-body">
-            {sumLoading ? <ListSkeleton rows={5} height={20} /> : (
-              <BarList ariaLabel="Procurements by stage" color={SERIES[0]}
-                data={(summary?.status_mix || []).map(s => ({ label: s.label, value: s.count }))} />
+          </Panel>
+
+          <Panel id="hist" title="Recent decisions" link={{ to: '/head/approved', label: 'All reviewed' }}>
+            {sumLoading ? (
+              <div className="rf-card-body"><ListSkeleton rows={3} height={40} /></div>
+            ) : !summary?.history?.length ? (
+              <EmptyState compact icon={FolderOpen} title="No decisions yet" description="Your decisions will be listed here." />
+            ) : (
+              <div className="rf-table-scroll">
+                <table className="rf-table">
+                  <caption className="sr-only">Recent decisions</caption>
+                  <thead>
+                    <tr><th scope="col">Procurement</th><th scope="col" className="is-num">ABC</th><th scope="col">Decision</th><th scope="col">When</th><th scope="col">On-chain</th></tr>
+                  </thead>
+                  <tbody>
+                    {summary.history.map(h => {
+                      const [tone, label] = DECISION_BADGE[h.decision] || ['neutral', h.decision]
+                      return (
+                        <tr key={h.id}>
+                          <td>
+                            <div className="rf-cell-title"><div><strong title={h.name}>{h.name}</strong><small><span className="rf-code">{h.code}</span></small></div></div>
+                          </td>
+                          <td className="is-num"><span className="rf-amount">{peso(h.budget)}</span></td>
+                          <td><StatusBadge tone={tone} label={label} /></td>
+                          <td><RelativeTime value={h.reviewed_at} /></td>
+                          <td><DecisionChain anchor={h.anchor} onAnchored={loadSummary} /></td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
-          </div>
-        </section>
-      </div>
-
-      <section className="rf-card" aria-labelledby="queue-h">
-        <div className="rf-card-head">
-          <div>
-            <h3 id="queue-h">Approval queue</h3>
-            <p>Longest waiting first</p>
-          </div>
-          <Link to="/head/pending" className="rf-card-link">Full review <ChevronRight size={13} /></Link>
-        </div>
-        {loading && pending.length === 0 ? (
-          <div className="rf-card-body"><ListSkeleton rows={2} height={84} /></div>
-        ) : pending.length === 0 ? (
-          <EmptyState icon={CheckCircle2} title="All caught up"
-            description="No procurements are waiting for your approval." />
-        ) : (
-          <ul className="rf-queue">
-            {pending.map(p => (
-              <QueueItem key={p.id} project={p} meta={metaById[p.id]} onDecide={(type, project) => setDecide({ type, project })} />
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="rf-card" aria-labelledby="hist-h">
-        <div className="rf-card-head">
-          <div><h3 id="hist-h">My decision history</h3></div>
-          <Link to="/head/approved" className="rf-card-link">All reviewed <ChevronRight size={13} /></Link>
-        </div>
-        {sumLoading ? (
-          <div className="rf-card-body"><ListSkeleton rows={3} height={40} /></div>
-        ) : !summary?.history?.length ? (
-          <EmptyState compact icon={FolderOpen} title="No decisions yet" description="Your decisions will be listed here." />
-        ) : (
-          <div className="rf-table-scroll">
-            <table className="rf-table">
-              <caption className="sr-only">Decision history</caption>
-              <thead>
-                <tr><th scope="col">Procurement</th><th scope="col" className="is-num">ABC</th><th scope="col">Decision</th><th scope="col">When</th><th scope="col">On-chain</th></tr>
-              </thead>
-              <tbody>
-                {summary.history.map(h => {
-                  const [tone, label] = DECISION_BADGE[h.decision] || ['neutral', h.decision]
-                  return (
-                    <tr key={h.id}>
-                      <td>
-                        <div className="rf-cell-title"><div><strong>{h.name}</strong><small><span className="rf-code">{h.code}</span></small></div></div>
-                      </td>
-                      <td className="is-num"><span className="rf-amount">{peso(h.budget)}</span></td>
-                      <td><StatusBadge tone={tone} label={label} /></td>
-                      <td><RelativeTime value={h.reviewed_at} /></td>
-                      <td><DecisionChain anchor={h.anchor} onAnchored={loadSummary} /></td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+          </Panel>
+        </>}
+        side={<>
+          <Panel id="stages" title="Where procurements are">
+            {sumLoading ? <div className="rf-card-body"><ListSkeleton rows={2} height={48} /></div> : (
+              <StageStrip stages={(summary?.status_mix || []).map(s => ({
+                ...s, to: HEAD_STAGE_LINK[s.key], tone: s.key === 'pending_head' ? 'warning' : undefined,
+              }))} />
+            )}
+          </Panel>
+          <Panel id="trend" title="My decisions, last six months">
+            <div className="ch-card-body">
+              {sumLoading ? <Skeleton height={160} radius={8} /> : (
+                <ColumnChart mode="stacked" ariaLabel="Head decisions per month" height={160}
+                  series={[{ key: 'approved', label: 'Approved' }, { key: 'revision', label: 'Returned for revision' }]}
+                  data={(summary?.trend || []).map(m => ({ label: monthLabel(m.month), values: { approved: m.approved, revision: m.revision } }))} />
+              )}
+            </div>
+          </Panel>
+        </>} />
 
       {decide && (
         <ConfirmDialog

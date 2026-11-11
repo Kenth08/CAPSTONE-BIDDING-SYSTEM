@@ -3496,11 +3496,11 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor, read
       />
       {issued ? (
         <>
-          <PreviewButton url={doc.url} name={doc.label} className="ui-icon-btn ad-award-doc-upload" />
           <a className="ad-award-doc-name" href={doc.url} target="_blank" rel="noreferrer"
             title={`Issued ${issuedOn} — click to open`}>
             <FileText size={13} aria-hidden="true" /> <span>{shortLabel}</span>
           </a>
+          <PreviewButton url={doc.url} name={doc.label} className="ui-icon-btn ad-award-doc-upload" iconOnly />
           {chainState === 'verified' || chainState === 'reported' ? (
             <a
               className={`ad-award-doc-chain${chainState === 'verified' ? ' is-anchored' : ''}`}

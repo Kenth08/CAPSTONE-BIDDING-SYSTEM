@@ -100,15 +100,16 @@ export function FilePreviewModal({ url, file, name, onClose }) {
   )
 }
 
-export default function PreviewButton({ url, name, className = 'ui-btn ui-btn--ghost ui-btn--sm' }) {
+// iconOnly: just the eye, for tight rows (the award documents), with a tooltip.
+export default function PreviewButton({ url, name, className = 'ui-btn ui-btn--ghost ui-btn--sm', iconOnly = false }) {
   const [open, setOpen] = useState(false)
   if (!url) return null
   return (
     <>
       <button type="button" className={className}
         onClick={e => { e.preventDefault(); e.stopPropagation(); setOpen(true) }}
-        aria-label={`Preview ${name || 'document'}`}>
-        <Eye size={13} aria-hidden="true" /> Preview
+        aria-label={`Preview ${name || 'document'}`} {...(iconOnly ? { 'data-tip': 'Preview' } : {})}>
+        <Eye size={13} aria-hidden="true" />{!iconOnly && ' Preview'}
       </button>
       {open && <FilePreviewModal url={url} name={name} onClose={() => setOpen(false)} />}
     </>

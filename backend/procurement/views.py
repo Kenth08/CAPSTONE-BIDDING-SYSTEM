@@ -653,7 +653,7 @@ class PublicProcurementView(APIView):
         awards = (
             Award.objects.select_related("project", "supplier")
             .filter(status=Award.Status.WON)
-            .order_by("-awarded_at")
+            .order_by("-awarded_at", "-id")   # newest first; the id orders same-day awards
         )
         winners = [
             {
@@ -2823,7 +2823,10 @@ class AwardViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
         return [IsPreparerRole()]
 
     def get_queryset(self):
-        qs = Award.objects.select_related("project", "supplier", "supplier__user", "bid")
+        # Newest award first. awarded_at is only a date, so awards made the same
+        # day are ordered by id too (the latest one on top).
+        qs = Award.objects.select_related("project", "supplier", "supplier__user", "bid").order_by(
+            "-awarded_at", "-id")
         role = getattr(self.request.user, "role", None)
         if role == "supplier":
             # Scoped to their OWN award: a supplier must never see another
