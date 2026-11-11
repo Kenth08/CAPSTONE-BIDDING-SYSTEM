@@ -6467,6 +6467,14 @@ class LocationsAndOrderingTests(APITestCase):
         usernames = [u["username"] for u in self.client.get("/api/auth/users/").json()]
         self.assertLess(usernames.index("staffb"), usernames.index("staffa"))
 
+    def test_awards_are_listed_newest_first_even_on_the_same_day(self):
+        first = Award.objects.create(project=make_project(status=Project.Status.AWARDED), supplier=make_supplier(),
+                                     amount=100, status=Award.Status.WON)
+        second = Award.objects.create(project=make_project(status=Project.Status.AWARDED), supplier=make_supplier(),
+                                      amount=200, status=Award.Status.WON)
+        ids = [a["id"] for a in self.client.get("/api/awards/").json()]
+        self.assertLess(ids.index(second.id), ids.index(first.id))
+
     def test_dashboards_carry_six_months_of_trend(self):
         summary = self.client.get("/api/dashboard/admin-summary/").json()
         self.assertEqual(len(summary["trend"]), 6)
