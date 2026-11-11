@@ -2082,3 +2082,7 @@ a.ad-prod-thumb:hover { border-color: #3b82f6; box-shadow: 0 2px 10px rgba(59,13
 .ad-choice input { accent-color: var(--c-primary-600); margin: 0; }
 
 .ad-doc-actions { display: inline-flex; align-items: center; gap: 10px; }
+
+/* "Preview" beside a picked file before it is submitted (same look as the supplier pages). */
+.ad-doc-file .sd-file-preview { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--surface); color: var(--text-body); font: inherit; font-size: 12px; cursor: pointer; flex: none; }

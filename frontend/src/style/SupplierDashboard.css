@@ -1162,3 +1162,8 @@
 }
 /* Category license rows hold an upload control, so they may wrap. */
 .sd-doc-row:has(.sd-catdoc-upload), .sd-doc-row:has(.sd-reupload-btn) { flex-wrap: wrap; }
+
+/* "Preview" beside a picked file, before it is submitted (FilePreview.LocalPreviewButton). */
+.sd-file-preview { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--surface); color: var(--text-body); font: inherit; font-size: 12px; cursor: pointer; flex: none; }
+.sd-file-preview:hover { border-color: var(--c-primary-400); color: var(--tone-success-fg); }

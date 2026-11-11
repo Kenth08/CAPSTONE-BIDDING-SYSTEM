@@ -25,3 +25,4 @@
   .fp-overlay { padding: 0; }
   .fp-dialog { border-radius: 0; height: 100%; }
 }
+.fp-local-note { font-size: var(--fs-caption); color: var(--text-subtle); align-self: center; }

@@ -21,14 +21,17 @@ function kindOf(blob, name = '') {
   return 'other'
 }
 
-export function FilePreviewModal({ url, name, onClose }) {
+export function FilePreviewModal({ url, file, name, onClose }) {
   const [state, setState] = useState({ status: 'loading' })
   const closeRef = useRef(null)
 
   useEffect(() => {
     let alive = true
     let objectUrl = ''
-    apiFetchFileBlob(url)
+    // A picked file is already here (read locally, never sent); a stored one is
+    // fetched with the user's token.
+    const source = file ? Promise.resolve(file) : apiFetchFileBlob(url)
+    source
       .then(blob => {
         if (!alive) return
         const kind = kindOf(blob, name)
@@ -40,7 +43,7 @@ export function FilePreviewModal({ url, name, onClose }) {
       })
       .catch(() => { if (alive) setState({ status: 'error' }) })
     return () => { alive = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [url, name])
+  }, [url, file, name])
 
   useEffect(() => {
     const opener = document.activeElement
@@ -57,9 +60,12 @@ export function FilePreviewModal({ url, name, onClose }) {
         <div className="fp-head">
           <span className="fp-name" title={name}>{name || 'Document'}</span>
           <div className="fp-actions">
-            <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={() => downloadProtectedFile(url)}>
-              <Download size={13} aria-hidden="true" /> Download
-            </button>
+            {url && (
+              <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={() => downloadProtectedFile(url)}>
+                <Download size={13} aria-hidden="true" /> Download
+              </button>
+            )}
+            {file && <span className="fp-local-note">Not uploaded yet</span>}
             <button type="button" ref={closeRef} className="ui-icon-btn" onClick={onClose} aria-label="Close preview">
               <X size={16} />
             </button>
@@ -81,7 +87,7 @@ export function FilePreviewModal({ url, name, onClose }) {
               <p>{state.status === 'error'
                 ? 'This document could not be previewed. You may not have access to it, or it is no longer available.'
                 : 'This file type can\'t be previewed here. Download it to open it.'}</p>
-              {state.status !== 'error' && (
+              {state.status !== 'error' && url && (
                 <button type="button" className="ui-btn ui-btn--primary ui-btn--sm" onClick={() => downloadProtectedFile(url)}>
                   <Download size={13} aria-hidden="true" /> Download
                 </button>
@@ -105,6 +111,23 @@ export default function PreviewButton({ url, name, className = 'ui-btn ui-btn--g
         <Eye size={13} aria-hidden="true" /> Preview
       </button>
       {open && <FilePreviewModal url={url} name={name} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
+// Preview for a file the user has picked but not submitted yet (registration,
+// bids, resubmissions), so they can check it is the right document first.
+export function LocalPreviewButton({ file, name, className = 'ui-btn ui-btn--ghost ui-btn--sm' }) {
+  const [open, setOpen] = useState(false)
+  if (!file) return null
+  return (
+    <>
+      <button type="button" className={className}
+        onClick={e => { e.preventDefault(); e.stopPropagation(); setOpen(true) }}
+        aria-label={`Preview ${name || file.name} before submitting`}>
+        <Eye size={13} aria-hidden="true" /> Preview
+      </button>
+      {open && <FilePreviewModal file={file} name={file.name} onClose={() => setOpen(false)} />}
     </>
   )
 }

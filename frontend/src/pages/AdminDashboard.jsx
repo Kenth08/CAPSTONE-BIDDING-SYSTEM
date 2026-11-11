@@ -66,7 +66,7 @@ import ProcurementStepper from '../components/ui/ProcurementStepper'
 import ProcurementRecordPage, { prefetchRecord } from '../components/ProcurementRecord'
 import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import SecureImg from '../components/ui/SecureImg'
-import PreviewButton from '../components/ui/FilePreview'
+import PreviewButton, { LocalPreviewButton } from '../components/ui/FilePreview'
 import '../style/AdminDashboard.css'
 
 const workspaceRole = () => (ws('').startsWith('/staff') ? 'staff' : 'admin')
@@ -574,6 +574,7 @@ function DocUploader({ doc, file, onFile, onRemove, optional }) {
         <div className="ad-doc-file">
           <FileText size={14} />
           <span className="ad-doc-name" title={file.name}>{file.name}</span>
+          <LocalPreviewButton file={file} className="sd-file-preview" />
           <button type="button" onClick={onRemove} aria-label="Remove"><X size={14} /></button>
         </div>
       ) : (
@@ -702,6 +703,7 @@ function ProjectDetailModal({ project, onClose, setToast }) {
                       <div className="ad-doc-file" style={{ marginTop: 8 }}>
                         <FileText size={14} />
                         <span className="ad-doc-name" title={files[d.key].name}>{files[d.key].name}</span>
+                        <LocalPreviewButton file={files[d.key]} className="sd-file-preview" />
                         <button type="button" onClick={() => setFiles(f => { const n = { ...f }; delete n[d.key]; return n })} aria-label="Remove"><X size={14} /></button>
                       </div>
                     ) : (

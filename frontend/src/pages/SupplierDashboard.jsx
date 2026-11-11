@@ -41,7 +41,7 @@ import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import SecureImg from '../components/ui/SecureImg'
 import '../style/SupplierDashboard.css'
 import { deliveryLabel, warrantyLabel } from '../utils/bidTerms'
-import PreviewButton from '../components/ui/FilePreview'
+import PreviewButton, { LocalPreviewButton } from '../components/ui/FilePreview'
 
 // API → UI mapping (backend uses code/decimal/ISO; the UI shows ₱ + dates).
 const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''
@@ -176,11 +176,13 @@ const BID_STATUS = {
 // ─── Bid submit modal — building blocks ──────────────────────────────────────
 
 // Checklist row shown after a file is selected: filled emerald check + name + X.
-function BidFileRow({ name, onRemove }) {
+function BidFileRow({ name, file, onRemove }) {
   return (
     <div className="sd-file-row">
       <span className="sd-file-check"><Check size={12} /></span>
       <span className="sd-file-rowname" title={name}>{name}</span>
+      {/* Check the picked file before it is submitted. */}
+      <LocalPreviewButton file={file} className="sd-file-preview" />
       <button type="button" className="sd-file-remove" onClick={onRemove} aria-label="Remove file">
         <X size={14} />
       </button>
@@ -198,7 +200,7 @@ function BidUpload({ label, required, rule, hint, file, error, onPick, onRemove 
         {label}{required ? <span className="sd-req"> *</span> : <span className="sd-optional"> (optional)</span>}
       </label>
       {file ? (
-        <BidFileRow name={file.name} onRemove={onRemove} />
+        <BidFileRow name={file.name} file={file} onRemove={onRemove} />
       ) : (
         <button type="button" className="sd-upload-box" onClick={() => ref.current?.click()}>
           <Upload size={16} />
@@ -647,7 +649,7 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                   <div className="sd-upload-field">
                     <label className="sd-upload-label">Other Attachments <span className="sd-optional"> (optional)</span></label>
                     {others.map((f, i) => (
-                      <BidFileRow key={i} name={f.name}
+                      <BidFileRow key={i} name={f.name} file={f}
                         onRemove={() => setOthers(list => list.filter((_, idx) => idx !== i))} />
                     ))}
                     {others.length === 0 ? (
@@ -764,6 +766,7 @@ function BidDocRevisionRow({ doc, file, onFile, onRemove }) {
         {file ? (
           <div className="sd-revision-file">
             <FileText size={14} /><span className="sd-file-name" title={file.name}>{file.name}</span>
+            <LocalPreviewButton file={file} className="sd-file-preview" />
             <button onClick={onRemove}><X size={14} /></button>
           </div>
         ) : (
@@ -1259,6 +1262,7 @@ function RevisionPanel({ profile, onResubmitted, setToast }) {
               {files[d.key] ? (
                 <div className="sd-revision-file">
                   <FileText size={14} /><span className="sd-file-name" title={files[d.key].name}>{files[d.key].name}</span>
+                  <LocalPreviewButton file={files[d.key]} className="sd-file-preview" />
                   <button onClick={() => setFiles(f => { const n = { ...f }; delete n[d.key]; return n })}><X size={14} /></button>
                 </div>
               ) : (
@@ -2298,6 +2302,7 @@ function CategoryDocUpload({ doc, setToast, onUploaded }) {
         <span className="cd-file">
           <FileText size={14} aria-hidden="true" />
           <span className="cd-file-name" title={file.name}>{file.name}</span>
+          <LocalPreviewButton file={file} className="sd-file-preview" />
           <button type="button" className="cd-icon-btn" onClick={() => setFile(null)} aria-label="Remove file"><X size={13} /></button>
         </span>
       ) : (

@@ -12,6 +12,7 @@ import {
 } from '../components/CategoryDocuments'
 import { statementYearOptions } from '../utils/statementYears'
 import '../style/SupplierRegister.css'
+import { LocalPreviewButton } from '../components/ui/FilePreview'
 
 // ── Static config ─────────────────────────────────────────────────────────────
 const STEPS = [
@@ -941,6 +942,7 @@ function DocCard({ id, label, required, help, file, error, hasError, onFile, onR
             <span className="sr-file-sub">{fmtSize(file.size)} · Not uploaded yet, sent on submit</span>
           </div>
           <div className="sr-file-actions">
+            <LocalPreviewButton file={file} name={label} className="sr-file-btn" />
             <button type="button" className="sr-file-btn" onClick={pick} aria-label={`Replace ${label}`}>Replace</button>
             <button type="button" className="sr-file-btn is-icon" onClick={onRemove} aria-label={`Remove ${label}`}>
               <Trash2 size={15} aria-hidden="true" />
