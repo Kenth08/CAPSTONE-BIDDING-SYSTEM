@@ -7,7 +7,7 @@ import InfoTip from './ui/InfoTip'
 
 import { apiVerifyProjectChain } from '../api'
 import { ANCHOR_STATES, anchorChip, anchorState, canSign, hasIncompleteEvidence } from '../blockchain/anchorState'
-import { signingBlocked } from '../blockchain/anchor'
+import { signingBlocked } from '../blockchain/signingState'
 import { isAnchorBusy, runAnchor, useAnchorActivity } from '../blockchain/anchorStore'
 import { txUrl } from '../blockchain/contract'
 import './Blockchain.css'

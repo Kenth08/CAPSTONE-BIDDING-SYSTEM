@@ -20,7 +20,6 @@
 // the blockchain badge. Nothing here ever rolls back step 1.
 import { BrowserProvider, Contract, JsonRpcProvider } from 'ethers'
 
-import { apiFetch } from '../api'
 import {
   LEDGER_ABI,
   LEDGER_ADDRESS,
@@ -31,30 +30,15 @@ import {
 } from './contract'
 import { makeLedgerReader } from './ledgerReader'
 import { assertChainId } from './network'
-import { SIGNING_DISABLED_MESSAGE, signingBlockedReason, walletNetworkProblem } from './signingPolicy'
+import { SIGNING_DISABLED_MESSAGE, walletNetworkProblem } from './signingPolicy'
+import { AnchorError, hasWallet, signingBlocked } from './signingState'
+import { attachAnchorTx } from './anchorApi'
 
-/** Error carrying a `code` so the UI can tell "the user said no" (which is not a
- *  failure worth shouting about) from a real problem. */
-export class AnchorError extends Error {
-  constructor(message, code) {
-    super(message)
-    this.name = 'AnchorError'
-    this.code = code
-  }
-}
-
-export const hasWallet = () => typeof window !== 'undefined' && !!window.ethereum
-
-/** MetaMask / EIP-1193 codes we treat as "the user declined", not as an error. */
-const REJECTED_CODES = new Set([4001, 'ACTION_REJECTED'])
-export const isUserRejection = (err) =>
-  REJECTED_CODES.has(err?.code) ||
-  REJECTED_CODES.has(err?.info?.error?.code) ||
-  /user (rejected|denied)/i.test(err?.message || '')
-
-/** Why this anchor may not be signed from this browser, or '' if it may. */
-export const signingBlocked = (anchor) =>
-  signingBlockedReason(anchor, { buildSigningOff: SIGNING_OFF_BY_BUILD })
+// The ethers-free helpers live in their own modules so dashboards can use them
+// without downloading ethers. Re-exported here so existing imports keep working.
+export { AnchorError, hasWallet, isUserRejection, signingBlocked } from './signingState'
+export { attachAnchorTx, serverSubmitAnchor } from './anchorApi'
+export { sha256File } from './fileHash'
 
 /**
  * Throw unless the wallet is on Sepolia. Signing on the wrong chain would write
@@ -170,43 +154,6 @@ export async function anchorTransition(anchor, { onStatus } = {}) {
   }
 }
 
-/**
- * Tell the backend which transaction anchored a record. Separate from
- * anchorTransition so a failed save can be retried on its own: the transaction
- * is already mined and immutable, so re-signing would only burn gas to record
- * the identical hash twice.
- *
- * The endpoint is idempotent, so a retry that turns out to have already
- * succeeded is harmless.
- */
-export function attachAnchorTx(anchor, { txHash, blockNumber, actorAddress = '' }) {
-  return apiFetch(anchor.attach_url, {
-    method: 'POST',
-    body: JSON.stringify({
-      anchor_id: anchor.id,
-      stage: anchor.stage,
-      tx_hash: txHash,
-      block_number: blockNumber,
-      actor_address: actorAddress,
-    }),
-  })
-}
-
-/**
- * Ask the backend to sign and send this anchor itself (no wallet involved).
- * Only used when the deployment has server signing on — `anchor.server_signing`
- * says so. Goes through the record's own /anchor/ endpoint, so the same role
- * checks apply as for a MetaMask attach. Resolves to the updated anchor.
- */
-export function serverSubmitAnchor(anchor) {
-  const blocked = signingBlocked(anchor)
-  if (blocked) return Promise.reject(new AnchorError(blocked, 'SIGNING_DISABLED'))
-  return apiFetch(anchor.attach_url, {
-    method: 'POST',
-    body: JSON.stringify({ anchor_id: anchor.id, stage: anchor.stage, server_submit: true }),
-  })
-}
-
 // ── Reads (no wallet, no gas, works for anonymous visitors) ─────────────────
 
 let readProvider = null
@@ -281,18 +228,4 @@ export async function readLedgerTotal() {
   if (!isLedgerConfigured()) return null
   await checkReadNetwork()
   return Number(await getReadOnlyLedger().total())
-}
-
-/**
- * SHA-256 of a File the visitor picked, formatted exactly like the backend's
- * hash_file() ("0x" + 64 hex) so the two can be compared directly. Runs entirely
- * in the browser via WebCrypto — the file is never uploaded anywhere.
- */
-export async function sha256File(file) {
-  const buffer = await file.arrayBuffer()
-  const digest = await crypto.subtle.digest('SHA-256', buffer)
-  const hex = Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-  return '0x' + hex
 }

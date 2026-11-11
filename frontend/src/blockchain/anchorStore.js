@@ -11,11 +11,14 @@
 // first is open.
 import { useSyncExternalStore } from 'react'
 
-import {
-  AnchorError, anchorTransition, attachAnchorTx, hasWallet, isUserRejection, serverSubmitAnchor,
-  signingBlocked,
-} from './anchor'
+// Only the ethers-free parts are imported up front. anchor.js (and ethers with
+// it) is loaded the first time a wallet signature is actually needed, so no
+// dashboard downloads ethers just to show the anchoring card.
+import { AnchorError, hasWallet, isUserRejection, signingBlocked } from './signingState'
+import { attachAnchorTx, serverSubmitAnchor } from './anchorApi'
 import { isLedgerConfigured, txUrl } from './contract'
+
+const loadAnchor = () => import('./anchor')
 
 const listeners = new Set()
 let activity = null // { state, anchor, label, txHash, blockNumber, message }
@@ -138,6 +141,7 @@ export async function runAnchor(anchor, { label = '' } = {}) {
 
   set({ state: 'connecting', anchor, label, message: MESSAGES.connecting })
   try {
+    const { anchorTransition } = await loadAnchor()
     const result = await anchorTransition(anchor, {
       // connecting (network check + connect) → signing (transaction prompt open)
       // → mining (broadcast) → saving (tx confirmed).

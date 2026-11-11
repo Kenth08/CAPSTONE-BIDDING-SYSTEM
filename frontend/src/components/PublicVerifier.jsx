@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 
 import { apiPublicAnchors, apiPublicPacket } from '../api'
-import { readChainTrail, sha256File } from '../blockchain/anchor'
+import { sha256File } from '../blockchain/fileHash'
 import { documentVerdict } from '../blockchain/documentCheck'
 import { DOCUMENT_LABELS } from '../blockchain/payloadV3'
 import { legacyDocumentNote, payloadNotStored, publicDate, verifiedRowDisplay } from '../blockchain/recordView'
@@ -175,6 +175,8 @@ export default function PublicVerifier({ initialCode = '', embedded = false }) {
       if (isLedgerConfigured()) {
         try {
           // The server's spelling of the code is the on-chain index.
+          // ethers loads here, on the first chain read, not with the page.
+          const { readChainTrail } = await import('../blockchain/anchor')
           chain = await readChainTrail(data.code || ref)
         } catch (err) {
           chainError = err?.shortMessage || err?.message || 'Could not reach the Sepolia network.'

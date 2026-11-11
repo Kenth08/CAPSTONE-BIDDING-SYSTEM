@@ -5,7 +5,7 @@ import {
   Scale, Search, Shield, ShieldCheck, Trophy, Users,
 } from 'lucide-react'
 import { apiPublicSummary } from '../api'
-import { readLedgerTotal } from '../blockchain/anchor'
+import { isLedgerConfigured } from '../blockchain/contract'
 import Countdown from '../components/ui/Countdown'
 import EmptyState from '../components/ui/EmptyState'
 import ProcurementStepper from '../components/ui/ProcurementStepper'
@@ -129,9 +129,14 @@ export default function LandingPage() {
       .then((d) => { if (alive) setData(d) })
       .catch((e) => { if (alive) setError(e.message) })
       .finally(() => { if (alive) setLoading(false) })
-    readLedgerTotal()
-      .then((n) => { if (alive && Number.isFinite(n)) setOnChain(n) })
-      .catch(() => {})
+    // ethers (~100 kB gzip) is only needed for this one on-chain count, so it
+    // loads after the page is up instead of with it.
+    if (isLedgerConfigured()) {
+      import('../blockchain/anchor')
+        .then(({ readLedgerTotal }) => readLedgerTotal())
+        .then((n) => { if (alive && Number.isFinite(n)) setOnChain(n) })
+        .catch(() => {})
+    }
     return () => { alive = false }
   }, [])
 

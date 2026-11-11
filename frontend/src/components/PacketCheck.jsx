@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AlertCircle, CheckCircle2, CircleDashed, Loader2, ShieldCheck, ShieldX, XCircle } from 'lucide-react'
 
-import { packetVerifyContext } from '../blockchain/anchor'
 import { isCurrentCheck, verifyPacket } from '../blockchain/packetVerify'
 
 const STEP_ICON = { pass: CheckCircle2, fail: XCircle, skip: CircleDashed }
@@ -24,6 +23,9 @@ export default function PacketCheck({ loadPacket, fileHash = null, unavailableTe
         const packet = await loadPacket()
         if (!live) return
         if (!packet) { setState({ phase: 'unavailable', ...inputs }); return }
+        // ethers loads with the chain reader, only once a check really runs.
+        const { packetVerifyContext } = await import('../blockchain/anchor')
+        if (!live) return
         const result = await verifyPacket(packet, { fileHash, ...packetVerifyContext() })
         if (live) setState({ phase: 'done', result, ...inputs })
       } catch (err) {

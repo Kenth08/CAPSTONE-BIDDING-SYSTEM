@@ -2941,6 +2941,41 @@ class DashboardSummaryTests(APITestCase):
                          {"code", "name", "category", "budget", "deadline", "published_at", "bids"})
 
 
+class AwardProjectFilterTests(APITestCase):
+    """GET /api/awards/?project=<id> returns only that procurement's award, so the
+    bid evaluation screen doesn't download every award to find one. It narrows the
+    caller's normal scope and never widens it; no parameter = the full list."""
+
+    def setUp(self):
+        self.admin = make_admin()
+        self.supplier = make_supplier()
+        self.rival = make_supplier()
+        self.p1 = make_project(status=Project.Status.AWARDED)
+        self.p2 = make_project(status=Project.Status.AWARDED)
+        self.a1 = Award.objects.create(project=self.p1, supplier=self.supplier, amount=1000)
+        self.a2 = Award.objects.create(project=self.p2, supplier=self.rival, amount=2000)
+
+    def ids(self, user, query=""):
+        self.client.force_authenticate(user=user)
+        res = self.client.get(f"/api/awards/{query}")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return sorted(a["id"] for a in res.data)
+
+    def test_without_parameter_lists_every_award(self):
+        self.assertEqual(self.ids(self.admin), sorted([self.a1.id, self.a2.id]))
+
+    def test_filters_to_one_project(self):
+        self.assertEqual(self.ids(self.admin, f"?project={self.p2.id}"), [self.a2.id])
+
+    def test_supplier_scope_still_applies(self):
+        self.assertEqual(self.ids(self.supplier.user, f"?project={self.p1.id}"), [self.a1.id])
+        # Another supplier's project: filtered within their own awards, so nothing.
+        self.assertEqual(self.ids(self.supplier.user, f"?project={self.p2.id}"), [])
+
+    def test_malformed_parameter_returns_nothing(self):
+        self.assertEqual(self.ids(self.admin, "?project=abc"), [])
+
+
 class EvaluationCommitmentTests(APITestCase):
     """EVALUATION_COMPLETED: one salted commitment, written at award time, to
     every bid received and its final outcome. Proves the evaluation was fixed

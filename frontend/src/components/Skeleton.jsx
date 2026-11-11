@@ -29,3 +29,21 @@ export function ListSkeleton({ rows = 4, height = 56 }) {
     </div>
   )
 }
+
+// Stand-in for a whole page while its code downloads (Suspense fallback). Pass the
+// page's content class (e.g. "ad-content") so it sits exactly where the page will.
+export function PageSkeleton({ className, full = false }) {
+  return (
+    <div
+      className={className}
+      role="status"
+      aria-label="Loading"
+      aria-busy="true"
+      style={full ? { minHeight: '100vh', padding: 24, maxWidth: 1100, margin: '0 auto' } : undefined}
+    >
+      <Skeleton width={220} height={22} radius={8} style={{ display: 'block', marginBottom: 8 }} />
+      <Skeleton width={340} height={12} style={{ display: 'block', marginBottom: 20 }} />
+      <ListSkeleton rows={5} height={52} />
+    </div>
+  )
+}

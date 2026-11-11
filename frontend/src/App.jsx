@@ -4,6 +4,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import LandingPage from './pages/LandingPage'
 import LoginPage from './pages/LoginPage'
 import { getToken, getRole } from './api'
+import { PageSkeleton } from './components/Skeleton'
 
 // Each page group is its own download, so nobody waits for the code of a role they
 // don't have. The first two pages above are where most visits start.
@@ -47,7 +48,7 @@ function ProtectedRoute({ children, role }) {
 function App() {
   return (
     <Router>
-      <Suspense fallback={<div role="status" aria-label="Loading" style={{ minHeight: '100vh' }} />}>
+      <Suspense fallback={<PageSkeleton full />}>
         <Routes>
           <Route path="/"           element={<LandingPage />} />
           <Route path="/login"      element={<LoginPage />} />

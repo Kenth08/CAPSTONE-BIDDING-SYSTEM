@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 
 import { apiProjectAnchorDetail, apiProjectPacket, apiPublicAnchorDetail, apiPublicPacket } from '../api'
-import { sha256File } from '../blockchain/anchor'
+import { sha256File } from '../blockchain/fileHash'
 import { chainRows, evidenceBanner, legacyDocumentNote, outcomeChip, payloadNotStored, recordTime, txLink, versionLabel } from '../blockchain/recordView'
 import PacketCheck from './PacketCheck'
 import { PublicBackBar, PublicNav } from './PublicShell'

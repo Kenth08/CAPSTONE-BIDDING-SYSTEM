@@ -7,7 +7,7 @@ import { apiPublicProcurement, apiGetMySupplier, getToken, getRole } from '../ap
 import { PublicBackBar, PublicNav } from '../components/PublicShell'
 import PublicVerifier from '../components/PublicVerifier'
 import { normalizeProcurementCode } from '../utils/procurementCode'
-import { readLedgerTotal } from '../blockchain/anchor'
+import { isLedgerConfigured } from '../blockchain/contract'
 import Countdown from '../components/ui/Countdown'
 import DataTable from '../components/ui/DataTable'
 import KpiCard, { KpiRow } from '../components/ui/KpiCard'
@@ -42,7 +42,13 @@ export default function PublicResultsPage() {
       .then((d) => { if (alive) setData({ biddings: d.biddings || [], closed: d.closed || [], winners: d.winners || [] }) })
       .catch((e) => { if (alive) setError(e.message) })
       .finally(() => { if (alive) setLoading(false) })
-    readLedgerTotal().then((n) => { if (alive && Number.isFinite(n)) setOnChain(n) }).catch(() => {})
+    // ethers loads after the page is up, only for this on-chain count.
+    if (isLedgerConfigured()) {
+      import('../blockchain/anchor')
+        .then(({ readLedgerTotal }) => readLedgerTotal())
+        .then((n) => { if (alive && Number.isFinite(n)) setOnChain(n) })
+        .catch(() => {})
+    }
     return () => { alive = false }
   }, [])
 
