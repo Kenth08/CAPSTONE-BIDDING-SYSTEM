@@ -5,7 +5,7 @@ import {
   Link2, Loader2, Lock, PiggyBank, RefreshCw, RotateCw, Send, ShieldCheck, UserCheck, Users,
 } from 'lucide-react'
 import { apiAdminSummary, apiAnchorNextPending } from '../../api'
-import { signingBlocked } from '../../blockchain/anchor'
+import { signingBlocked } from '../../blockchain/signingState'
 import { runAnchor, isAnchorBusy, useAnchorActivity } from '../../blockchain/anchorStore'
 import { storedUser } from '../../components/shell/AppHeader'
 import KpiCard, { KpiRow } from '../../components/ui/KpiCard'

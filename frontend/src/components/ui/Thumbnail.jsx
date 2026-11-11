@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { useSecureSrc } from './SecureImg'
 import {
   Armchair, BookOpen, Bus, Dumbbell, FlaskConical, HardHat, Laptop, Package, Paintbrush,
@@ -29,7 +29,7 @@ export const categoryIcon = (category) => CATEGORY_ICON[category] || Package
  * fails to load. With `onOpen` it is a button that opens the lightbox.
  * `badge` shows e.g. "+2" for more images.
  */
-export default function Thumbnail({ src, alt, size = 48, category, onOpen, badge, className = '' }) {
+function Thumbnail({ src, alt, size = 48, category, onOpen, badge, className = '' }) {
   const [failed, setFailed] = useState(false)
   const Icon = categoryIcon(category)
   // Protected images are fetched with the login token (see SecureImg).
@@ -63,3 +63,7 @@ export default function Thumbnail({ src, alt, size = 48, category, onOpen, badge
     </span>
   )
 }
+
+// Memoized: rendered once per table row, so a parent re-render (typing in a
+// search box, a toast) doesn't re-render every badge when its props are the same.
+export default memo(Thumbnail)

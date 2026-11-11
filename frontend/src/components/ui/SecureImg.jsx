@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { apiFetchFileBlob, protectedFilePath } from '../../api'
 
 /**
@@ -36,9 +36,13 @@ export function useSecureSrc(src) {
 }
 
 /** Drop-in <img> that can display protected images. Same props as <img>. */
-export default function SecureImg({ src, onError, ...props }) {
+function SecureImg({ src, onError, ...props }) {
   const { src: shown, failed } = useSecureSrc(src)
   useEffect(() => { if (failed) onError?.() }, [failed, onError])
   if (!shown) return null
   return <img src={shown} onError={onError} {...props} />
 }
+
+// Memoized: rendered once per table row, so a parent re-render (typing in a
+// search box, a toast) doesn't re-render every badge when its props are the same.
+export default memo(SecureImg)

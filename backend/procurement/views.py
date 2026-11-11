@@ -2831,10 +2831,19 @@ class AwardViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
         if role == "supplier":
             # Scoped to their OWN award: a supplier must never see another
             # supplier's contract value or award documents.
-            return qs.filter(supplier__user=self.request.user)
-        if role in INTERNAL_ROLES:
-            return qs
-        return qs.none()
+            qs = qs.filter(supplier__user=self.request.user)
+        elif role not in INTERNAL_ROLES:
+            return qs.none()
+        # Optional ?project=<id> so a screen about one procurement (the bid
+        # evaluation page) doesn't download every award to find its own. Applied
+        # after the role scoping, so it can only narrow what the caller may see.
+        # Without the parameter the list is exactly what it was.
+        project_id = self.request.query_params.get("project")
+        if project_id is not None:
+            if not project_id.isdigit():
+                return qs.none()
+            qs = qs.filter(project_id=int(project_id))
+        return qs
 
     def _issue_document(self, request, award, key, django_file, *, generated):
         """Save one post-award document, stamp its issue date, notify the winner

@@ -655,7 +655,11 @@ export const apiDeleteBidImage = (bidId, imageId) =>
 // Admin/Head see every award; a supplier sees ONLY their own (scoped server-side
 // in AwardViewSet.get_queryset), which is how the winner reaches the Notice of
 // Award addressed to them.
-export const apiListAwards = () => apiFetch('/awards/')
+// `project` narrows the list to one procurement's award (server-side filter,
+// within the caller's normal scope). Older servers ignore it, so callers still
+// pick the award out by project.
+export const apiListAwards = ({ project } = {}) =>
+  apiFetch(project ? `/awards/?project=${encodeURIComponent(project)}` : '/awards/')
 // Generate one official post-award document from the award record itself. The
 // server builds the PDF ONCE and stores it — every later download serves those
 // exact bytes, which is what keeps the anchored hash reproducible.

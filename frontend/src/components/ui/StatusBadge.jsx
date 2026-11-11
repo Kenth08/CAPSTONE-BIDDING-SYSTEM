@@ -5,6 +5,7 @@
 //
 // Tones: neutral (gray), warning (amber), info (blue), success (green), danger (red).
 
+import { memo } from 'react'
 const MAPS = {
   project: {
     draft:          ['Draft', 'neutral'],
@@ -72,7 +73,7 @@ export function statusMeta(domain, status) {
  * <StatusBadge tone="danger" label="Deadline Passed" />
  * `label` / `tone` override the mapping when a screen needs custom wording.
  */
-export default function StatusBadge({ domain, status, label, tone, icon: Icon, dot = true, size, title, className = '' }) {
+function StatusBadge({ domain, status, label, tone, icon: Icon, dot = true, size, title, className = '' }) {
   const meta = statusMeta(domain, status)
   const t = tone || meta.tone
   return (
@@ -85,3 +86,7 @@ export default function StatusBadge({ domain, status, label, tone, icon: Icon, d
     </span>
   )
 }
+
+// Memoized: rendered once per table row, so a parent re-render (typing in a
+// search box, a toast) doesn't re-render every badge when its props are the same.
+export default memo(StatusBadge)
