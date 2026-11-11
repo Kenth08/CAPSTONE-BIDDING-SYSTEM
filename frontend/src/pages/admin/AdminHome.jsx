@@ -12,14 +12,14 @@ import KpiCard, { KpiRow } from '../../components/ui/KpiCard'
 import Countdown from '../../components/ui/Countdown'
 import ActivityFeed from '../../components/ui/ActivityFeed'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
-import { BarChart, Donut } from '../../components/ui/Charts'
+import { BarList, ColumnChart, DonutChart, SERIES, STATUS, monthLabel } from '../../components/charts/Charts'
 import EmptyState from '../../components/ui/EmptyState'
 import RelativeTime from '../../components/ui/RelativeTime'
 import { toast } from '../../components/ui/Toaster'
 import { ListSkeleton, Skeleton } from '../../components/Skeleton'
 import { amount, greeting, peso, pesoCompact, todayLong } from '../../utils/format'
 import { getCached, loadCached } from '../../utils/sessionCache'
-import { canPrepare, useBacStatus, ws } from '../../utils/workspace'
+import { canPrepare, linkForRole, useBacStatus, ws } from '../../utils/workspace'
 
 const ATTN_ICON = {
   evaluate: Gavel, revision: FileWarning, verify: UserCheck, category: Users,
@@ -42,7 +42,7 @@ export function AttentionList({ items, loading, limit = ATTN_LIMIT, emptyTitle =
           const Icon = it.icon || ATTN_ICON[it.kind] || AlertTriangle
           return (
             <li key={`${it.kind}-${i}`}>
-              <Link to={it.link} className="rf-attn-item">
+              <Link to={linkForRole(it.link)} className="rf-attn-item">
                 <span className={`rf-attn-icon rf-tone-${it.tone}`} aria-hidden="true"><Icon size={16} /></span>
                 <span style={{ minWidth: 0 }}>
                   <span className="rf-attn-title">{it.title}</span>
@@ -68,21 +68,29 @@ export function AttentionList({ items, loading, limit = ATTN_LIMIT, emptyTitle =
   )
 }
 
+// Procurements per stage, in lifecycle order. Each bar opens that stage's list.
 function Pipeline({ stages, loading }) {
   const navigate = useNavigate()
-  if (loading) return <div className="rf-pipeline">{Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} height={74} radius={8} />)}</div>
-  const max = Math.max(1, ...stages.map((s) => s.count))
+  if (loading) return <div className="rf-card-body"><ListSkeleton rows={6} height={22} /></div>
   return (
-    <div className="rf-pipeline" role="list" aria-label="Projects by stage">
-      {stages.map((s) => (
-        <button key={s.key} type="button" role="listitem" className={`rf-pipe-stage${s.count === 0 ? ' is-empty' : ''}`}
-          onClick={() => navigate(`${ws('')}/projects?stage=${s.key}`)}
-          aria-label={`${s.label}: ${s.count} project${s.count === 1 ? '' : 's'}. Show them`}>
-          <span className="rf-pipe-count">{s.count}</span>
-          <span className="rf-pipe-label">{s.label}</span>
-          <span className="rf-pipe-bar" aria-hidden="true"><span style={{ width: `${(s.count / max) * 100}%` }} /></span>
-        </button>
-      ))}
+    <div className="ch-card-body">
+      <BarList ariaLabel="Procurements by stage" color={SERIES[0]}
+        data={stages.map((s) => ({
+          label: s.label, value: s.count, display: `${s.count}`,
+          onClick: () => navigate(`${ws('')}/projects?stage=${s.key}`),
+        }))} />
+    </div>
+  )
+}
+
+// Six months of activity: procurements created and awards made.
+function Trend({ trend, loading }) {
+  if (loading) return <div className="rf-card-body"><Skeleton height={180} radius={8} /></div>
+  return (
+    <div className="ch-card-body">
+      <ColumnChart ariaLabel="Procurements created and awarded per month"
+        series={[{ key: 'created', label: 'Created' }, { key: 'awarded', label: 'Awarded' }]}
+        data={(trend || []).map((m) => ({ label: monthLabel(m.month), values: { created: m.created, awarded: m.awarded } }))} />
     </div>
   )
 }
@@ -199,13 +207,13 @@ function ChainHealth({ chain, loading, onAnchored }) {
   }
   return (
     <>
-      <Donut title="Blockchain anchoring" centerLabel="STEPS"
-        segments={[
-          { label: 'Confirmed on Sepolia by the server', value: verified, tone: 'info' },
-          { label: 'Transaction reported, not yet checked', value: unchecked, tone: 'neutral' },
-          { label: 'Reported tx does not match', value: mismatch, tone: 'danger' },
+      <DonutChart ariaLabel="Blockchain anchoring" centerLabel="STEPS"
+        data={[
+          { label: 'Confirmed on Sepolia by the server', value: verified, color: STATUS.info, tone: 'info' },
+          { label: 'Transaction reported, not yet checked', value: unchecked, color: STATUS.neutral, tone: 'neutral' },
+          { label: 'Reported tx does not match', value: mismatch, color: STATUS.danger, tone: 'danger' },
           // `pending` includes mismatches (they need signing again) — count them once.
-          { label: 'Waiting for signature', value: Math.max(pending - mismatch, 0), tone: 'warning' },
+          { label: 'Waiting for signature', value: Math.max(pending - mismatch, 0), color: STATUS.warning, tone: 'warning' },
         ].filter((s) => s.value > 0 || s.tone === 'info' || s.tone === 'warning')} />
       {incomplete > 0 && (
         <p className="rf-muted" role="note" style={{ fontSize: 'var(--fs-caption)' }}>
@@ -404,12 +412,20 @@ export default function AdminHome() {
         </section>
       </div>
 
-      <section className="rf-card" aria-labelledby="pipe-h">
-        <div className="rf-card-head">
-          <div><h3 id="pipe-h">Procurement pipeline</h3><p>Select a stage to see its procurements</p></div>
-        </div>
-        <Pipeline stages={data?.pipeline || []} loading={loading} />
-      </section>
+      <div className="rf-grid-2-even">
+        <section className="rf-card" aria-labelledby="pipe-h">
+          <div className="rf-card-head">
+            <div><h3 id="pipe-h">Procurement pipeline</h3><p>Procurements in each stage · select one to open it</p></div>
+          </div>
+          <Pipeline stages={data?.pipeline || []} loading={loading} />
+        </section>
+        <section className="rf-card" aria-labelledby="trend-h">
+          <div className="rf-card-head">
+            <div><h3 id="trend-h">Last six months</h3><p>Procurements created and awarded per month</p></div>
+          </div>
+          <Trend trend={data?.trend} loading={loading} />
+        </section>
+      </div>
 
       <div className="rf-grid-2-even">
         <section className="rf-card" aria-labelledby="sav-h">
@@ -430,22 +446,15 @@ export default function AdminHome() {
                     {pesoCompact(savings.total_saved)}{savings.saved_pct != null && ` · ${savings.saved_pct}%`}
                   </dd></div>
                 </dl>
-                <ul className="rf-list">
-                  {savings.rows.map((r) => (
-                    <li key={r.code} className="rf-list-row" style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}>
-                      <span style={{ minWidth: 0 }}>
-                        <span className="rf-list-title" style={{ display: 'block' }}>{r.name}</span>
-                        <span className="rf-list-sub"><span className="rf-code">{r.code}</span>{r.supplier}</span>
-                      </span>
-                      <span className="rf-list-side">
-                        <span className="rf-amount">{peso(r.amount)} <span className="rf-muted" style={{ fontWeight: 400 }}>of {peso(r.abc)}</span></span>
-                        <span className={amount(r.saved) >= 0 ? 'rf-diff is-under' : 'rf-diff is-over'}>
-                          {amount(r.saved) >= 0 ? 'Saved' : 'Over'} {peso(Math.abs(amount(r.saved)))}{r.saved_pct != null && ` (${Math.abs(r.saved_pct)}%)`}
-                        </span>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+                {/* Each bar is the awarded amount; the track behind it is that procurement's ABC. */}
+                <div className="ch-card-body" style={{ paddingTop: 4 }}>
+                  <BarList ariaLabel="Awarded amount against each ABC" color={SERIES[0]}
+                    data={savings.rows.map((r) => ({
+                      label: r.name, sub: `${r.code} · ${r.supplier}`,
+                      value: amount(r.amount), max: amount(r.abc) || 1,
+                      display: `${pesoCompact(r.amount)} of ${pesoCompact(r.abc)}${r.saved_pct != null ? ` · ${amount(r.saved) >= 0 ? 'saved' : 'over'} ${Math.abs(r.saved_pct)}%` : ''}`,
+                    }))} />
+                </div>
               </>
             )}
         </section>
@@ -456,7 +465,7 @@ export default function AdminHome() {
           </div>
           {loading ? <div className="rf-card-body"><ListSkeleton rows={4} height={18} /></div>
             : cats.length === 0 ? <EmptyState compact icon={FolderOpen} title="No procurements yet" description="Categories appear as procurements are created." />
-            : <BarChart title="Procurements per category" data={cats} />}
+            : <div className="ch-card-body"><BarList ariaLabel="Procurements per category" color={SERIES[0]} data={cats} /></div>}
         </section>
       </div>
 

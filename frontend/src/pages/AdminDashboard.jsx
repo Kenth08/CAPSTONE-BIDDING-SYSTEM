@@ -53,6 +53,8 @@ import BacCommitteePage from './admin/BacCommitteePage'
 import BacRecordsPage from './bac/BacRecordsPage'
 import BacMeetingsPage from './staff/BacMeetingsPage'
 import InfoTip from '../components/ui/InfoTip'
+import LocationPicker from '../components/ui/LocationPicker'
+import MoneyInput from '../components/ui/MoneyInput'
 import MoreInfo from '../components/ui/MoreInfo'
 import Toaster from '../components/ui/Toaster'
 import Thumbnail from '../components/ui/Thumbnail'
@@ -421,6 +423,9 @@ function PublishButton({ project, onPublished }) {
 
 const PROCUREMENT_TYPES = ['Goods', 'Services', 'Infrastructure', 'Consulting Services']
 // Adds or removes a number from a sorted list (delivery / warranty choices).
+// Value of the "Others (add a new category)" option in the category dropdown.
+const NEW_CATEGORY = '__new__'
+
 const toggleNumber = (list, n) => (list.includes(n) ? list.filter(x => x !== n) : [...list, n].sort((a, b) => a - b))
 
 const EMPTY_PROJECT = {
@@ -740,6 +745,16 @@ function PlanningPage() {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const categories = useCategories()
   const [addingCategory, setAddingCategory] = useState(false)
+  // The category is chosen from a dropdown of the shared list. Its last option,
+  // "Others", is how a new category is added: a box for the name appears, and
+  // the name is saved to the list on submit (saveCategory).
+  const [catChoice, setCatChoice] = useState('')        // a listed category, NEW_CATEGORY or ''
+  const [newCategory, setNewCategory] = useState('')
+  const listedCategories = categories.filter(c => c !== OTHERS_CATEGORY)
+  const chooseCategory = (v) => {
+    setCatChoice(v)
+    setForm(f => ({ ...f, category: v === NEW_CATEGORY ? newCategory : v, category_other: '' }))
+  }
   const typedCategory = normalizeCategory(form.category)
   const knownCategory = findCategory(categories, typedCategory)
   const isNewCategory = Boolean(typedCategory) && !knownCategory
@@ -783,12 +798,14 @@ function PlanningPage() {
     set('reference_image', file)
   }
 
-  const resetForm = () => { setForm(EMPTY_PROJECT); setFiles({}); setShowForm(false) }
+  const resetForm = () => { setForm(EMPTY_PROJECT); setFiles({}); setShowForm(false); setCatChoice(''); setNewCategory('') }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     const missingDocs = REQUIRED_PROCUREMENT_DOCS.filter(d => !files[d.key])
-    if (!typedCategory) { setSubmitErr('Enter or select a procurement category.'); return }
+    if (!typedCategory) {
+      setSubmitErr(catChoice === NEW_CATEGORY ? 'Type the name of the new category.' : 'Choose a procurement category.'); return
+    }
     if (knownCategory === OTHERS_CATEGORY && !form.category_other.trim()) {
       setSubmitErr('Specify what is being procured when the category is Others.'); return
     }
@@ -850,27 +867,32 @@ function PlanningPage() {
                 <input value={form.name} onChange={e => set('name', e.target.value)} required />
               </div>
               <div className="ad-form-group">
-                <label>Procurement Category<span className="ui-req" aria-hidden="true">*</span></label>
-                <div className="ad-category-input">
-                  <input
-                    value={form.category}
-                    onChange={e => set('category', e.target.value)}
-                    onBlur={() => { if (knownCategory && knownCategory !== form.category) set('category', knownCategory) }}
-                    list="ad-category-options"
-                    placeholder="Type or pick a category…"
-                    maxLength={120}
-                    autoComplete="off"
-                    required
-                  />
-                  {isNewCategory && (
-                    <button type="button" className="ad-btn-primary-sm" onClick={saveCategory} disabled={addingCategory}>
-                      <Plus size={14} /> {addingCategory ? 'Adding…' : 'Add'}
-                    </button>
-                  )}
-                </div>
-                <datalist id="ad-category-options">
-                  {categories.map(c => <option key={c} value={c} />)}
-                </datalist>
+                <label htmlFor="ad-category">Procurement Category<span className="ui-req" aria-hidden="true">*</span></label>
+                <select id="ad-category" value={catChoice} onChange={e => chooseCategory(e.target.value)} required>
+                  <option value="" disabled>Choose a category…</option>
+                  {listedCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                  <option value={NEW_CATEGORY}>Others (add a new category)</option>
+                </select>
+                {catChoice === NEW_CATEGORY && (
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label htmlFor="ad-category-new">New category name<span className="ui-req" aria-hidden="true">*</span></label>
+                    <div className="ad-category-input">
+                      {/* autoFocus: after choosing Others the focus would stay on the
+                          dropdown, and typing there jumps between options instead. */}
+                      <input id="ad-category-new" value={newCategory} maxLength={120} autoComplete="off" required autoFocus
+                        placeholder="e.g. Laboratory Equipment"
+                        onChange={e => { setNewCategory(e.target.value); set('category', e.target.value) }} />
+                      {isNewCategory && (
+                        <button type="button" className="ad-btn-primary-sm" onClick={saveCategory} disabled={addingCategory}>
+                          <Plus size={14} /> {addingCategory ? 'Adding…' : 'Add'}
+                        </button>
+                      )}
+                    </div>
+                    {knownCategory && knownCategory !== OTHERS_CATEGORY && (
+                      <span className="ad-muted ad-small">"{knownCategory}" is already in the list, so it will be used.</span>
+                    )}
+                  </div>
+                )}
                 {knownCategory === OTHERS_CATEGORY && (
                   <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <label htmlFor="ad-category-other">Please specify<span className="ui-req" aria-hidden="true">*</span></label>
@@ -895,12 +917,12 @@ function PlanningPage() {
                 </select>
               </div>
               <div className="ad-form-group">
-                <label>Approved Budget (ABC)<span className="ui-req" aria-hidden="true">*</span></label>
-                <input value={form.budget} onChange={e => set('budget', e.target.value)} placeholder="e.g. ₱50,000" required />
+                <label htmlFor="plan-abc">Approved Budget (ABC)<span className="ui-req" aria-hidden="true">*</span></label>
+                <MoneyInput id="plan-abc" value={form.budget} onChange={v => set('budget', v)} required />
               </div>
               <div className="ad-form-group">
-                <label>Delivery Location<span className="ui-req" aria-hidden="true">*</span></label>
-                <input value={form.delivery_location} onChange={e => set('delivery_location', e.target.value)} placeholder="e.g. Main Campus" required />
+                <label htmlFor="plan-location">Delivery Location<span className="ui-req" aria-hidden="true">*</span></label>
+                <LocationPicker id="plan-location" value={form.delivery_location} onChange={v => set('delivery_location', v)} />
               </div>
               <div className="ad-form-group">
                 <label>Bidding Period<span className="ui-req" aria-hidden="true">*</span></label>
@@ -1717,13 +1739,30 @@ const initFlagsFrom = (data) => {
   return initial
 }
 
+// Supplier review starts from "everything checked": a document is flagged only
+// if it is already waiting for a revision, or a required file is missing or
+// no longer in storage (it can't be accepted, so it is always in the request).
+// The reviewer unticks what has a problem; the unticked ones are sent back.
+const isMissingFile = (d) => !d.url || d.present === false
+const initSupplierFlags = (data) => {
+  const initial = initFlagsFrom(data)
+  const undecided = !['verified', 'rejected'].includes(data?.qualification_status)
+  ;(data?.documents || []).forEach(d => {
+    if (undecided && d.required && isMissingFile(d) && !initial[d.key]) {
+      initial[d.key] = { checked: true, note: d.url ? 'The file is no longer in storage. Please upload it again.' : 'Not uploaded yet.' }
+    }
+  })
+  return initial
+}
+
 function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
   const cached = getCached(supplierDetailCache(supplierId))
   const [supplier, setSupplier] = useState(cached || null)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState('')
   // Seed the editable fields from cache so a reopened modal is fully populated.
-  const [flags, setFlags] = useState(() => initFlagsFrom(cached))   // { key: { checked, note } }
+  // flags[key].checked = flagged for revision (shown UNticked: a tick means "checked, OK").
+  const [flags, setFlags] = useState(() => initSupplierFlags(cached))   // { key: { checked, note } }
   const [note, setNote] = useState(cached?.admin_notes || '')        // overall message
   const [confirm, setConfirm] = useState(null) // { title, message, tone, onConfirm }
   const [busy, setBusy] = useState(false)
@@ -1739,7 +1778,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
         // admin's in-progress edits when a background refresh resolves.
         if (!hadCache) {
           setNote(data.admin_notes || '')
-          setFlags(initFlagsFrom(data))
+          setFlags(initSupplierFlags(data))
         }
       })
       // A failed background refresh keeps the cached profile on screen.
@@ -1786,7 +1825,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
   const handleRequestRevision = () => {
     const docs = flaggedDocs()
     if (Object.keys(docs).length === 0) {
-      setError('Flag at least one document for revision (check the box next to it).')
+      setError('Untick at least one document that needs fixing. Every ticked document is accepted as it is.')
       return
     }
     setConfirm({
@@ -1912,7 +1951,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                 <div className="ad-docs-hint">
                   <Info size={15} />
                   <span>
-                    <strong>Tick</strong> any document with a problem, then click <strong>Request Revision</strong>.
+                    Every uploaded document starts <strong>ticked</strong>. Open each one with <strong>Preview</strong>, <strong>untick</strong> any with a problem and say what to fix, then click <strong>Request Revision</strong>. Missing required files are included automatically.
                   </span>
                 </div>
               )}
@@ -1933,11 +1972,12 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                     <div className={`ad-doc-row${rowCls}`} key={d.key}>
                       <div className="ad-doc-main">
                         {canFlag(d) && (
-                          <label className="ad-doc-check">
+                          <label className="ad-doc-check" title={isMissingFile(d) ? 'No file to accept' : checked ? 'Tick when this document is acceptable' : 'Untick if this document has a problem'}>
                             <input
                               type="checkbox"
-                              checked={checked}
-                              disabled={!d.url}
+                              checked={!checked && !isMissingFile(d)}
+                              disabled={isMissingFile(d)}
+                              aria-label={`${d.label} is acceptable`}
                               onChange={() => toggleFlag(d.key)}
                             />
                           </label>
@@ -1969,7 +2009,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                       {rs === 'renewed' && !checked && (
                         <div className="ad-doc-prevnote">
                           New copy uploaded by the supplier{d.previous_expiry ? ` to replace one that expired ${fmtDate(d.previous_expiry)}` : ''}.
-                          Open it, then Accept, or tick it and Flag it with a note.
+                          Open it, then Accept, or untick it and Flag it with a note.
                         </div>
                       )}
                       {/* Remind the admin why this doc was sent back, now that it's been re-uploaded. */}
@@ -2025,8 +2065,9 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                       disabled state just explains why before the Admin tries. */}
                   <button
                     className="ad-btn-approve"
-                    disabled={busy || !supplier.email_verified}
-                    title={supplier.email_verified ? undefined : 'The supplier must verify their email address before approval.'}
+                    disabled={busy || !supplier.email_verified || pendingFlagCount > 0}
+                    title={!supplier.email_verified ? 'The supplier must verify their email address before approval.'
+                      : pendingFlagCount > 0 ? `${pendingFlagCount} document(s) are unticked. Request a revision, or tick them if they are acceptable.` : undefined}
                     onClick={handleApprove}
                   >
                     <Check size={14} /> {busy ? 'Working…' : 'Approve'}

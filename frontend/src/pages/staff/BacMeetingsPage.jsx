@@ -4,10 +4,12 @@
 // it to the Head. Staff never vote and never choose the bid: the resolution
 // always names the ranking's Lowest Calculated Responsive Bid.
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Gavel, Send, Trash2 } from 'lucide-react'
+import { ArrowLeft, ClipboardPen, Gavel, Send, Trash2 } from 'lucide-react'
 import {
   apiBacCreateResolution, apiBacDiscardResolution, apiBacOpenVoting, apiBacProject, apiBacProjects,
+  apiBacRecordVote, apiListBacMemberships,
 } from '../../api'
+import { storedUser } from '../../components/shell/AppHeader'
 import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
 import StatusBadge from '../../components/ui/StatusBadge'
@@ -30,6 +32,84 @@ function stageOf(p) {
   if (p.resolution?.status === 'draft') return { tone: 'neutral', label: 'Draft resolution' }
   if (p.post_qualified) return { tone: 'info', label: 'Post-qualification recorded' }
   return { tone: 'neutral', label: `Evaluating (${p.evaluations_done} of ${p.evaluations_expected})` }
+}
+
+// Staff enter a vote a member gave at the in-person meeting, from the signed
+// ballot or the minutes. The record keeps the member's name, says Staff
+// recorded it, and the member is notified (bac_views.ResolutionViewSet.record_vote).
+function RecordVoteForm({ resolution, onRecorded }) {
+  const [members, setMembers] = useState(null)
+  const [form, setForm] = useState({ member: '', choice: 'approve', comment: '' })
+  const [busy, setBusy] = useState(false)
+  const [confirm, setConfirm] = useState(false)
+  useEffect(() => { apiListBacMemberships().then(setMembers).catch(() => setMembers([])) }, [])
+  const voted = new Set(resolution.votes.map(v => v.member))
+  const pending = (members || []).filter(m => m.active && !voted.has(m.id))
+  const who = pending.find(m => String(m.id) === String(form.member))
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
+
+  const send = async () => {
+    setBusy(true)
+    try {
+      const res = await apiBacRecordVote(resolution.id, { ...form, member: Number(form.member) })
+      toast.success(res.status === 'adopted'
+        ? `Vote recorded. ${res.number} is adopted and sent to the Head.` : `${who?.name}'s vote recorded.`)
+      setForm({ member: '', choice: 'approve', comment: '' })
+      onRecorded()
+    } catch (err) {
+      toast.error(err.message || 'Could not record the vote.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (members !== null && !pending.length) return null
+  return (
+    <form className="bac-card-body" style={{ borderTop: '1px solid var(--border)' }}
+      onSubmit={e => { e.preventDefault(); setConfirm(true) }} aria-labelledby={`rv-h-${resolution.id}`}>
+      <h4 id={`rv-h-${resolution.id}`} style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <ClipboardPen size={15} aria-hidden="true" /> Record an in-person vote
+      </h4>
+      <p className="bac-hint" style={{ margin: 0 }}>
+        For a member who voted at the meeting, from their signed ballot or the minutes. Members can still vote from their own accounts.
+      </p>
+      <div className="bac-form">
+        <div className="bac-field">
+          <label htmlFor={`rv-m-${resolution.id}`}>Member</label>
+          <select id={`rv-m-${resolution.id}`} value={form.member} onChange={set('member')} required disabled={members === null}>
+            <option value="">{members === null ? 'Loading…' : 'Choose a member'}</option>
+            {pending.map(m => <option key={m.id} value={m.id}>{m.name} ({m.position_label})</option>)}
+          </select>
+        </div>
+        <div className="bac-field">
+          <label htmlFor={`rv-c-${resolution.id}`}>Vote</label>
+          <select id={`rv-c-${resolution.id}`} value={form.choice} onChange={set('choice')}>
+            <option value="approve">Approve</option>
+            <option value="disapprove">Disapprove</option>
+            <option value="abstain">Abstain</option>
+          </select>
+        </div>
+        <div className="bac-field full">
+          <label htmlFor={`rv-r-${resolution.id}`}>Reason the member gave</label>
+          <textarea id={`rv-r-${resolution.id}`} value={form.comment} onChange={set('comment')} required minLength={10}
+            placeholder="As written on the ballot or stated in the minutes." />
+        </div>
+      </div>
+      <div className="bac-actions">
+        <button type="submit" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy || !form.member || form.comment.trim().length < 10}>
+          {busy ? 'Saving…' : 'Record vote'}
+        </button>
+      </div>
+      {confirm && who && (
+        <ConfirmDialog title={`Record ${who.name}'s vote: ${form.choice}?`} confirmLabel="Record vote" busy={busy}
+          tone={form.choice === 'disapprove' ? 'danger' : 'primary'}
+          points={["The vote is kept permanently under the member's name, marked as given in person and recorded by you.",
+            `${who.name} is notified and can add a correction note if it is wrong.`,
+            "A recorded vote can't be edited or deleted."]}
+          onCancel={() => setConfirm(false)} onConfirm={() => { setConfirm(false); send() }} />
+      )}
+    </form>
+  )
 }
 
 function ProjectMeeting({ projectId, onBack }) {
@@ -161,7 +241,7 @@ function ProjectMeeting({ projectId, onBack }) {
           <div className="bac-card-body">
             <ResolutionFacts resolution={r} />
             {r.status !== 'draft' && <VoteCounts counts={r.counts} majority={3} />}
-            {r.status !== 'draft' && <VoteList votes={r.votes} />}
+            {r.status !== 'draft' && <VoteList votes={r.votes} user={storedUser()} onChanged={load} />}
             {r.status === 'draft' && (
               <div className="bac-actions">
                 <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy} onClick={() => setConfirm('discard')}>
@@ -173,6 +253,7 @@ function ProjectMeeting({ projectId, onBack }) {
               </div>
             )}
           </div>
+          {r.status === 'voting' && r.meeting_mode === 'in_person' && <RecordVoteForm resolution={r} onRecorded={load} />}
         </section>
       ))}
 

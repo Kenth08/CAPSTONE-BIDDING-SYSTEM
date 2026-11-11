@@ -1,8 +1,10 @@
 // Pieces shared by the BAC Committee, Staff, Head and Admin screens.
 import { useState } from 'react'
-import { CheckCircle2, FileText, Loader2, ShieldAlert, ShieldCheck } from 'lucide-react'
-import { apiFetchFileBlob } from '../../api'
+import { CheckCircle2, FileText, Loader2, MessageSquarePlus, ShieldAlert, ShieldCheck } from 'lucide-react'
+import { apiBacAddVoteNote, apiFetchFileBlob } from '../../api'
 import StatusBadge from '../ui/StatusBadge'
+import ConfirmDialog from '../ui/ConfirmDialog'
+import { toast } from '../ui/Toaster'
 import { fmtDate, fmtDateTime, peso } from '../../utils/format'
 import PreviewButton from '../ui/FilePreview'
 import '../../style/bac.css'
@@ -34,9 +36,68 @@ export function VoteCounts({ counts, majority = 3 }) {
   )
 }
 
+// Who may add a correction note to a vote: the member who cast it (even
+// after leaving the committee) or Procurement Staff. Mirrors VoteNoteView.
+export function canAddVoteNote(vote, user) {
+  if (!user?.id) return false
+  return user.role === 'staff' || (user.role === 'bac' && vote.member_user === user.id)
+}
+
+function VoteNoteForm({ vote, onAdded }) {
+  const [open, setOpen] = useState(false)
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [confirm, setConfirm] = useState(false)
+  if (!open) {
+    return (
+      <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" style={{ alignSelf: 'flex-start' }}
+        onClick={() => setOpen(true)}>
+        <MessageSquarePlus size={13} aria-hidden="true" /> Add correction note
+      </button>
+    )
+  }
+  const send = async () => {
+    setBusy(true)
+    try {
+      await apiBacAddVoteNote(vote.id, note.trim())
+      toast.success('Correction note added.')
+      setOpen(false)
+      setNote('')
+      onAdded?.()
+    } catch (err) {
+      toast.error(err.message || 'Could not add the note.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <form className="bac-field" onSubmit={e => { e.preventDefault(); setConfirm(true) }}>
+      <label htmlFor={`vn-${vote.id}`}>Correction note</label>
+      <textarea id={`vn-${vote.id}`} value={note} onChange={e => setNote(e.target.value)} required minLength={10}
+        maxLength={1000} placeholder="e.g. My comment cites the wrong date: the site visit was on 12 November." />
+      <span className="bac-hint">The vote and the count stay as they are. The note is shown beside the vote, permanently.</span>
+      <div className="bac-actions">
+        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
+        <button type="submit" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy || note.trim().length < 10}>
+          {busy ? 'Saving…' : 'Add note'}
+        </button>
+      </div>
+      {confirm && (
+        <ConfirmDialog title={`Add a correction note to ${vote.voter_name}'s vote?`} confirmLabel="Add note" busy={busy}
+          points={['The note is kept permanently and can\'t be edited or deleted.',
+            `The vote stays ${vote.choice_label}. If the vote itself is wrong, the Head can return the resolution so the committee votes again.`]}
+          onCancel={() => setConfirm(false)} onConfirm={() => { setConfirm(false); send() }} />
+      )}
+    </form>
+  )
+}
+
 // Every member's vote with their reason, in the order cast. A member who has
 // since left the committee is marked; their vote and comment never change.
-export function VoteList({ votes }) {
+// A vote Staff entered from an in-person meeting says so, and correction notes
+// are listed under the vote. Pass `user` (storedUser()) to offer the note form
+// to whoever may add one, and `onChanged` to reload after a note is added.
+export function VoteList({ votes, user, onChanged }) {
   if (!votes?.length) return <p className="bac-hint">No votes yet.</p>
   return (
     <div className="bac-votes">
@@ -51,7 +112,22 @@ export function VoteList({ votes }) {
               label={v.choice_label} />
           </div>
           <p className="bac-vote-comment">{v.comment}</p>
-          <span className="bac-vote-meta">Cast {fmtDateTime(v.cast_at)}</span>
+          <span className="bac-vote-meta">
+            {v.source === 'in_person'
+              ? `Given in person · recorded by ${v.recorded_by_name || 'Procurement Staff'} ${fmtDateTime(v.cast_at)}`
+              : `Cast ${fmtDateTime(v.cast_at)}`}
+          </span>
+          {v.notes?.length > 0 && (
+            <ul className="bac-vote-notes" aria-label={`Correction notes on ${v.voter_name}'s vote`}>
+              {v.notes.map(n => (
+                <li key={n.id}>
+                  <span className="bac-vote-meta">Correction note · {n.author_name} ({n.author_role}) · {fmtDateTime(n.created_at)}</span>
+                  <p className="bac-vote-comment">{n.note}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+          {user && canAddVoteNote(v, user) && <VoteNoteForm vote={v} onAdded={onChanged} />}
         </article>
       ))}
     </div>

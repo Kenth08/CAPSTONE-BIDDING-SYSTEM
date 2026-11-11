@@ -11,6 +11,7 @@ import {
   ResolutionFacts, ResolutionFileCheck, ResolutionStatus, VoteCounts, VoteList,
 } from '../../components/bac/BacParts'
 import { fmtDate } from '../../utils/format'
+import { storedUser } from '../../components/shell/AppHeader'
 
 export default function BacRecordsPage({ className = '' }) {
   const [rows, setRows] = useState([])
@@ -21,6 +22,8 @@ export default function BacRecordsPage({ className = '' }) {
   const [year, setYear] = useState('')
   const [member, setMember] = useState('')
   const [openId, setOpenId] = useState(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const user = storedUser()
 
   useEffect(() => {
     apiListBacMemberships().then(setMembers).catch(() => {})
@@ -36,7 +39,7 @@ export default function BacRecordsPage({ className = '' }) {
         .finally(() => { if (alive) setLoading(false) })
     }, 250)
     return () => { alive = false; clearTimeout(timer) }
-  }, [q, year, member])
+  }, [q, year, member, reloadKey])
 
   const years = useMemo(() => {
     const now = new Date().getFullYear()
@@ -66,11 +69,11 @@ export default function BacRecordsPage({ className = '' }) {
           <div className="bac-card-head">
             <div>
               <h3 id="votes-title">Votes and comments</h3>
-              <p>Kept permanently. A vote can&apos;t be changed after it is cast.</p>
+              <p>Kept permanently. A vote can&apos;t be changed after it is cast; the member or Staff can add a correction note beside it.</p>
             </div>
             <VoteCounts counts={open.counts} />
           </div>
-          <div className="bac-card-body"><VoteList votes={open.votes} /></div>
+          <div className="bac-card-body"><VoteList votes={open.votes} user={user} onChanged={() => setReloadKey(k => k + 1)} /></div>
         </section>
       </div>
     )

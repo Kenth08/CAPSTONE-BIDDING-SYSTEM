@@ -36,6 +36,7 @@ import { ANCHOR_STATES, anchorState } from '../blockchain/anchorState'
 import { daysSince, greeting, peso, todayLong } from '../utils/format'
 import SecureImg from '../components/ui/SecureImg'
 import AwardApprovalsPage from './head/AwardApprovalsPage'
+import { BarList, ColumnChart, SERIES, monthLabel } from '../components/charts/Charts'
 import BacRecordsPage from './bac/BacRecordsPage'
 import { useBacStatus } from '../utils/workspace'
 import PreviewButton from '../components/ui/FilePreview'
@@ -395,13 +396,17 @@ function HeadHome() {
     .sort((a, b) => String(metaById[a.id]?.waiting_since || '').localeCompare(String(metaById[b.id]?.waiting_since || '')))
   const k = summary?.kpis || {}
   const oldest = daysSince(summary?.queue?.[0]?.waiting_since)
+  // With the BAC workflow on, Procurement Staff publish and fix projects, and
+  // the Head also approves awards; without it the Admin does both jobs.
+  const bacOn = !!summary?.workflow_enabled
+  const preparer = bacOn ? 'Procurement Staff' : 'the Admin'
 
   const run = async () => {
     const { project } = decide
     setBusy(true)
     try {
       await storeApprove(project.id)
-      toast.success(`${project.code} approved — sent to the Admin to publish for bidding.`)
+      toast.success(`${project.code} approved — sent to ${preparer} to publish for bidding.`)
       setDecide(null)
       loadSummary()
     } catch (e) {
@@ -436,12 +441,43 @@ function HeadHome() {
           tone={!summary ? 'neutral' : k.waiting ? (oldest >= WAIT_WARN_DAYS ? 'warning' : 'info') : 'success'} value={k.waiting ?? '—'}
           context={!summary ? 'Unavailable' : k.waiting ? `Oldest waiting ${oldest === 0 ? 'since today' : `${oldest} day${oldest === 1 ? '' : 's'}`}` : 'All caught up'} />
         <KpiCard label="Approved this month" icon={CheckCircle2} tone="success" loading={sumLoading}
-          value={k.approved_this_month ?? '—'} to="/head/approved" context="Sent to the Admin to publish" />
+          value={k.approved_this_month ?? '—'} to="/head/approved" context={`Sent to ${preparer} to publish`} />
         <KpiCard label="Returned for revision" icon={AlertTriangle} tone={k.returned_for_revision ? 'warning' : 'neutral'}
-          loading={sumLoading} value={k.returned_for_revision ?? '—'} to="/head/approved" context="Waiting on the Admin to fix" />
-        <KpiCard label="Rejected" icon={XCircle} tone="neutral" loading={sumLoading}
-          value={k.rejected ?? '—'} to="/head/approved" context="All time" />
+          loading={sumLoading} value={k.returned_for_revision ?? '—'} to="/head/approved" context={`Waiting on ${preparer} to fix`} />
+        {bacOn ? (
+          <KpiCard label="Awards to approve" icon={Gavel} tone={k.awards_waiting ? 'warning' : 'neutral'} loading={sumLoading}
+            value={k.awards_waiting ?? '—'} to="/head/awards" context="Adopted BAC resolutions" />
+        ) : (
+          <KpiCard label="Rejected" icon={XCircle} tone="neutral" loading={sumLoading}
+            value={k.rejected ?? '—'} to="/head/approved" context="Older projects only" />
+        )}
       </KpiRow>
+
+      <div className="ch-grid-2">
+        <section className="rf-card" aria-labelledby="hd-trend-h">
+          <div className="rf-card-head">
+            <div><h3 id="hd-trend-h">My decisions</h3><p>Approved and returned for revision, last six months</p></div>
+          </div>
+          <div className="ch-card-body">
+            {sumLoading ? <Skeleton height={180} radius={8} /> : (
+              <ColumnChart mode="stacked" ariaLabel="Head decisions per month"
+                series={[{ key: 'approved', label: 'Approved' }, { key: 'revision', label: 'Returned for revision' }]}
+                data={(summary?.trend || []).map(m => ({ label: monthLabel(m.month), values: { approved: m.approved, revision: m.revision } }))} />
+            )}
+          </div>
+        </section>
+        <section className="rf-card" aria-labelledby="hd-mix-h">
+          <div className="rf-card-head">
+            <div><h3 id="hd-mix-h">Where procurements are</h3><p>Every procurement by its current stage</p></div>
+          </div>
+          <div className="ch-card-body">
+            {sumLoading ? <ListSkeleton rows={5} height={20} /> : (
+              <BarList ariaLabel="Procurements by stage" color={SERIES[0]}
+                data={(summary?.status_mix || []).map(s => ({ label: s.label, value: s.count }))} />
+            )}
+          </div>
+        </section>
+      </div>
 
       <section className="rf-card" aria-labelledby="queue-h">
         <div className="rf-card-head">

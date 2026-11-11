@@ -5,11 +5,11 @@
 import { useEffect, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, ClipboardCheck, FileText, Gavel, Landmark, LayoutDashboard, LogOut, ScrollText, Vote,
+  AlertTriangle, ArrowLeft, ClipboardCheck, FileText, Gavel, Landmark, LayoutDashboard, LogOut, ScrollText, Vote,
 } from 'lucide-react'
 import {
   apiBacEvaluateBid, apiBacPostQualify, apiBacProject, apiBacProjects, apiBacResolutions, apiBacVote,
-  apiListProjectBids, apiLogout,
+  apiBidRequestRevision, apiListProjectBids, apiLogout,
 } from '../api'
 import AppSidebar from '../components/shell/AppSidebar'
 import AppHeader, { storedUser } from '../components/shell/AppHeader'
@@ -26,6 +26,7 @@ import BacRecordsPage from './bac/BacRecordsPage'
 import { useBacStatus } from '../utils/workspace'
 import { fmtDate, greeting, peso, todayLong } from '../utils/format'
 import PreviewButton from '../components/ui/FilePreview'
+import { BarList, DonutChart, ProgressBar, SERIES, STATUS } from '../components/charts/Charts'
 import '../style/AdminDashboard.css'
 import '../style/bac.css'
 
@@ -61,11 +62,12 @@ function NoSeat({ status }) {
 // ── Home ──────────────────────────────────────────────────────────────────────
 function BacHome({ status }) {
   const [projects, setProjects] = useState(null)
-  const [voting, setVoting] = useState(null)
+  const [resolutions, setResolutions] = useState(null)
   useEffect(() => {
     apiBacProjects().then(setProjects).catch(() => setProjects([]))
-    apiBacResolutions({ status: 'voting' }).then(setVoting).catch(() => setVoting([]))
+    apiBacResolutions({ status: 'voting,adopted,not_adopted,returned' }).then(setResolutions).catch(() => setResolutions([]))
   }, [])
+  const voting = resolutions && resolutions.filter(r => r.status === 'voting')
   const u = storedUser()
   const seat = status.membership
   const toEvaluate = (projects || []).filter(p => p.status !== 'awarded' && p.my_evaluations < p.bid_count)
@@ -80,6 +82,7 @@ function BacHome({ status }) {
       </div>
       <WorkflowOff status={status} />
       <NoSeat status={status} />
+      <BacCharts projects={projects} resolutions={resolutions} />
       <section className="bac-card" aria-labelledby="h-eval">
         <div className="bac-card-head"><div><h3 id="h-eval">Waiting for your evaluation</h3>
           <p>Procurements whose bidding has closed and that still have bids you haven&apos;t evaluated.</p></div>
@@ -104,6 +107,51 @@ function BacHome({ status }) {
                 <span><strong>{r.number}</strong><span className="sub">{r.project_code} · recommends {r.recommended_company}</span></span>
                 <StatusBadge tone="info" label="Vote" />
               </Link>))}</div>}
+      </section>
+    </div>
+  )
+}
+
+// Three pictures of the committee's work: my own progress, the committee's
+// progress on each open procurement, and how its resolutions ended.
+function BacCharts({ projects, resolutions }) {
+  if (projects === null || resolutions === null) return <ListSkeleton rows={3} />
+  const open = projects.filter(p => p.status !== 'awarded')
+  const myDone = open.reduce((n, p) => n + Math.min(p.my_evaluations, p.bid_count), 0)
+  const myTotal = open.reduce((n, p) => n + p.bid_count, 0)
+  const outcome = (r) => r.status === 'adopted'
+    ? (r.head_decision === 'approved' ? 'approved' : r.head_decision === 'pending' ? 'with_head' : 'returned') : r.status
+  const count = (k) => resolutions.filter(r => outcome(r) === k).length
+  return (
+    <div className="ch-grid-2">
+      <section className="bac-card" aria-labelledby="h-prog">
+        <div className="bac-card-head"><div><h3 id="h-prog">Evaluation progress</h3>
+          <p>Your evaluations, and the committee&apos;s on each procurement still open.</p></div></div>
+        <div className="bac-card-body">
+          <ProgressBar label="My evaluations" value={myDone} total={myTotal} color={SERIES[0]} />
+          {open.length > 0
+            ? <BarList ariaLabel="Committee evaluations per procurement" color={SERIES[2]}
+              data={open.map(p => ({
+                label: p.code, sub: p.name, value: p.evaluations_done, max: p.evaluations_expected || 1,
+                display: `${p.evaluations_done} of ${p.evaluations_expected}`,
+              }))} />
+            : <p className="bac-hint">No procurement is waiting for evaluation.</p>}
+        </div>
+      </section>
+      <section className="bac-card" aria-labelledby="h-out">
+        <div className="bac-card-head"><div><h3 id="h-out">Resolutions</h3>
+          <p>Every resolution put to a vote, by how it ended.</p></div></div>
+        <div className="bac-card-body">
+          {resolutions.length === 0 ? <p className="bac-hint">No resolution has been put to a vote yet.</p> : (
+            <DonutChart ariaLabel="Resolutions by outcome" centerLabel="resolutions"
+              data={[
+                { label: 'Award approved by the Head', value: count('approved'), color: STATUS.success },
+                { label: 'Adopted, with the Head', value: count('with_head'), color: STATUS.info },
+                { label: 'Voting', value: count('voting'), color: STATUS.warning },
+                { label: 'Not adopted or returned', value: count('not_adopted') + count('returned'), color: STATUS.danger },
+              ]} />
+          )}
+        </div>
       </section>
     </div>
   )
@@ -232,15 +280,92 @@ function PostQualForm({ candidate, onSaved }) {
   )
 }
 
+// Ask the bidder to re-upload one or more documents. The bid stays in the
+// running; it can't be recommended or awarded until the files are fixed.
+// Open while the members evaluate: from the deadline until voting opens.
+function RevisionRequest({ bid, documents, onSent }) {
+  const [open, setOpen] = useState(false)
+  const [flags, setFlags] = useState({})   // key -> note
+  const [busy, setBusy] = useState(false)
+  const [confirm, setConfirm] = useState(false)
+  const available = documents.filter(d => d.url || d.count)
+  if (!available.length) return null
+  const toggle = (key) => setFlags(f => {
+    const next = { ...f }
+    if (key in next) delete next[key]; else next[key] = ''
+    return next
+  })
+  const keys = Object.keys(flags)
+  const send = async () => {
+    setBusy(true)
+    try {
+      await apiBidRequestRevision(bid.id, { documents: flags })
+      toast.success(`Revision request sent to ${bid.company}.`)
+      setFlags({})
+      setOpen(false)
+      onSent()
+    } catch (err) {
+      toast.error(err.message || 'Could not send the request.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  if (!open) {
+    return (
+      <div className="bac-actions" style={{ justifyContent: 'flex-start' }}>
+        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => setOpen(true)}>
+          <AlertTriangle size={13} aria-hidden="true" /> Ask the bidder to fix a document
+        </button>
+      </div>
+    )
+  }
+  return (
+    <form className="bac-field" onSubmit={e => { e.preventDefault(); setConfirm(true) }}>
+      <fieldset className="bac-checks" disabled={busy} style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+        <legend style={{ fontWeight: 600, marginBottom: 6 }}>Documents that need fixing</legend>
+        {available.map(d => (
+          <div key={d.key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <label className={`bac-check${d.key in flags ? ' is-fail' : ''}`}>
+              <input type="checkbox" checked={d.key in flags} onChange={() => toggle(d.key)} /> {d.label}
+            </label>
+            {d.key in flags && (
+              <input aria-label={`What needs fixing in ${d.label}`} value={flags[d.key]}
+                onChange={e => setFlags(f => ({ ...f, [d.key]: e.target.value }))}
+                placeholder="What needs fixing? (e.g. unsigned, illegible scan, wrong file)" />
+            )}
+          </div>
+        ))}
+      </fieldset>
+      <div className="bac-actions">
+        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={busy} onClick={() => { setOpen(false); setFlags({}) }}>Cancel</button>
+        <button type="submit" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy || !keys.length}>
+          {busy ? 'Sending…' : 'Send request'}
+        </button>
+      </div>
+      {confirm && (
+        <ConfirmDialog title={`Ask ${bid.company} to fix ${keys.length} document(s)?`} tone="warning" confirmLabel="Send request" busy={busy}
+          points={['The bidder is notified and re-uploads the flagged file(s). The bid is not disqualified.',
+            "A resolution can't recommend this bid, and it can't be awarded, until the files are fixed.",
+            'The other members are notified when the bidder resubmits, so you can update your evaluations.']}
+          onCancel={() => setConfirm(false)} onConfirm={() => { setConfirm(false); send() }} />
+      )}
+    </form>
+  )
+}
+
+const REVIEW_LABEL = { needs_revision: ['warning', 'Flagged for revision'], resubmitted: ['info', 'Resubmitted'] }
+
 function EvaluationProject({ status }) {
   const { id } = useParams()
   const [data, setData] = useState(null)
   const [bidFiles, setBidFiles] = useState({})
   const [error, setError] = useState('')
   const load = () => apiBacProject(id).then(setData).catch(e => setError(e.message || 'Could not load.'))
+  const loadFiles = () => apiListProjectBids(id)
+    .then(list => setBidFiles(Object.fromEntries(list.map(b => [b.id, b])))).catch(() => {})
   useEffect(() => {
     load()
-    apiListProjectBids(id).then(list => setBidFiles(Object.fromEntries(list.map(b => [b.id, b])))).catch(() => {})
+    loadFiles()
   }, [id])  // eslint-disable-line
 
   if (error) return <div className="bac-page ad-content"><p className="bac-error" role="alert">{error}</p></div>
@@ -278,9 +403,21 @@ function EvaluationProject({ status }) {
                     <span key={d.key} className="bac-actions" style={{ gap: 4 }}>
                       <a href={d.url} className="ui-btn ui-btn--secondary ui-btn--sm"><FileText size={13} /> {d.label}</a>
                       <PreviewButton url={d.url} name={d.label} />
+                      {REVIEW_LABEL[d.review_status] && (
+                        <StatusBadge tone={REVIEW_LABEL[d.review_status][0]} label={REVIEW_LABEL[d.review_status][1]} />
+                      )}
                     </span>
                   ))}
                 </div>
+              )}
+              {files?.documents?.some(d => d.review_status === 'needs_revision') && (
+                <div className="bac-hint">
+                  Waiting for the bidder to fix: {files.documents.filter(d => d.review_status === 'needs_revision')
+                    .map(d => d.review_note ? `${d.label} (${d.review_note})` : d.label).join('; ')}
+                </div>
+              )}
+              {seat && !locked && files?.documents && (
+                <RevisionRequest bid={bid} documents={files.documents} onSent={loadFiles} />
               )}
               <div className="bac-hint">
                 {bid.tally.passed} passed and {bid.tally.failed} failed of {bid.tally.count} evaluation(s) so far. Three passes qualify the bid.
@@ -383,7 +520,7 @@ function ResolutionsPage({ status }) {
               <div className="bac-card-body">
                 <ResolutionFacts resolution={r} />
                 <VoteCounts counts={r.counts} majority={status.majority} />
-                <VoteList votes={r.votes} />
+                <VoteList votes={r.votes} user={storedUser()} onChanged={load} />
               </div>
               {seat && status.workflow_enabled && !votedBy(r) && <VoteForm resolution={r} onVoted={load} />}
               {votedBy(r) && <div className="bac-card-body bac-hint">You have voted on this resolution.</div>}

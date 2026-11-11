@@ -346,7 +346,14 @@ def build_committee_resolution(resolution, ranking_rows, decided_at):
         cast = timezone.localtime(vote.cast_at).strftime("%d %B %Y %H:%M")
         pdf.line_out(f"{vote.voter_name}, {vote.get_voter_position_display()}: "
                      f"{vote.get_choice_display().upper()} ({cast})", bold=True, size=9.5)
+        if vote.source == "in_person":
+            pdf.para(f"Given in person; recorded by {vote.recorded_by_name or 'Procurement Staff'}.", gap=1)
         pdf.para(f"Comment: {vote.comment}", gap=2)
+        # Correction notes added before adoption. The vote above is unchanged;
+        # notes added after this file is frozen appear only in the BAC Records.
+        for note in vote.notes.all():
+            when = timezone.localtime(note.created_at).strftime("%d %B %Y %H:%M")
+            pdf.para(f"Correction note by {note.author_name} ({note.author_role}, {when}): {note.note}", gap=2)
     approvals = sum(1 for v in resolution.votes.all() if v.choice == "approve")
     pdf.para(f"ADOPTED with {approvals} approving vote(s) on "
              f"{timezone.localtime(decided_at).strftime('%d %B %Y %H:%M')}.")

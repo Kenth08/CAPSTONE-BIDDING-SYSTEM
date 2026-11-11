@@ -6138,6 +6138,124 @@ class BACWorkflowTests(APITestCase):
         self.assertEqual((self.staff.is_active, self.staff.role), (False, "staff"))
         self.assertEqual(self.as_user(self.head).get("/api/auth/users/").status_code, 403)
 
+    # in-person votes, correction notes, bid document revisions
+    def voting_resolution(self, meeting_mode="in_person"):
+        self.everyone_passes_everything()
+        self.as_user(self.members[0].user).post(f"/api/bac/bids/{self.low.id}/post-qualify/",
+                                               {"result": "passed", "remarks": "Verified."}, format="json")
+        res = self.as_user(self.staff).post("/api/bac/resolutions/", {
+            "project": self.project.id, "meeting_date": str(timezone.localdate()),
+            "meeting_mode": meeting_mode, "justification": "the lowest bid is responsive;"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(self.as_user(self.staff).post(
+            f"/api/bac/resolutions/{res.data['id']}/open-voting/").status_code, 200)
+        return BACResolution.objects.get(pk=res.data["id"])
+
+    def record(self, res, seat, choice="approve", by=None):
+        return self.as_user(by or self.staff).post(f"/api/bac/resolutions/{res.id}/record-vote/", {
+            "member": seat.id, "choice": choice, "comment": "Said so at the meeting, ballot signed."},
+            format="json")
+
+    def test_staff_record_in_person_votes_marked_as_such_and_the_member_is_told(self):
+        res = self.voting_resolution()
+        out = self.record(res, self.members[2])
+        self.assertEqual(out.status_code, 201, out.data)
+        vote = BACVote.objects.get(resolution=res, member=self.members[2])
+        self.assertEqual((vote.voter_name, vote.source, vote.recorded_by_id), ("Member 3", "in_person", self.staff.id))
+        self.assertEqual(vote.recorded_by_name, self.staff.full_name)
+        self.assertTrue(Notification.objects.filter(user=self.members[2].user, message__contains="in-person vote").exists())
+        self.assertTrue(AuditLog.objects.filter(action="bac.vote_recorded").exists())
+        # The member can't vote again from their own account, nor can Staff record twice.
+        self.assertEqual(self.as_user(self.members[2].user).post(f"/api/bac/resolutions/{res.id}/vote/", {
+            "choice": "disapprove", "comment": "Trying a second vote."}, format="json").status_code, 400)
+        self.assertEqual(self.record(res, self.members[2], "disapprove").status_code, 400)
+        # In-person and own votes count together: two more approvals adopt it.
+        self.assertEqual(self.record(res, self.members[3]).status_code, 201)
+        self.as_user(self.members[0].user).post(f"/api/bac/resolutions/{res.id}/vote/", {
+            "choice": "approve", "comment": "Lowest responsive bid."}, format="json")
+        res.refresh_from_db()
+        self.assertEqual(res.status, BACResolution.Status.ADOPTED)
+        self.assertTrue(res.resolution_file)
+
+    def test_only_staff_record_votes_only_for_in_person_meetings_and_active_seats(self):
+        res = self.voting_resolution()
+        for user in (self.admin, self.head, self.members[0].user):
+            self.assertEqual(self.record(res, self.members[2], by=user).status_code, 403)
+        self.members[4].active = False
+        self.members[4].save()
+        self.assertEqual(self.record(res, self.members[4]).status_code, 400)
+        out = self.as_user(self.staff).post(f"/api/bac/resolutions/{res.id}/record-vote/", {
+            "member": self.members[1].id, "choice": "approve", "comment": "short"}, format="json")
+        self.assertEqual(out.status_code, 400)
+        BACResolution.objects.filter(pk=res.pk).update(meeting_mode="online")
+        out = self.record(res, self.members[1])
+        self.assertEqual(out.status_code, 400)
+        self.assertIn("online", out.data["detail"])
+        self.assertFalse(BACVote.objects.filter(resolution=res).exists())
+
+    def test_correction_notes_explain_a_vote_without_changing_it(self):
+        res = self.voting_resolution()
+        self.record(res, self.members[2])
+        vote = BACVote.objects.get(resolution=res, member=self.members[2])
+        url = f"/api/bac/votes/{vote.id}/notes/"
+        body = {"note": "The ballot also cites the site visit of 12 November."}
+        # Another member, the Admin and the Head can't annotate someone's vote.
+        for user in (self.members[0].user, self.admin, self.head):
+            self.assertEqual(self.as_user(user).post(url, body, format="json").status_code, 403)
+        self.assertEqual(self.as_user(self.members[2].user).post(url, {"note": "typo"}, format="json").status_code, 400)
+        self.assertEqual(self.as_user(self.members[2].user).post(url, body, format="json").status_code, 201)
+        self.assertEqual(self.as_user(self.staff).post(url, {
+            "note": "Transcribed from the signed ballot."}, format="json").status_code, 201)
+        vote.refresh_from_db()
+        self.assertEqual((vote.choice, vote.comment), ("approve", "Said so at the meeting, ballot signed."))
+        record = self.as_user(self.head).get(f"/api/bac/resolutions/{res.id}/").json()
+        shown = next(v for v in record["votes"] if v["id"] == vote.id)
+        self.assertEqual([n["author_role"] for n in shown["notes"]], ["BAC Committee", "Procurement Staff"])
+        self.assertEqual(record["counts"]["approve"], 1)
+        # Staff's note tells the member; notes are write-once.
+        self.assertTrue(Notification.objects.filter(user=self.members[2].user, message__contains="correction note").exists())
+        note = vote.notes.first()
+        note.note = "changed"
+        with self.assertRaises(BACVoteImmutable):
+            note.save()
+        with self.assertRaises(BACVoteImmutable):
+            note.delete()
+        # A member who has left the committee can still annotate their own vote.
+        self.members[2].active = False
+        self.members[2].save()
+        self.assertEqual(self.as_user(self.members[2].user).post(url, {
+            "note": "Left the committee; the vote above stands."}, format="json").status_code, 201)
+
+    def test_bac_members_request_bid_document_revisions_until_voting_opens(self):
+        url = f"/api/bids/{self.low.id}/request-revision/"
+        body = {"documents": {"quotation_document": "The quotation is unsigned."}}
+        self.assertEqual(self.as_user(self.admin).post(url, body, format="json").status_code, 403)
+        outsider = make_user("bac9", User.Role.BAC)
+        self.assertEqual(self.as_user(outsider).post(url, body, format="json").status_code, 403)
+        out = self.as_user(self.members[1].user).post(url, body, format="json")
+        self.assertEqual(out.status_code, 200, out.data)
+        self.low.refresh_from_db()
+        self.assertEqual(self.low.document_reviews["quotation_document"]["status"], "needs_revision")
+        self.assertTrue(AuditLog.objects.filter(action="bid.revision_requested").exists())
+        # Staff can't draft a resolution for a bid with a flagged document.
+        self.everyone_passes_everything()
+        self.as_user(self.members[0].user).post(f"/api/bac/bids/{self.low.id}/post-qualify/",
+                                               {"result": "passed", "remarks": "Verified."}, format="json")
+        out = self.draft_resolution()
+        self.assertEqual(out.status_code, 400)
+        self.assertIn("flagged", out.data["detail"])
+        # Once fixed and voting is open, no more revision requests.
+        Bid.objects.filter(pk=self.low.pk).update(document_reviews={})
+        rid = self.draft_resolution().data["id"]
+        self.as_user(self.staff).post(f"/api/bac/resolutions/{rid}/open-voting/")
+        out = self.as_user(self.members[1].user).post(url, body, format="json")
+        self.assertEqual(out.status_code, 400)
+        # Before the deadline the bids are sealed (the queryset hides them).
+        Project.objects.filter(pk=self.project.pk).update(
+            status=Project.Status.PUBLISHED, deadline=timezone.localdate() + timedelta(days=2))
+        self.assertEqual(self.as_user(self.members[1].user).post(
+            f"/api/bids/{self.mid.id}/request-revision/", body, format="json").status_code, 404)
+
 
 # ── Panel requests, phase 1: names, statement year, Others, bid terms, ───────
 # ── single-use verification links ────────────────────────────────────────────
@@ -6297,3 +6415,67 @@ class PanelPhaseOneTests(APITestCase):
         again = self.client.post("/api/auth/verify-email/confirm/", body, format="json")
         self.assertEqual(again.status_code, 400)
         self.assertIn("already used", str(again.data))
+
+
+# ── Philippine locations (PSGC proxy), list order, dashboard charts ───────────
+
+from . import locations  # noqa: E402
+
+
+class LocationsAndOrderingTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.admin = make_admin()
+        self.client.force_authenticate(user=self.admin)
+
+    def test_regions_are_proxied_sorted_and_cached(self):
+        rows = [{"code": "130000000", "name": "National Capital Region", "regionName": "NCR"},
+                {"code": "010000000", "name": "Ilocos Region", "regionName": "Region I"}]
+        with patch.object(locations, "fetch_psgc", return_value=rows) as fetch:
+            first = self.client.get("/api/locations/regions/")
+            second = self.client.get("/api/locations/regions/")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual([r["code"] for r in first.data], ["010000000", "130000000"])  # PSGC order
+        self.assertEqual(first.data[1]["label"], "NCR (National Capital Region)")
+        self.assertEqual(second.data, first.data)
+        fetch.assert_called_once_with("regions")
+
+    def test_child_lists_use_the_right_psgc_path_and_reject_bad_codes(self):
+        with patch.object(locations, "fetch_psgc", return_value=[{"code": "012801001", "name": "Adams (Pob.)"}]) as fetch:
+            res = self.client.get("/api/locations/cities/012801000/barangays/")
+        self.assertEqual(res.status_code, 200)
+        fetch.assert_called_once_with("cities-municipalities/012801000/barangays")
+        self.assertEqual(self.client.get("/api/locations/cities/../barangays/").status_code, 400)
+        self.assertEqual(self.client.get("/api/locations/provinces/abc/cities/").status_code, 400)
+
+    def test_an_outage_answers_503_and_anonymous_callers_are_refused(self):
+        with patch.object(locations, "fetch_psgc", side_effect=locations.LocationsUnavailable("down")):
+            res = self.client.get("/api/locations/regions/")
+        self.assertEqual(res.status_code, 503)
+        self.assertEqual(res.data["code"], "locations_unavailable")
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get("/api/locations/regions/").status_code, 401)
+
+    def test_suppliers_and_managed_accounts_are_listed_newest_first(self):
+        older, newer = make_supplier(), make_supplier()
+        Supplier.objects.filter(pk=older.pk).update(registered=timezone.localdate() - timedelta(days=3))
+        ids = [s["id"] for s in self.client.get("/api/suppliers/").json()]
+        self.assertLess(ids.index(newer.id), ids.index(older.id))
+        first = make_user("staffa", User.Role.STAFF)
+        second = make_user("staffb", User.Role.STAFF)
+        User.objects.filter(pk=first.pk).update(date_joined=timezone.now() - timedelta(days=2))
+        usernames = [u["username"] for u in self.client.get("/api/auth/users/").json()]
+        self.assertLess(usernames.index("staffb"), usernames.index("staffa"))
+
+    def test_dashboards_carry_six_months_of_trend(self):
+        summary = self.client.get("/api/dashboard/admin-summary/").json()
+        self.assertEqual(len(summary["trend"]), 6)
+        self.assertEqual(summary["trend"][-1]["month"], timezone.localdate().isoformat()[:7])
+        make_project(status=Project.Status.DRAFT)
+        summary = self.client.get("/api/dashboard/admin-summary/", {"fresh": 1}).json()
+        self.assertGreaterEqual(summary["trend"][-1]["created"], 1)
+        self.client.force_authenticate(user=make_head())
+        head = self.client.get("/api/dashboard/head-summary/").json()
+        self.assertEqual(len(head["trend"]), 6)
+        self.assertIn("awards_waiting", head["kpis"])
+        self.assertEqual([s["key"] for s in head["status_mix"]][0], "pending_head")

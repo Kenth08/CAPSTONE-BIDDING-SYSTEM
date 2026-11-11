@@ -772,6 +772,20 @@ export const apiBacOpenVoting = (id) =>
   apiFetch(`/bac/resolutions/${id}/open-voting/`, { method: 'POST', body: '{}' })
 export const apiBacVote = (id, data) =>
   apiFetch(`/bac/resolutions/${id}/vote/`, { method: 'POST', body: JSON.stringify(data) })
+// Philippine locations (PSGC), proxied and cached by the backend
+// (procurement/locations.py). Each answers [{ code, name, label? }].
+export const apiLocRegions = () => apiFetch('/locations/regions/')
+export const apiLocRegionProvinces = (code) => apiFetch(`/locations/regions/${code}/provinces/`)
+export const apiLocRegionCities = (code) => apiFetch(`/locations/regions/${code}/cities/`)
+export const apiLocProvinceCities = (code) => apiFetch(`/locations/provinces/${code}/cities/`)
+export const apiLocCityBarangays = (code) => apiFetch(`/locations/cities/${code}/barangays/`)
+
+// Staff: a vote a member gave at an in-person meeting. data = { member, choice, comment }.
+export const apiBacRecordVote = (id, data) =>
+  apiFetch(`/bac/resolutions/${id}/record-vote/`, { method: 'POST', body: JSON.stringify(data) })
+// The voter or Staff: a correction note beside a vote. The vote itself never changes.
+export const apiBacAddVoteNote = (voteId, note) =>
+  apiFetch(`/bac/votes/${voteId}/notes/`, { method: 'POST', body: JSON.stringify({ note }) })
 export const apiBacApproveAward = (id, data = {}) =>
   apiFetch(`/bac/resolutions/${id}/approve/`, { method: 'POST', body: JSON.stringify(data) })
 export const apiBacReturnAward = (id, remarks) =>

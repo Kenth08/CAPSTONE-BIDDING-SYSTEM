@@ -62,7 +62,7 @@ from .document_requirements import (
 )
 from .document_alerts import send_document_alerts
 from . import bid_terms
-from .bac import frozen_resolution_bytes
+from .bac import evaluation_lock_reason, frozen_resolution_bytes, membership_for
 from .documents import DOCUMENT_BUILDERS
 from .models import (
     AWARD_DOCUMENT_FIELDS,
@@ -93,7 +93,9 @@ from .models import (
 )
 from rest_framework import permissions
 
-from .notifications import email_user, notify_admins, notify_heads, notify_supplier, notify_users
+from .notifications import (
+    email_user, notify_admins, notify_bac_members, notify_heads, notify_supplier, notify_users,
+)
 from .permissions import (
     INTERNAL_ROLES,
     IsAdminOrHeadRole,
@@ -105,6 +107,7 @@ from .permissions import (
     IsLegacyEvaluatorRole,
     IsPreparerRole,
     IsSupplierRole,
+    bac_workflow_on,
 )
 from .serializers import (
     AwardSerializer,
@@ -1575,7 +1578,10 @@ class ProjectViewSet(viewsets.ModelViewSet):
 # goes through a named @action that validates, notifies, logs and anchors.
 class SupplierViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                       mixins.DestroyModelMixin, viewsets.GenericViewSet):
-    queryset = Supplier.objects.select_related("user").prefetch_related("category_documents").all()
+    # Newest registration first, so a supplier who just signed up is at the top
+    # of the list (Supplier has no Meta ordering; the id breaks same-day ties).
+    queryset = Supplier.objects.select_related("user").prefetch_related("category_documents").order_by(
+        "-registered", "-id")
     serializer_class = SupplierListSerializer
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
@@ -2418,13 +2424,26 @@ class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
 
     @action(detail=True, methods=["post"], url_path="request-revision")
     def request_revision(self, request, pk=None):
-        """Admin flags one or more documents on this bid as needing a fix.
+        """The evaluator flags one or more documents on this bid as needing a
+        fix: the Admin, or with the BAC workflow on, a member holding an active
+        seat on the committee (IsBidReviewerRole).
 
         This does NOT disqualify the bid — the supplier stays in the running
         and just re-uploads the flagged file(s) via resubmit-documents. The
-        only hard gate is select-winner, which is blocked while any document
-        here is still 'needs_revision'."""
+        only hard gate is the award (_check_can_award), which is blocked while
+        any document here is still 'needs_revision'."""
         bid = self.get_object()
+        if bac_workflow_on():
+            # Same window as the members' evaluations: after bidding closes and
+            # before voting starts. Once a resolution is being voted on, asking
+            # for new files would change what the members are voting about.
+            seat = membership_for(request.user)
+            if seat is None:
+                return Response({"detail": "You don't hold an active seat on the BAC Committee."},
+                                status=http_status.HTTP_403_FORBIDDEN)
+            reason = evaluation_lock_reason(bid.project)
+            if reason:
+                return Response({"detail": reason}, status=http_status.HTTP_400_BAD_REQUEST)
         documents = request.data.get("documents") or {}
         if not isinstance(documents, dict) or not documents:
             return Response(
@@ -2459,6 +2478,10 @@ class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         bid.save(update_fields=["document_reviews"])
 
         flagged = bid_review_labels(documents)
+        log_action(
+            request, "bid.revision_requested", entity_type="Bid", entity_id=bid.id,
+            description=f"Requested a revision of {flagged} on {bid.supplier.company}'s bid for {bid.project.code}.",
+        )
         notify_supplier(
             bid.supplier,
             f"Document revision requested on your bid for \"{bid.project.name}\" ({bid.project.code}): "
@@ -2543,11 +2566,14 @@ class BidViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         else:
             bid.save()
 
-        notify_admins(
-            f"{bid.supplier.company} re-submitted {len(updated)} document(s) on their bid for "
-            f"\"{bid.project.name}\" ({bid.project.code}).",
-            link=f"/admin/bids/{bid.project_id}",
-        )
+        message = (f"{bid.supplier.company} re-submitted {len(updated)} document(s) on their bid for "
+                   f"\"{bid.project.name}\" ({bid.project.code}).")
+        if bac_workflow_on():
+            # The committee asked for the files and evaluates them; members can
+            # update their evaluation until voting opens.
+            notify_bac_members(message, link=f"/bac/evaluation/{bid.project_id}")
+        else:
+            notify_admins(message, link=f"/admin/bids/{bid.project_id}")
         return Response(self.get_serializer(bid).data)
 
     @action(detail=True, methods=["post"], url_path="images")

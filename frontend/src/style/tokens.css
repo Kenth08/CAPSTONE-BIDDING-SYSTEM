@@ -33,6 +33,14 @@
   --tone-info-fg:    #1d4ed8; --tone-info-bg:    #eff6ff; --tone-info-border:    #bfdbfe; --tone-info-solid:    #3b82f6;
   --tone-neutral-fg: #475569; --tone-neutral-bg: #f1f5f9; --tone-neutral-border: #e2e8f0; --tone-neutral-solid: #64748b;
 
+  /* Charts (components/charts/Charts.jsx). Categorical slots in fixed order,
+     validated for colour-blind separation; values are always written out too. */
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-neutral: #94a3b8;
+  --chart-track: #eef2f6;
+
   /* Surfaces + text (light UI) */
   --surface: #ffffff;
   --surface-muted: #f8fafc;

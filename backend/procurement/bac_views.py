@@ -10,6 +10,8 @@
     /api/bac/resolutions/                         internal read (BAC Records); Staff drafts one
     /api/bac/resolutions/<id>/open-voting/        Staff
     /api/bac/resolutions/<id>/vote/               BAC member, with a required comment
+    /api/bac/resolutions/<id>/record-vote/        Staff: a vote given at an in-person meeting
+    /api/bac/votes/<id>/notes/                    the voter or Staff: a correction note (vote unchanged)
     /api/bac/resolutions/<id>/approve/            Head: makes the award (same code, same anchors)
     /api/bac/resolutions/<id>/return/             Head: sends it back, with remarks
 
@@ -37,6 +39,7 @@ from .models import (
     BACMembership,
     BACResolution,
     BACVote,
+    BACVoteNote,
     Bid,
     BidEvaluation,
     BidPostQualification,
@@ -104,16 +107,26 @@ class MembershipSerializer(serializers.ModelSerializer):
         return protected_file_url(self.context.get("request"), "bacmembership", m, "designation_document") or ""
 
 
+class VoteNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BACVoteNote
+        fields = ["id", "note", "author_name", "author_role", "created_at"]
+
+
 class VoteSerializer(serializers.ModelSerializer):
     choice_label = serializers.CharField(source="get_choice_display", read_only=True)
     position_label = serializers.CharField(source="get_voter_position_display", read_only=True)
+    source_label = serializers.CharField(source="get_source_display", read_only=True)
     member_active = serializers.BooleanField(source="member.active", read_only=True)
     member_ended_on = serializers.DateField(source="member.ended_on", read_only=True)
+    member_user = serializers.IntegerField(source="member.user_id", read_only=True)
+    notes = VoteNoteSerializer(many=True, read_only=True)
 
     class Meta:
         model = BACVote
-        fields = ["id", "member", "voter_name", "voter_position", "position_label", "choice", "choice_label",
-                  "comment", "cast_at", "member_active", "member_ended_on"]
+        fields = ["id", "member", "member_user", "voter_name", "voter_position", "position_label", "choice",
+                  "choice_label", "comment", "cast_at", "source", "source_label", "recorded_by_name",
+                  "member_active", "member_ended_on", "notes"]
 
 
 class ResolutionSerializer(serializers.ModelSerializer):
@@ -346,7 +359,8 @@ class EvaluationProjectDetailView(APIView):
                                         "recorded_by": _person(pq.recorded_by)} if pq else None),
             })
         resolutions = project.bac_resolutions.select_related(
-            "recommended_bid__supplier", "prepared_by", "head_decided_by", "project").prefetch_related("votes__member")
+            "recommended_bid__supplier", "prepared_by", "head_decided_by", "project").prefetch_related(
+            "votes__member", "votes__notes")
         return Response({
             "project": _project_summary(
                 Project.objects.prefetch_related("bids__evaluations", "bids__post_qualification",
@@ -478,7 +492,7 @@ class ResolutionViewSet(viewsets.ReadOnlyModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_permissions(self):
-        if self.action in {"create", "open_voting", "discard"}:
+        if self.action in {"create", "open_voting", "discard", "record_vote"}:
             return [IsStaffRole()]
         if self.action == "vote":
             return [IsBACRole()]
@@ -489,7 +503,7 @@ class ResolutionViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         qs = (BACResolution.objects
               .select_related("project", "recommended_bid__supplier", "prepared_by", "head_decided_by")
-              .prefetch_related("votes__member"))
+              .prefetch_related("votes__member", "votes__notes"))
         params = self.request.query_params
         if params.get("project"):
             qs = qs.filter(project_id=params["project"])
@@ -546,6 +560,12 @@ class ResolutionViewSet(viewsets.ReadOnlyModelViewSet):
             if lcrb_id is None:
                 return _bad("No bid has passed evaluation and post-qualification yet, so there is "
                             "nothing to recommend.")
+            lcrb = Bid.objects.get(pk=lcrb_id)
+            if any((r or {}).get("status") == "needs_revision" for r in (lcrb.document_reviews or {}).values()):
+                # The award would refuse it (BidViewSet._check_can_award), so
+                # don't let the members vote on a recommendation that can't be approved.
+                return _bad("The recommended bid still has documents the committee flagged for revision. "
+                            "Wait for the bidder to resubmit them.")
             res = BACResolution.objects.create(
                 project=project, recommended_bid_id=lcrb_id, number=bac.next_resolution_number(project),
                 meeting_date=meeting_date, meeting_mode=mode, venue=(data.get("venue") or "").strip()[:200],
@@ -596,27 +616,69 @@ class ResolutionViewSet(viewsets.ReadOnlyModelViewSet):
         seat = bac.membership_for(request.user)
         if seat is None:
             return _bad("You don't hold an active seat on the BAC Committee.", http_status.HTTP_403_FORBIDDEN)
+        return self._cast(request, pk, seat, recorded_by=None)
+
+    @action(detail=True, methods=["post"], url_path="record-vote")
+    def record_vote(self, request, pk=None):
+        """POST {member, choice, comment}. Staff enter a vote a member gave at
+        an in-person meeting, from the ballot or the minutes. Only on a
+        resolution whose meeting was in person. The vote keeps the member's
+        name and says Staff recorded it, and the member is told, so a vote
+        they didn't give can't pass unnoticed. Same rules as a member's own
+        vote: once per member, never edited."""
+        off = _workflow_off()
+        if off:
+            return off
+        seat = BACMembership.objects.select_related("user").filter(
+            pk=request.data.get("member") or 0, active=True).first()
+        if seat is None:
+            return _bad("Choose a member who holds an active seat on the committee.")
+        return self._cast(request, pk, seat, recorded_by=request.user)
+
+    def _cast(self, request, pk, seat, recorded_by):
+        """Record one vote for `seat`: by the member (recorded_by None) or by
+        Staff from an in-person meeting. Then adopt or fail the resolution if
+        the votes are in (bac.decide_if_ready)."""
         choice = (request.data.get("choice") or "").strip()
         comment = (request.data.get("comment") or "").strip()
+        in_person = recorded_by is not None
         if choice not in BACVote.Choice.values:
             return _bad("Choose Approve, Disapprove or Abstain.")
         if len(comment) < 10:
-            return _bad("Write the reason for your vote (at least 10 characters). It is kept "
-                        "permanently in the BAC Records.")
+            return _bad("Write the member's reason as given at the meeting (at least 10 characters)." if in_person
+                        else "Write the reason for your vote (at least 10 characters). It is kept "
+                             "permanently in the BAC Records.")
         with transaction.atomic():
             res = BACResolution.objects.select_for_update().select_related("project").filter(pk=pk).first()
             if res is None:
                 return _bad("Resolution not found.", http_status.HTTP_404_NOT_FOUND)
             if res.status != BACResolution.Status.VOTING:
                 return _bad("This resolution isn't open for voting.")
+            if in_person and res.meeting_mode != BACResolution.MeetingMode.IN_PERSON:
+                return _bad("This resolution's meeting was held online, so each member votes from "
+                            "their own account.")
             if res.votes.filter(member=seat).exists():
-                return _bad("You have already voted on this resolution. A vote can't be changed.")
-            BACVote.objects.create(resolution=res, member=seat, voter_name=_person(request.user)[:150],
-                                   voter_position=seat.position, choice=choice, comment=comment)
+                return _bad(f"{_person(seat.user)} has already voted on this resolution. A vote can't "
+                            f"be changed; add a correction note instead." if in_person
+                            else "You have already voted on this resolution. A vote can't be changed.")
+            vote = BACVote.objects.create(
+                resolution=res, member=seat, voter_name=_person(seat.user)[:150], voter_position=seat.position,
+                choice=choice, comment=comment,
+                source=BACVote.Source.IN_PERSON if in_person else BACVote.Source.ONLINE,
+                recorded_by=recorded_by, recorded_by_name=_person(recorded_by)[:150] if in_person else "")
             outcome = bac.decide_if_ready(res)
-        log_action(request, "bac.vote_cast", entity_type="BACResolution", entity_id=res.pk,
-                   description=f"{_person(request.user)} ({seat.get_position_display()}) voted {choice} "
-                               f"on {res.number}.")
+        if in_person:
+            log_action(request, "bac.vote_recorded", entity_type="BACResolution", entity_id=res.pk,
+                       description=f"{_person(recorded_by)} recorded {_person(seat.user)}'s in-person vote "
+                                   f"({seat.get_position_display()}): {choice} on {res.number}.")
+            from .notifications import notify_users  # noqa: PLC0415
+            notify_users([seat.user], f"{_person(recorded_by)} recorded your in-person vote on {res.number}: "
+                                      f"{vote.get_choice_display()}. If that is not what you voted, add a "
+                                      f"correction note in the BAC Records.", link="/bac/records")
+        else:
+            log_action(request, "bac.vote_cast", entity_type="BACResolution", entity_id=res.pk,
+                       description=f"{_person(request.user)} ({seat.get_position_display()}) voted {choice} "
+                                   f"on {res.number}.")
         if outcome == BACResolution.Status.ADOPTED:
             notify_heads(f"{res.number} was adopted. The award of {res.project.code} awaits your approval.",
                          link="/head/awards")
@@ -708,3 +770,44 @@ class ResolutionViewSet(viewsets.ReadOnlyModelViewSet):
         notify_staff(f"The Head returned {res.number}: {remarks[:120]}", link="/staff/bac-meetings")
         notify_bac_members(f"The Head returned {res.number} to the committee.", link="/bac/evaluation")
         return Response(self.get_serializer(res).data)
+
+
+class VoteNoteView(APIView):
+    """POST {note} - a correction note on a cast vote.
+
+    The vote and the count never change: if the choice itself was recorded
+    wrongly, the note says so on the record, and the remedy is the Head
+    returning the resolution so the committee votes again. Added by the member
+    whose vote it is (even after leaving the committee) or by Staff, who enter
+    in-person votes. Write-once."""
+
+    permission_classes = [IsInternalRole]
+
+    def post(self, request, pk):
+        off = _workflow_off()
+        if off:
+            return off
+        vote = BACVote.objects.select_related("member__user", "resolution").filter(pk=pk).first()
+        if vote is None:
+            return _bad("Vote not found.", http_status.HTTP_404_NOT_FOUND)
+        is_voter = vote.member.user_id == request.user.id
+        if not (is_voter or request.user.role == "staff"):
+            return _bad("Only the member who voted, or Procurement Staff, can add a correction note.",
+                        http_status.HTTP_403_FORBIDDEN)
+        text = (request.data.get("note") or "").strip()
+        if len(text) < 10:
+            return _bad("Write what needs correcting (at least 10 characters).")
+        if len(text) > 1000:
+            return _bad("Keep the note under 1,000 characters.")
+        note = BACVoteNote.objects.create(
+            vote=vote, note=text, author=request.user, author_name=_person(request.user)[:150],
+            author_role=request.user.get_role_display()[:20])
+        res = vote.resolution
+        log_action(request, "bac.vote_note_added", entity_type="BACResolution", entity_id=res.pk,
+                   description=f"{_person(request.user)} added a correction note to {vote.voter_name}'s "
+                               f"vote on {res.number}.")
+        if not is_voter:
+            from .notifications import notify_users  # noqa: PLC0415
+            notify_users([vote.member.user], f"{_person(request.user)} added a correction note to your vote on "
+                                             f"{res.number}.", link="/bac/records")
+        return Response(VoteNoteSerializer(note).data, status=http_status.HTTP_201_CREATED)

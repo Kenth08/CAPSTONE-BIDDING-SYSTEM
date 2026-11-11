@@ -1,6 +1,8 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .locations import LocationListView
+
 from .bac_views import (
     BACStatusView,
     EvaluateBidView,
@@ -9,6 +11,7 @@ from .bac_views import (
     MembershipViewSet,
     PostQualifyView,
     ResolutionViewSet,
+    VoteNoteView,
 )
 from .categories import CategoryView
 from .dashboard import AdminSummaryView, HeadSummaryView, PublicSummaryView
@@ -54,6 +57,17 @@ urlpatterns = [
     path("bac/projects/<int:pk>/", EvaluationProjectDetailView.as_view(), name="bac-project"),
     path("bac/bids/<int:pk>/evaluate/", EvaluateBidView.as_view(), name="bac-evaluate"),
     path("bac/bids/<int:pk>/post-qualify/", PostQualifyView.as_view(), name="bac-post-qualify"),
+    path("bac/votes/<int:pk>/notes/", VoteNoteView.as_view(), name="bac-vote-notes"),
+    # Philippine locations (PSGC) for address pickers - procurement/locations.py.
+    path("locations/regions/", LocationListView.as_view(kind="regions"), name="loc-regions"),
+    path("locations/regions/<str:code>/provinces/", LocationListView.as_view(kind="region-provinces"),
+         name="loc-region-provinces"),
+    path("locations/regions/<str:code>/cities/", LocationListView.as_view(kind="region-cities"),
+         name="loc-region-cities"),
+    path("locations/provinces/<str:code>/cities/", LocationListView.as_view(kind="province-cities"),
+         name="loc-province-cities"),
+    path("locations/cities/<str:code>/barangays/", LocationListView.as_view(kind="city-barangays"),
+         name="loc-city-barangays"),
     # One procurement's public result (winner + date only) — no login.
     path(
         "public/procurement/<str:code>/",

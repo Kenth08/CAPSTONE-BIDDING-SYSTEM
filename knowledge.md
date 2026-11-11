@@ -98,6 +98,12 @@ approves the award, which runs the original award code and writes the same ancho
 Staff issue the BAC Resolution from that frozen file, so `RESOLUTION_ISSUED` fingerprints
 exactly what was adopted. No stage, payload or contract changed. Names, votes and
 comments stay in the database. Votes are write-once, and seats are ended, never deleted.
+For an in-person meeting, Staff may record a member's vote from the ballot or minutes
+(`record-vote`): it keeps the member's name, is marked as recorded by Staff, and the member
+is notified. A mistake is never edited: the voter or Staff adds a write-once correction note
+(`BACVoteNote`), and the vote and count stay as they were. While evaluating (deadline until
+voting opens), a seated member can ask a bidder to fix documents; a resolution can't
+recommend a bid with flagged documents.
 Rules: `procurement/bac.py`; endpoints `/api/bac/...` in `bac_views.py`.
 
 ## Blockchain anchoring model

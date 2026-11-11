@@ -73,6 +73,8 @@
 .bac-vote-who small { font-weight: var(--fw-regular); color: var(--text-subtle); margin-left: 6px; }
 .bac-vote-comment { margin: 0; color: var(--text-body); font-size: var(--fs-small); white-space: pre-wrap; overflow-wrap: anywhere; }
 .bac-vote-meta { font-size: var(--fs-caption); color: var(--text-subtle); }
+.bac-vote-notes { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 3px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.bac-vote-notes li { display: flex; flex-direction: column; gap: 2px; }
 
 .bac-counts { display: flex; flex-wrap: wrap; gap: 8px; }
 .bac-count { padding: 4px 10px; border-radius: 999px; font-size: var(--fs-caption); font-weight: var(--fw-semibold);

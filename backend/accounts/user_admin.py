@@ -116,7 +116,7 @@ class ManagedUserUpdateSerializer(serializers.ModelSerializer):
 
 def _managed_users():
     return (User.objects.filter(role__in=[*MANAGED_ROLES, User.Role.ADMIN])
-            .prefetch_related("bac_memberships").order_by("role", "username"))
+            .prefetch_related("bac_memberships").order_by("-date_joined", "-id"))  # newest account first
 
 
 class ManagedUserListCreateView(generics.ListCreateAPIView):

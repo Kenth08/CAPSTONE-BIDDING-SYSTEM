@@ -1217,12 +1217,21 @@ class BACVote(models.Model):
 
     Write-once. The member's name and position are copied onto the row when
     the vote is cast, so a later resignation, renamed account or new
-    Chairperson never changes what the record says."""
+    Chairperson never changes what the record says.
+
+    A vote given at an in-person meeting is entered by Staff (the Secretariat)
+    from the ballot or minutes: `source` is then IN_PERSON and `recorded_by`
+    names the Staff account, so the record never passes it off as the member's
+    own click. A mistake is never fixed by editing: a BACVoteNote is added."""
 
     class Choice(models.TextChoices):
         APPROVE = "approve", "Approve"
         DISAPPROVE = "disapprove", "Disapprove"
         ABSTAIN = "abstain", "Abstain"
+
+    class Source(models.TextChoices):
+        ONLINE = "online", "Cast by the member"
+        IN_PERSON = "in_person", "Given in person, recorded by Staff"
 
     resolution = models.ForeignKey(BACResolution, on_delete=models.CASCADE, related_name="votes")
     member = models.ForeignKey(BACMembership, on_delete=models.PROTECT, related_name="votes")
@@ -1231,6 +1240,11 @@ class BACVote(models.Model):
     choice = models.CharField(max_length=12, choices=Choice.choices)
     comment = models.TextField()
     cast_at = models.DateTimeField(auto_now_add=True)
+    source = models.CharField(max_length=12, choices=Source.choices, default=Source.ONLINE,
+                              db_default=Source.ONLINE)
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    recorded_by_name = models.CharField(max_length=150, blank=True, default="", db_default="")
 
     class Meta:
         ordering = ["cast_at"]
@@ -1248,3 +1262,35 @@ class BACVote(models.Model):
 
     def __str__(self):
         return f"{self.voter_name} {self.choice} on {self.resolution_id}"
+
+
+class BACVoteNote(models.Model):
+    """A correction note on a cast vote, e.g. "my comment cites the wrong
+    meeting date" or "transcribed from the signed ballot; the ballot reads ...".
+
+    The vote itself never changes, and neither does the count: a note only
+    explains. Added by the member who voted or by Staff, write-once like the
+    vote, with the author's name and role copied onto the row. Notes added
+    before adoption are printed in the frozen resolution PDF; later ones are
+    shown in the BAC Records beside the vote."""
+
+    vote = models.ForeignKey(BACVote, on_delete=models.PROTECT, related_name="notes")
+    note = models.TextField()
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    author_name = models.CharField(max_length=150)
+    author_role = models.CharField(max_length=20)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None and not self._state.adding:
+            raise BACVoteImmutable("A correction note cannot be changed once added.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise BACVoteImmutable("A correction note cannot be deleted.")
+
+    def __str__(self):
+        return f"Note by {self.author_name} on vote {self.vote_id}"

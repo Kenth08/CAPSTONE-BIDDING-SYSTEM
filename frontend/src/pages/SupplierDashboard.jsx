@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { ColumnChart, DonutChart, STATUS, monthLabel } from '../components/charts/Charts'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, FileText, Clock, CheckCircle2,
@@ -1512,6 +1513,63 @@ function DocumentHealth({ profile, setToast, onUploaded }) {
   )
 }
 
+// The last six months as "YYYY-MM", oldest first.
+function lastSixMonths() {
+  const out = []
+  const d = new Date()
+  d.setDate(1)
+  for (let i = 0; i < 6; i++) {
+    out.unshift(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
+    d.setMonth(d.getMonth() - 1)
+  }
+  return out
+}
+
+// How the supplier's bids are doing, as pictures: outcome of every bid, and
+// bids submitted per month with how many of those were won.
+function SupplierCharts({ bids, loading }) {
+  if (loading && !bids.length) return <div className="ch-grid-2"><Skeleton height={220} radius={12} /><Skeleton height={220} radius={12} /></div>
+  const won = bids.filter(b => b.status === 'winner').length
+  const disq = bids.filter(b => b.status === 'disqualified').length
+  const lost = bids.filter(b => b.status !== 'winner' && b.status !== 'disqualified' && b.projectStatus === 'awarded').length
+  const pending = bids.length - won - disq - lost
+  const months = lastSixMonths()
+  const perMonth = Object.fromEntries(months.map(m => [m, { submitted: 0, won: 0 }]))
+  bids.forEach(b => {
+    const m = String(b.submittedAt || '').slice(0, 7)
+    if (perMonth[m]) {
+      perMonth[m].submitted += 1
+      if (b.status === 'winner') perMonth[m].won += 1
+    }
+  })
+  return (
+    <div className="ch-grid-2">
+      <section className="rf-card" aria-labelledby="sd-out-h">
+        <div className="rf-card-head"><div><h3 id="sd-out-h">My bids by outcome</h3><p>Every bid you have submitted</p></div></div>
+        <div className="ch-card-body">
+          {!bids.length ? <p className="rf-muted" style={{ margin: 0 }}>Your bids will be charted here once you submit one.</p> : (
+            <DonutChart ariaLabel="My bids by outcome" centerLabel="bids"
+              data={[
+                { label: 'Won', value: won, color: STATUS.success },
+                { label: 'Still being evaluated', value: pending, color: STATUS.info },
+                { label: 'Not selected', value: lost, color: STATUS.neutral },
+                { label: 'Disqualified', value: disq, color: STATUS.danger },
+              ]} />
+          )}
+        </div>
+      </section>
+      <section className="rf-card" aria-labelledby="sd-trend-h">
+        <div className="rf-card-head"><div><h3 id="sd-trend-h">Bids per month</h3><p>Submitted and won, last six months</p></div></div>
+        <div className="ch-card-body">
+          <ColumnChart ariaLabel="Bids submitted and won per month"
+            series={[{ key: 'submitted', label: 'Submitted' }, { key: 'won', label: 'Won' }]}
+            data={months.map(m => ({ label: monthLabel(m), values: perMonth[m] }))} />
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligible, profile, onResubmitted, setToast, loadingProjects, loadingBids }) {
   const now = useNow()
   const [modal, setModal] = useState(null)
@@ -1589,6 +1647,8 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
           value={problems.length} to="/supplier/profile"
           context={problems.length ? 'Missing, flagged or expiring' : 'All in order'} />
       </KpiRow>
+
+      {!failed.bids && <SupplierCharts bids={bids} loading={loadingBids} />}
 
       <section className="rf-card" aria-labelledby="opp-h">
         <div className="rf-card-head" style={{ flexWrap: 'wrap' }}>

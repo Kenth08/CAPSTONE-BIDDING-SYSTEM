@@ -1,0 +1,64 @@
+/* Dashboard charts (components/charts/Charts.jsx). Colours come from tokens.css. */
+.ch { position: relative; margin: 0; min-width: 0; }
+.ch-svg { width: 100%; height: auto; display: block; overflow: visible; }
+.ch-grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 4; }
+.ch-axis { stroke: var(--border-strong); stroke-width: 1; }
+.ch-tick { fill: var(--text-subtle); font-size: 11px; font-family: var(--font-sans); }
+.ch-empty { fill: var(--text-faint); font-size: 12px; }
+.ch-empty-text { margin: 0; color: var(--text-subtle); font-size: var(--fs-small); }
+.ch-hit { cursor: default; outline: none; }
+.ch-hit:hover, .ch-hit:focus-visible { fill: rgba(15, 23, 42, 0.04); }
+
+.ch-tip {
+  position: absolute; transform: translate(-50%, calc(-100% - 8px)); pointer-events: none; z-index: 5;
+  background: var(--c-navy-900); color: #fff; border-radius: 8px; padding: 8px 10px; box-shadow: var(--shadow-md);
+  display: flex; flex-direction: column; gap: 3px; font-size: 12px; white-space: nowrap;
+}
+.ch-tip strong { font-weight: var(--fw-semibold); }
+.ch-tip-row { display: flex; align-items: center; gap: 6px; color: var(--c-navy-text); }
+.ch-tip-row b { margin-left: auto; padding-left: 12px; color: #fff; font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
+
+.ch-legend { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: var(--fs-caption); color: var(--text-body); }
+.ch-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.ch-legend b { color: var(--text-strong); font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
+.ch-swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+
+.ch-bars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ch-bar-row {
+  display: grid; grid-template-columns: minmax(90px, 34%) 1fr auto; align-items: center; gap: 12px;
+  width: 100%; padding: 6px 4px; border: 0; background: none; border-radius: 6px; text-align: left; font: inherit; color: inherit;
+}
+button.ch-bar-row { cursor: pointer; }
+button.ch-bar-row:hover, button.ch-bar-row:focus-visible { background: var(--surface-muted); outline: none; }
+.ch-bar-label { font-size: var(--fs-small); color: var(--text-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-bar-label small { display: block; color: var(--text-subtle); font-size: var(--fs-micro); }
+.ch-bar-track { height: 10px; background: var(--chart-track); border-radius: 0 4px 4px 0; overflow: hidden; display: block; }
+.ch-bar-fill { display: block; height: 100%; border-radius: 0 4px 4px 0; transition: width .3s ease; }
+.ch-bar-value { font-size: var(--fs-small); color: var(--text-strong); font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; text-align: right; }
+
+.ch-donut { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.ch-donut .ch-legend { flex-direction: column; gap: 8px; flex: 1; min-width: 160px; margin: 0; }
+.ch-donut .ch-legend li { width: 100%; }
+.ch-donut .ch-legend b { margin-left: auto; }
+.ch-seg { outline: none; cursor: default; }
+.ch-seg:focus-visible { stroke-width: 20; }
+.ch-donut-value { fill: var(--text-strong); font-size: 22px; font-weight: 700; font-family: var(--font-sans); }
+.ch-donut-label { fill: var(--text-subtle); font-size: 10px; font-family: var(--font-sans); }
+
+.ch-progress { display: flex; flex-direction: column; gap: 6px; }
+.ch-progress-head { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-small); color: var(--text-body); }
+.ch-progress-head b { color: var(--text-strong); font-variant-numeric: tabular-nums; }
+
+/* A dashboard card holding a chart. */
+.ch-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-xs); display: flex; flex-direction: column; min-width: 0; }
+.ch-card-head { padding: 16px 20px 0; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.ch-card-head h3 { margin: 0; font-size: var(--fs-section-title); color: var(--text-strong); }
+.ch-card-head p { margin: 2px 0 0; font-size: var(--fs-caption); color: var(--text-subtle); }
+.ch-card-body { padding: 14px 20px 18px; }
+.ch-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.ch-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 1100px) { .ch-grid-3 { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 760px) { .ch-grid-2, .ch-grid-3 { grid-template-columns: 1fr; } .ch-bar-row { grid-template-columns: minmax(80px, 40%) 1fr auto; gap: 8px; } }
+
+/* A donut placed straight inside a dashboard card (Blockchain health) gets the card padding. */
+.rf-card > .ch-donut { padding: 16px 20px 4px; }
