@@ -24,7 +24,9 @@ import {
 } from '../components/bac/BacParts'
 import BacRecordsPage from './bac/BacRecordsPage'
 import { useBacStatus } from '../utils/workspace'
-import { fmtDate, greeting, peso, todayLong } from '../utils/format'
+import { fmtDate, peso } from '../utils/format'
+import KpiCard, { KpiRow } from '../components/ui/KpiCard'
+import { DashGrid, DashHeader, Panel, TabbedPanel } from '../components/ui/Dashboard'
 import PreviewButton from '../components/ui/FilePreview'
 import { BarList, DonutChart, ProgressBar, SERIES, STATUS } from '../components/charts/Charts'
 import '../style/AdminDashboard.css'
@@ -72,50 +74,64 @@ function BacHome({ status }) {
   const seat = status.membership
   const toEvaluate = (projects || []).filter(p => p.status !== 'awarded' && p.my_evaluations < p.bid_count)
   const myVotes = (voting || []).filter(r => seat && !r.votes.some(v => v.member === seat.id))
+  const open = (projects || []).filter(p => p.status !== 'awarded')
+  const bidsLeft = toEvaluate.reduce((n, p) => n + (p.bid_count - p.my_evaluations), 0)
+  const adopted = (resolutions || []).filter(r => r.status === 'adopted').length
   return (
-    <div className="bac-page ad-content">
-      <div className="rf-greeting">
-        <div>
-          <h2>{greeting()}, {u.full_name || u.username}</h2>
-          <p>{todayLong()}{seat ? ` · ${seat.position_label} of the BAC Committee` : ''}</p>
-        </div>
-      </div>
+    <div className="bac-page ad-content rf-home">
+      <DashHeader name={u.full_name || u.username || 'BAC Member'}
+        context={seat ? `${seat.position_label}, BAC Committee` : undefined} />
       <WorkflowOff status={status} />
       <NoSeat status={status} />
-      <BacCharts projects={projects} resolutions={resolutions} />
-      <section className="bac-card" aria-labelledby="h-eval">
-        <div className="bac-card-head"><div><h3 id="h-eval">Waiting for your evaluation</h3>
-          <p>Procurements whose bidding has closed and that still have bids you haven&apos;t evaluated.</p></div>
-          <Link to="/bac/evaluation" className="rf-card-link">All procurements</Link></div>
-        {projects === null ? <div className="bac-card-body"><ListSkeleton rows={2} /></div>
-          : !toEvaluate.length ? <EmptyState compact icon={ClipboardCheck} title="Nothing to evaluate" description="You're up to date." />
-            : <div className="bac-list">{toEvaluate.map(p => (
-              <Link key={p.id} to={`/bac/evaluation/${p.id}`} className="bac-list-row">
-                <span><strong>{p.code} · {p.name}</strong>
-                  <span className="sub">You evaluated {p.my_evaluations} of {p.bid_count} bid(s)</span></span>
-                <StatusBadge tone="warning" label="To do" />
-              </Link>))}</div>}
-      </section>
-      <section className="bac-card" aria-labelledby="h-vote">
-        <div className="bac-card-head"><div><h3 id="h-vote">Open for voting</h3>
-          <p>Resolutions waiting for the committee&apos;s vote.</p></div>
-          <Link to="/bac/resolutions" className="rf-card-link">Resolutions</Link></div>
-        {voting === null ? <div className="bac-card-body"><ListSkeleton rows={2} /></div>
-          : !myVotes.length ? <EmptyState compact icon={Vote} title="No votes waiting" description="Nothing is open for your vote." />
-            : <div className="bac-list">{myVotes.map(r => (
-              <Link key={r.id} to="/bac/resolutions" className="bac-list-row">
-                <span><strong>{r.number}</strong><span className="sub">{r.project_code} · recommends {r.recommended_company}</span></span>
-                <StatusBadge tone="info" label="Vote" />
-              </Link>))}</div>}
-      </section>
+
+      <KpiRow cols={4}>
+        <KpiCard label="Bids to evaluate" icon={ClipboardCheck} loading={projects === null} to="/bac/evaluation"
+          tone={bidsLeft ? 'warning' : 'neutral'} value={bidsLeft}
+          context={toEvaluate.length ? `On ${toEvaluate.length} procurement${toEvaluate.length === 1 ? '' : 's'}` : 'You are up to date'} />
+        <KpiCard label="Votes waiting" icon={Vote} loading={resolutions === null} to="/bac/resolutions"
+          tone={myVotes.length ? 'warning' : 'neutral'} value={myVotes.length}
+          context={voting?.length ? `${voting.length} resolution${voting.length === 1 ? '' : 's'} open for voting` : 'Nothing open for voting'} />
+        <KpiCard label="In evaluation" icon={Gavel} loading={projects === null} to="/bac/evaluation"
+          value={open.length} context="Procurements before award" />
+        <KpiCard label="Resolutions adopted" icon={FileText} loading={resolutions === null} to="/bac/records"
+          value={adopted} context={`${resolutions?.length || 0} put to a vote`} />
+      </KpiRow>
+
+      <DashGrid
+        main={<>
+          <Panel id="eval" title="Waiting for your evaluation" count={toEvaluate.length} countTone="warning"
+            link={{ to: '/bac/evaluation', label: 'All procurements' }}>
+            {projects === null ? <div className="rf-card-body"><ListSkeleton rows={2} /></div>
+              : !toEvaluate.length ? <EmptyState compact icon={ClipboardCheck} title="Nothing to evaluate" description="Procurements appear here once bidding closes." />
+                : <div className="bac-list">{toEvaluate.map(p => (
+                  <Link key={p.id} to={`/bac/evaluation/${p.id}`} className="bac-list-row">
+                    <span><strong>{p.code} · {p.name}</strong>
+                      <span className="sub">You evaluated {p.my_evaluations} of {p.bid_count} bid{p.bid_count === 1 ? '' : 's'}</span></span>
+                    <StatusBadge tone="warning" label="To do" />
+                  </Link>))}</div>}
+          </Panel>
+          <Panel id="vote" title="Open for your vote" count={myVotes.length} countTone="info"
+            link={{ to: '/bac/resolutions', label: 'Resolutions' }}>
+            {voting === null ? <div className="rf-card-body"><ListSkeleton rows={2} /></div>
+              : !myVotes.length ? <EmptyState compact icon={Vote} title="No votes waiting" description="Resolutions appear here when Staff open voting." />
+                : <div className="bac-list">{myVotes.map(r => (
+                  <Link key={r.id} to="/bac/resolutions" className="bac-list-row">
+                    <span><strong>{r.number}</strong><span className="sub">{r.project_code} · recommends {r.recommended_company}</span></span>
+                    <StatusBadge tone="info" label="Vote" />
+                  </Link>))}</div>}
+          </Panel>
+        </>}
+        side={<BacCharts projects={projects} resolutions={resolutions} />} />
     </div>
   )
 }
 
-// Three pictures of the committee's work: my own progress, the committee's
-// progress on each open procurement, and how its resolutions ended.
+// Two pictures of the committee's work: progress on the procurements still
+// open (mine and the committee's), and how its resolutions ended.
 function BacCharts({ projects, resolutions }) {
-  if (projects === null || resolutions === null) return <ListSkeleton rows={3} />
+  if (projects === null || resolutions === null) {
+    return <Panel title="Committee progress"><div className="rf-card-body"><ListSkeleton rows={3} /></div></Panel>
+  }
   const open = projects.filter(p => p.status !== 'awarded')
   const myDone = open.reduce((n, p) => n + Math.min(p.my_evaluations, p.bid_count), 0)
   const myTotal = open.reduce((n, p) => n + p.bid_count, 0)
@@ -123,37 +139,37 @@ function BacCharts({ projects, resolutions }) {
     ? (r.head_decision === 'approved' ? 'approved' : r.head_decision === 'pending' ? 'with_head' : 'returned') : r.status
   const count = (k) => resolutions.filter(r => outcome(r) === k).length
   return (
-    <div className="ch-grid-2">
-      <section className="bac-card" aria-labelledby="h-prog">
-        <div className="bac-card-head"><div><h3 id="h-prog">Evaluation progress</h3>
-          <p>Your evaluations, and the committee&apos;s on each procurement still open.</p></div></div>
-        <div className="bac-card-body">
-          <ProgressBar label="My evaluations" value={myDone} total={myTotal} color={SERIES[0]} />
-          {open.length > 0
-            ? <BarList ariaLabel="Committee evaluations per procurement" color={SERIES[2]}
-              data={open.map(p => ({
-                label: p.code, sub: p.name, value: p.evaluations_done, max: p.evaluations_expected || 1,
-                display: `${p.evaluations_done} of ${p.evaluations_expected}`,
-              }))} />
-            : <p className="bac-hint">No procurement is waiting for evaluation.</p>}
-        </div>
-      </section>
-      <section className="bac-card" aria-labelledby="h-out">
-        <div className="bac-card-head"><div><h3 id="h-out">Resolutions</h3>
-          <p>Every resolution put to a vote, by how it ended.</p></div></div>
-        <div className="bac-card-body">
-          {resolutions.length === 0 ? <p className="bac-hint">No resolution has been put to a vote yet.</p> : (
-            <DonutChart ariaLabel="Resolutions by outcome" centerLabel="resolutions"
-              data={[
-                { label: 'Award approved by the Head', value: count('approved'), color: STATUS.success },
-                { label: 'Adopted, with the Head', value: count('with_head'), color: STATUS.info },
-                { label: 'Voting', value: count('voting'), color: STATUS.warning },
-                { label: 'Not adopted or returned', value: count('not_adopted') + count('returned'), color: STATUS.danger },
-              ]} />
-          )}
-        </div>
-      </section>
-    </div>
+    <TabbedPanel title="Committee progress" tabs={[
+      {
+        key: 'eval', label: 'Evaluations', render: () => (
+          <div className="ch-card-body">
+            <ProgressBar label="My evaluations" value={myDone} total={myTotal} color={SERIES[0]} />
+            {open.length > 0
+              ? <BarList ariaLabel="Committee evaluations per procurement" color={SERIES[2]}
+                data={open.map(p => ({
+                  label: p.code, sub: p.name, value: p.evaluations_done, max: p.evaluations_expected || 1,
+                  display: `${p.evaluations_done} of ${p.evaluations_expected}`,
+                }))} />
+              : <p className="bac-hint">No procurement is waiting for evaluation.</p>}
+          </div>
+        ),
+      },
+      {
+        key: 'res', label: 'Resolutions', render: () => (
+          <div className="ch-card-body">
+            {resolutions.length === 0 ? <p className="bac-hint">No resolution has been put to a vote yet.</p> : (
+              <DonutChart ariaLabel="Resolutions by outcome" centerLabel="resolutions" size={128}
+                data={[
+                  { label: 'Award approved by the Head', value: count('approved'), color: STATUS.success },
+                  { label: 'Adopted, with the Head', value: count('with_head'), color: STATUS.info },
+                  { label: 'Voting', value: count('voting'), color: STATUS.warning },
+                  { label: 'Not adopted or returned', value: count('not_adopted') + count('returned'), color: STATUS.danger },
+                ]} />
+            )}
+          </div>
+        ),
+      },
+    ]} />
   )
 }
 

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import {
-  AlertTriangle, ArrowRight, Award, CheckCircle2, ChevronRight, ClipboardCheck, Clock, FileWarning, FolderOpen, Gavel,
-  Link2, Loader2, Lock, PiggyBank, RefreshCw, RotateCw, Send, ShieldCheck, UserCheck, Users, Wallet,
+  AlertTriangle, Award, CheckCircle2, ChevronRight, ClipboardCheck, Clock, FileWarning, FolderOpen, Gavel,
+  Link2, Loader2, Lock, PiggyBank, RefreshCw, RotateCw, Send, ShieldCheck, UserCheck, Users,
 } from 'lucide-react'
 import { apiAdminSummary, apiAnchorNextPending } from '../../api'
 import { signingBlocked } from '../../blockchain/anchor'
@@ -14,10 +14,11 @@ import ActivityFeed from '../../components/ui/ActivityFeed'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { BarList, ColumnChart, DonutChart, SERIES, STATUS, monthLabel } from '../../components/charts/Charts'
 import EmptyState from '../../components/ui/EmptyState'
+import { DashGrid, DashHeader, Panel, StageStrip, TabbedPanel, useShowMore } from '../../components/ui/Dashboard'
 import RelativeTime from '../../components/ui/RelativeTime'
 import { toast } from '../../components/ui/Toaster'
 import { ListSkeleton, Skeleton } from '../../components/Skeleton'
-import { amount, greeting, peso, pesoCompact, todayLong } from '../../utils/format'
+import { amount, peso, pesoCompact } from '../../utils/format'
 import { getCached, loadCached } from '../../utils/sessionCache'
 import { canPrepare, linkForRole, useBacStatus, ws } from '../../utils/workspace'
 
@@ -65,21 +66,6 @@ export function AttentionList({ items, loading, limit = ATTN_LIMIT, emptyTitle =
         </div>
       )}
     </>
-  )
-}
-
-// Procurements per stage, in lifecycle order. Each bar opens that stage's list.
-function Pipeline({ stages, loading }) {
-  const navigate = useNavigate()
-  if (loading) return <div className="rf-card-body"><ListSkeleton rows={6} height={22} /></div>
-  return (
-    <div className="ch-card-body">
-      <BarList ariaLabel="Procurements by stage" color={SERIES[0]}
-        data={stages.map((s) => ({
-          label: s.label, value: s.count, display: `${s.count}`,
-          onClick: () => navigate(`${ws('')}/projects?stage=${s.key}`),
-        }))} />
-    </div>
   )
 }
 
@@ -314,23 +300,124 @@ export default function AdminHome() {
   const cats = (data?.categories || []).map((c) => ({
     label: c.category, value: c.count, display: `${c.count} · ${pesoCompact(c.abc)}`,
   }))
+  const role = ws('').startsWith('/staff') ? 'staff' : 'admin'
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+  // "Incomplete documents" used to be its own card; it is the same suppliers list.
+  const supplierContext = [
+    k.suppliers_incomplete_documents ? `${k.suppliers_incomplete_documents} with incomplete docs` : '',
+    k.category_requests ? plural(k.category_requests, 'category request') : '',
+  ].filter(Boolean).join(' · ') || 'Registrations waiting'
+
+  const attention = (
+    <Panel id="attn" title="Needs your attention" count={loading ? 0 : data?.attention?.length} countTone="warning">
+      <AttentionList items={data?.attention || []} loading={loading}
+        emptyText="No suppliers to verify, bids to evaluate or documents to issue right now." />
+    </Panel>
+  )
+
+  const pipeline = (
+    <Panel id="pipe" title="Procurement pipeline" link={{ to: ws('/projects'), label: 'All projects' }}>
+      {loading ? <div className="rf-card-body"><ListSkeleton rows={2} height={48} /></div>
+        : <StageStrip stages={(data?.pipeline || []).map((s) => ({ ...s, to: `${ws('')}/projects?stage=${s.key}` }))} />}
+    </Panel>
+  )
+
+  const analytics = (
+    <TabbedPanel title="Analytics" link={{ to: ws('/reports'), label: 'Reports' }} tabs={[
+      { key: 'trend', label: 'Last six months', render: () => <Trend trend={data?.trend} loading={loading} /> },
+      {
+        key: 'savings', label: 'Savings against ABC', render: () => (loading ? <div className="rf-card-body"><ListSkeleton rows={3} height={40} /></div>
+          : !savings?.rows?.length ? (
+            <EmptyState compact icon={PiggyBank} title="No awards yet" description="Savings appear once a winning bid is selected." />
+          ) : (
+            <>
+              <dl className="rf-stat-line">
+                <div><dt>Total ABC</dt><dd title={peso(savings.total_abc)}>{pesoCompact(savings.total_abc)}</dd></div>
+                <div><dt>Awarded</dt><dd title={peso(savings.total_awarded)}>{pesoCompact(savings.total_awarded)}</dd></div>
+                <div><dt>Saved</dt><dd className="is-good" title={peso(savings.total_saved)}>
+                  {pesoCompact(savings.total_saved)}{savings.saved_pct != null && ` · ${savings.saved_pct}%`}
+                </dd></div>
+              </dl>
+              {/* Each bar is the awarded amount; the track behind it is that procurement's ABC. */}
+              <div className="ch-card-body">
+                <BarList ariaLabel="Awarded amount against each ABC" color={SERIES[0]}
+                  data={savings.rows.slice(0, SAVINGS_ROWS).map((r) => ({
+                    label: r.name, sub: `${r.code} · ${r.supplier}`,
+                    value: amount(r.amount), max: amount(r.abc) || 1,
+                    display: `${pesoCompact(r.amount)} of ${pesoCompact(r.abc)}${r.saved_pct != null ? ` · ${amount(r.saved) >= 0 ? 'saved' : 'over'} ${Math.abs(r.saved_pct)}%` : ''}`,
+                  }))} />
+              </div>
+              {savings.rows.length > SAVINGS_ROWS && (
+                <p className="dash-note">
+                  Showing {SAVINGS_ROWS} of {savings.rows.length} awards; the totals above cover all of them.{' '}
+                  <Link to={ws('/awards')} className="rf-card-link">All awards</Link>
+                </p>
+              )}
+            </>
+          )),
+      },
+      {
+        key: 'cat', label: 'By category', render: () => (loading ? <div className="rf-card-body"><ListSkeleton rows={4} height={18} /></div>
+          : cats.length === 0 ? <EmptyState compact icon={FolderOpen} title="No procurements yet" description="Categories appear as procurements are created." />
+          : <div className="ch-card-body"><BarList ariaLabel="Procurements per category, with total ABC" color={SERIES[0]} data={cats} /></div>),
+      },
+    ]} />
+  )
+
+  const closing = (
+    <Panel id="closing" title="Closing soon" link={{ to: ws('/projects?stage=published'), label: 'All open' }}>
+      {loading ? <div className="rf-card-body"><ListSkeleton rows={3} height={44} /></div>
+        : !data?.closing_soon?.length ? (
+          <EmptyState compact icon={Gavel} title="No open biddings"
+            description="Published procurements appear here until their deadline." />
+        ) : (
+          <ul className="rf-list">
+            {data.closing_soon.map((p) => (
+              <li key={p.id}>
+                <Link to={`${ws('')}/bids/${p.id}`} className="rf-list-row" style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}>
+                  <span style={{ minWidth: 0 }}>
+                    <span className="rf-list-title" style={{ display: 'block' }} title={p.name}>{p.name}</span>
+                    <span className="rf-list-sub"><span className="rf-code">{p.code}</span>{p.bids} bid{p.bids === 1 ? '' : 's'}</span>
+                  </span>
+                  <span className="rf-list-side">
+                    <span className="rf-amount" title={peso(p.budget)}>{pesoCompact(p.budget)}</span>
+                    <Countdown deadline={p.deadline} />
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+    </Panel>
+  )
+
+  const chain = (
+    <Panel id="chain" title="Blockchain health" link={{ to: '/public', label: 'Public verifier' }} style={{ scrollMarginTop: 80 }}>
+      <div className="dash-chain">
+        <ChainHealth chain={data?.chain} loading={loading} onAnchored={load} />
+      </div>
+    </Panel>
+  )
+
+  const activity = (
+    <Panel id="act" title="Recent activity">
+      {loading ? <div className="rf-card-body"><ListSkeleton rows={4} height={36} /></div>
+        : <RecentActivity items={data?.activity || []} />}
+    </Panel>
+  )
 
   return (
     <div className="ad-content rf-home">
-      <div className="rf-greeting">
-        <div>
-          <h2>{greeting()}, {u.full_name || u.username || 'Administrator'}</h2>
-          <p>{todayLong()}</p>
-        </div>
-        <div className="rf-greeting-actions">
-          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => { setLoading(true); load({ fresh: true }) }}>
-            <RefreshCw size={13} /> Refresh
+      <DashHeader name={u.full_name || u.username || (role === 'staff' ? 'Procurement Staff' : 'Administrator')}
+        actions={<>
+          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => { setLoading(true); load({ fresh: true }) }}
+            disabled={loading}>
+            <RefreshCw size={13} className={loading ? 'ui-spin' : undefined} aria-hidden="true" /> Refresh
           </button>
-          {canPrepare(ws('').startsWith('/staff') ? 'staff' : 'admin', bac.workflow_enabled) && (
-            <Link to={ws('/planning')} className="ui-btn ui-btn--primary ui-btn--sm"><FolderOpen size={13} /> New procurement</Link>
+          {canPrepare(role, bac.workflow_enabled) && (
+            <Link to={ws('/planning')} className="ui-btn ui-btn--primary ui-btn--sm"><FolderOpen size={13} aria-hidden="true" /> New procurement</Link>
           )}
-        </div>
-      </div>
+        </>} />
 
       {error && (
         <div className="ui-callout ui-callout--danger" role="alert">
@@ -345,151 +432,38 @@ export default function AdminHome() {
 
       {/* No numbers at all rather than misleading zeros when the summary failed. */}
       {(data || !error) && <>
-      <KpiRow cols={6}>
-        <KpiCard label="Open biddings" icon={Gavel} tone="info" loading={loading}
-          value={k.open_biddings ?? 0} to={ws('/projects?stage=published')}
-          context={k.closing_this_week ? `${k.closing_this_week} closing this week` : 'None closing this week'} />
-        <KpiCard label="Bids to evaluate" icon={ClipboardCheck} loading={loading}
-          tone={k.bids_awaiting_on_closed ? 'danger' : k.bids_awaiting_evaluation ? 'warning' : 'neutral'}
-          value={k.bids_awaiting_evaluation ?? 0} to={ws('/bids')}
-          context={k.bids_awaiting_on_closed ? `${k.bids_awaiting_on_closed} on closed biddings` : 'Undecided bids'} />
-        <KpiCard label="Suppliers to verify" icon={UserCheck} loading={loading}
-          tone={k.suppliers_awaiting_verification ? 'warning' : 'neutral'}
-          value={k.suppliers_awaiting_verification ?? 0} to={ws('/suppliers')}
-          context={k.category_requests ? `+${k.category_requests} category request${k.category_requests === 1 ? '' : 's'}` : 'Registrations waiting'} />
-        <KpiCard label="Incomplete documents" icon={FileWarning} loading={loading}
-          title="Suppliers with documents missing, expired or expiring within 30 days"
-          tone={k.suppliers_incomplete_documents ? 'danger' : 'neutral'}
-          value={k.suppliers_incomplete_documents ?? 0} to={ws('/suppliers')}
-          context="Missing or expiring ≤30 days" />
-        <KpiCard label="Not yet on-chain" icon={Link2} loading={loading}
-          tone={k.anchors_pending ? 'warning' : 'neutral'}
-          value={k.anchors_pending ?? 0} to={ws('#chain')}
-          context={k.anchors_pending ? 'Waiting for a signature' : data?.chain?.anchored ? 'All steps reported' : 'Nothing recorded yet'} />
-        <KpiCard label="Open budgets (ABC)" icon={Wallet} loading={loading}
-          value={pesoCompact(k.open_abc)} title={peso(k.open_abc)} to={ws('/projects?stage=published')}
-          context={`Across ${k.open_biddings ?? 0} open bidding${k.open_biddings === 1 ? '' : 's'}`} />
-      </KpiRow>
+        <KpiRow cols={4}>
+          <KpiCard label="Bids to evaluate" icon={ClipboardCheck} loading={loading}
+            tone={k.bids_awaiting_on_closed ? 'danger' : k.bids_awaiting_evaluation ? 'warning' : 'neutral'}
+            value={k.bids_awaiting_evaluation ?? 0} to={ws('/bids')}
+            context={k.bids_awaiting_on_closed ? `${k.bids_awaiting_on_closed} on closed biddings` : 'Undecided bids'} />
+          <KpiCard label="Suppliers to verify" icon={UserCheck} loading={loading}
+            title="Suppliers with documents missing, expired or expiring within 30 days count as incomplete"
+            tone={k.suppliers_incomplete_documents ? 'danger' : k.suppliers_awaiting_verification ? 'warning' : 'neutral'}
+            value={k.suppliers_awaiting_verification ?? 0} to={ws('/suppliers')}
+            context={supplierContext} />
+          <KpiCard label="Open biddings" icon={Gavel} tone="info" loading={loading}
+            value={k.open_biddings ?? 0} to={ws('/projects?stage=published')} title={`Open budgets (ABC): ${peso(k.open_abc)}`}
+            context={`${pesoCompact(k.open_abc)} ABC · ${k.closing_this_week || 'none'} closing this week`} />
+          <KpiCard label="Not yet on-chain" icon={Link2} loading={loading}
+            tone={k.anchors_pending ? 'warning' : 'neutral'}
+            value={k.anchors_pending ?? 0} to={ws('#chain')}
+            context={k.anchors_pending ? 'Waiting for a signature' : data?.chain?.anchored ? 'All steps reported' : 'Nothing recorded yet'} />
+        </KpiRow>
 
-      <div className="rf-grid-2">
-        <section className="rf-card" aria-labelledby="attn-h">
-          <div className="rf-card-head">
-            <div><h3 id="attn-h">Needs your attention</h3><p>Most urgent first</p></div>
-            {!loading && data?.attention?.length > 0 && <span className="ui-badge ui-badge--warning">{data.attention.length}</span>}
-          </div>
-          <AttentionList items={data?.attention || []} loading={loading}
-            emptyText="No suppliers to verify, bids to evaluate or documents to issue right now." />
-        </section>
-
-        <section className="rf-card" aria-labelledby="closing-h">
-          <div className="rf-card-head">
-            <div><h3 id="closing-h">Closing soon</h3></div>
-            <Link to={ws('/projects?stage=published')} className="rf-card-link">All open <ChevronRight size={13} /></Link>
-          </div>
-          {loading ? <div className="rf-card-body"><ListSkeleton rows={3} height={44} /></div>
-            : !data?.closing_soon?.length ? (
-              <EmptyState compact icon={Gavel} title="No open biddings"
-                description="Publish an approved procurement to open it for bidding."
-                action={<Link to={ws('/projects')} className="ui-btn ui-btn--secondary ui-btn--sm">Go to Projects</Link>} />
-            ) : (
-              <ul className="rf-list">
-                {data.closing_soon.map((p) => (
-                  <li key={p.id}>
-                    <Link to={`${ws('')}/bids/${p.id}`} className="rf-list-row" style={{ gridTemplateColumns: 'minmax(0,1fr) auto' }}>
-                      <span style={{ minWidth: 0 }}>
-                        <span className="rf-list-title" style={{ display: 'block' }}>{p.name}</span>
-                        <span className="rf-list-sub"><span className="rf-code">{p.code}</span>{p.bids} bid{p.bids === 1 ? '' : 's'}</span>
-                      </span>
-                      <span className="rf-list-side">
-                        <span className="rf-amount">{peso(p.budget)}</span>
-                        <Countdown deadline={p.deadline} />
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-        </section>
-      </div>
-
-      <div className="rf-grid-2-even">
-        <section className="rf-card" aria-labelledby="pipe-h">
-          <div className="rf-card-head">
-            <div><h3 id="pipe-h">Procurement pipeline</h3><p>Procurements in each stage · select one to open it</p></div>
-          </div>
-          <Pipeline stages={data?.pipeline || []} loading={loading} />
-        </section>
-        <section className="rf-card" aria-labelledby="trend-h">
-          <div className="rf-card-head">
-            <div><h3 id="trend-h">Last six months</h3><p>Procurements created and awarded per month</p></div>
-          </div>
-          <Trend trend={data?.trend} loading={loading} />
-        </section>
-      </div>
-
-      <div className="rf-grid-2-even">
-        <section className="rf-card" aria-labelledby="sav-h">
-          <div className="rf-card-head">
-            <div><h3 id="sav-h">Savings against the ABC</h3><p>Approved budget vs awarded amount</p></div>
-            <Link to={ws('/awards')} className="rf-card-link">Awards <ChevronRight size={13} /></Link>
-          </div>
-          {loading ? <div className="rf-card-body"><ListSkeleton rows={3} height={40} /></div>
-            : !savings?.rows?.length ? (
-              <EmptyState compact icon={PiggyBank} title="No awards yet"
-                description="Savings appear once a winning bid is selected." />
-            ) : (
-              <>
-                <dl className="rf-stat-line">
-                  <div><dt>Total ABC</dt><dd title={peso(savings.total_abc)}>{pesoCompact(savings.total_abc)}</dd></div>
-                  <div><dt>Awarded</dt><dd title={peso(savings.total_awarded)}>{pesoCompact(savings.total_awarded)}</dd></div>
-                  <div><dt>Saved</dt><dd className="is-good" title={peso(savings.total_saved)}>
-                    {pesoCompact(savings.total_saved)}{savings.saved_pct != null && ` · ${savings.saved_pct}%`}
-                  </dd></div>
-                </dl>
-                {/* Each bar is the awarded amount; the track behind it is that procurement's ABC. */}
-                <div className="ch-card-body" style={{ paddingTop: 4 }}>
-                  <BarList ariaLabel="Awarded amount against each ABC" color={SERIES[0]}
-                    data={savings.rows.map((r) => ({
-                      label: r.name, sub: `${r.code} · ${r.supplier}`,
-                      value: amount(r.amount), max: amount(r.abc) || 1,
-                      display: `${pesoCompact(r.amount)} of ${pesoCompact(r.abc)}${r.saved_pct != null ? ` · ${amount(r.saved) >= 0 ? 'saved' : 'over'} ${Math.abs(r.saved_pct)}%` : ''}`,
-                    }))} />
-                </div>
-              </>
-            )}
-        </section>
-
-        <section className="rf-card" aria-labelledby="cat-h">
-          <div className="rf-card-head">
-            <div><h3 id="cat-h">By category</h3><p>Procurements · total ABC</p></div>
-          </div>
-          {loading ? <div className="rf-card-body"><ListSkeleton rows={4} height={18} /></div>
-            : cats.length === 0 ? <EmptyState compact icon={FolderOpen} title="No procurements yet" description="Categories appear as procurements are created." />
-            : <div className="ch-card-body"><BarList ariaLabel="Procurements per category" color={SERIES[0]} data={cats} /></div>}
-        </section>
-      </div>
-
-      <div className="rf-grid-2-even">
-        <section className="rf-card rf-card-fill" aria-labelledby="act-h">
-          <div className="rf-card-head">
-            <div><h3 id="act-h">Recent activity</h3></div>
-          </div>
-          {/* Scrolls inside the card, so its height follows Blockchain health beside it. */}
-          <div className="rf-card-scroll" tabIndex={0} role="region" aria-labelledby="act-h">
-            {loading ? <div className="rf-card-body"><ListSkeleton rows={4} height={36} /></div>
-              : <ActivityFeed items={data?.activity || []} />}
-          </div>
-        </section>
-
-        <section className="rf-card" id="chain" aria-labelledby="chain-h" style={{ scrollMarginTop: 80 }}>
-          <div className="rf-card-head">
-            <div><h3 id="chain-h">Blockchain health</h3><p>Steps anchored on Ethereum Sepolia</p></div>
-            <Link to="/public" className="rf-card-link">Public verifier <ArrowRight size={13} /></Link>
-          </div>
-          <ChainHealth chain={data?.chain} loading={loading} onAnchored={load} />
-        </section>
-      </div>
+        <DashGrid
+          main={<>{attention}{pipeline}{analytics}</>}
+          side={<>{closing}{chain}{activity}</>} />
       </>}
     </div>
   )
+}
+
+const SAVINGS_ROWS = 6
+const ACTIVITY_ROWS = 6
+
+// The newest few audit-log entries, with the rest one click away.
+function RecentActivity({ items }) {
+  const [shown, more] = useShowMore(items, ACTIVITY_ROWS)
+  return <><ActivityFeed items={shown} />{more}</>
 }

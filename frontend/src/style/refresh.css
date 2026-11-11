@@ -632,3 +632,120 @@ a.rf-list-row:focus-visible { outline: none; box-shadow: inset var(--focus-ring)
   .rf-table.is-stacking .rf-row-actions { justify-content: flex-start; flex-wrap: wrap; white-space: normal; }
   .rf-table.is-stacking .rf-diff { white-space: normal; }
 }
+
+/* ── Dashboard layout (components/ui/Dashboard.jsx) ─────────────────────────
+   One structure for every role's home: compact header, up to four KPIs, then
+   a main column for decisions and a side column for status. Below 1180px the
+   side column drops under the main one, keeping the task-first order. */
+.rf-home { gap: var(--sp-5); }
+.dash-header { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3) var(--sp-4); flex-wrap: wrap; }
+.dash-header-text { min-width: 0; }
+.dash-header h2 {
+  margin: 0; font-size: var(--fs-page-title); font-weight: var(--fw-bold); color: var(--text-strong);
+  letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: anywhere;
+}
+.dash-header p { margin: 2px 0 0; color: var(--text-subtle); font-size: var(--fs-small); }
+.dash-header-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+
+.dash-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 400px); gap: var(--sp-5); align-items: start; }
+.dash-main, .dash-side { display: flex; flex-direction: column; gap: var(--sp-5); min-width: 0; }
+@media (max-width: 1180px) { .dash-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.dash-panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  min-height: 52px; padding: var(--sp-3) var(--sp-5); border-bottom: 1px solid var(--border);
+}
+.dash-panel-head h3 {
+  display: inline-flex; align-items: center; gap: var(--sp-2); margin: 0;
+  font-size: var(--fs-card-title); font-weight: var(--fw-semibold); color: var(--text-strong);
+}
+.dash-panel-tools { display: flex; align-items: center; gap: var(--sp-3); flex-shrink: 0; }
+.dash-count {
+  display: inline-grid; place-items: center; min-width: 22px; height: 20px; padding: 0 7px;
+  border-radius: var(--r-pill); font-size: var(--fs-micro); font-weight: var(--fw-bold); font-variant-numeric: tabular-nums;
+  color: var(--tone-neutral-fg); background: var(--tone-neutral-bg);
+}
+.dash-count--warning { color: var(--tone-warning-fg); background: var(--tone-warning-bg); }
+.dash-count--danger { color: var(--tone-danger-fg); background: var(--tone-danger-bg); }
+.dash-count--info { color: var(--tone-info-fg); background: var(--tone-info-bg); }
+.dash-more { padding: 0 var(--sp-5) var(--sp-4); }
+.dash-note { margin: 0; padding: var(--sp-3) var(--sp-5); font-size: var(--fs-caption); color: var(--text-subtle); border-top: 1px solid var(--border); }
+
+/* Tabs inside a panel: underline style, so they read as a view switch, not buttons. */
+.dash-tabs { display: flex; gap: var(--sp-1); padding: 0 var(--sp-4); border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.dash-tabs::-webkit-scrollbar { display: none; }
+.dash-tab {
+  position: relative; padding: 10px var(--sp-2); border: 0; background: none; cursor: pointer; white-space: nowrap;
+  font: inherit; font-size: var(--fs-small); font-weight: var(--fw-medium); color: var(--text-subtle);
+}
+.dash-tab:hover { color: var(--text-strong); }
+.dash-tab.is-active { color: var(--c-primary-700); font-weight: var(--fw-semibold); }
+.dash-tab.is-active::after { content: ''; position: absolute; left: var(--sp-2); right: var(--sp-2); bottom: -1px; height: 2px; border-radius: 2px; background: var(--c-primary-600); }
+.dash-tab:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--r-sm); }
+.dash-tabpanel { min-height: 180px; }
+.dash-tabpanel > .rf-stat-line { border-bottom: 1px solid var(--border); }
+
+/* Stage strip: one tile per lifecycle stage, count first. */
+.dash-stages {
+  list-style: none; margin: 0; padding: var(--sp-4) var(--sp-5);
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: var(--sp-2);
+}
+.dash-stage {
+  display: flex; flex-direction: column; gap: 2px; height: 100%; padding: 10px var(--sp-3);
+  border: 1px solid var(--border); border-radius: var(--r-btn); background: var(--surface);
+  color: inherit; text-decoration: none; transition: border-color var(--rf-motion), background var(--rf-motion);
+}
+.dash-stage.is-link:hover { border-color: var(--c-primary-200); background: var(--c-primary-50); }
+.dash-stage.is-link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.dash-stage-count { font-size: 20px; line-height: 1.2; font-weight: var(--fw-bold); color: var(--text-strong); font-variant-numeric: tabular-nums; }
+.dash-stage-label { font-size: var(--fs-caption); color: var(--text-subtle); line-height: 1.3; }
+.dash-stage.is-empty { background: var(--surface-muted); }
+.dash-stage.is-empty .dash-stage-count { color: var(--text-faint); }
+.dash-stage.is-warning:not(.is-empty) { border-color: var(--tone-warning-border); }
+.dash-stage.is-warning:not(.is-empty) .dash-stage-count { color: var(--tone-warning-fg); }
+
+/* KPI cards: quieter. The accent bar marks only cards that need action. */
+.rf-kpi { gap: 4px; padding: var(--sp-4) var(--sp-4) 14px; }
+.rf-kpi--success::before, .rf-kpi--info::before { background: transparent; }
+.rf-kpi-icon { width: 28px; height: 28px; }
+.rf-kpi-value { font-size: 24px; }
+.rf-kpi-context { flex-wrap: nowrap; min-width: 0; }
+.rf-kpi-context > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rf-kpi-row.is-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 560px) {
+  .rf-kpi-row.is-4, .rf-kpi-row.is-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
+  .rf-kpi { padding: var(--sp-3); }
+  .rf-kpi-value { font-size: 22px; }
+  .rf-kpi-icon { display: none; }
+  .dash-panel-head { padding: var(--sp-3) var(--sp-4); }
+  .dash-stages { padding: var(--sp-3) var(--sp-4); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Compact document summary on the Head's queue (the full list is one click away). */
+.dash-docsum { display: inline-flex; align-items: center; gap: 6px; margin-top: var(--sp-2); font-size: var(--fs-caption); color: var(--text-subtle); }
+.dash-docsum svg { flex-shrink: 0; }
+.dash-docsum.is-ok svg { color: var(--tone-success-fg); }
+.dash-docsum.is-warn { color: var(--tone-warning-fg); }
+.dash-docsum.is-bad { color: var(--tone-danger-fg); }
+.dash-side .rf-queue-item, .dash-side .rf-list-row { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+.dash-panel .ui-more { margin: 0; padding: var(--sp-2) var(--sp-5) var(--sp-3); }
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-stage, .dash-tab { transition: none; }
+}
+.dash-docs > summary { list-style: none; cursor: pointer; border-radius: var(--r-sm); }
+.dash-docs > summary::-webkit-details-marker { display: none; }
+.dash-docs > summary:hover { text-decoration: underline; }
+.dash-docs > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.dash-docs-caret { transition: transform var(--rf-motion); }
+.dash-docs[open] .dash-docs-caret { transform: rotate(180deg); }
+.dash-docs .rf-checklist { margin-top: var(--sp-2); }
+
+/* Wrappers whose banner has nothing to say leave no gap behind. */
+.rf-home > div:empty { display: none; }
+@media (max-width: 560px) {
+  /* Phones: let the context line wrap to two lines rather than cut it off. */
+  .rf-kpi-context > span:last-child {
+    white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+}

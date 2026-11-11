@@ -26,7 +26,8 @@ import AppSidebar from '../components/shell/AppSidebar'
 import AppHeader, { storedUser } from '../components/shell/AppHeader'
 import StatusBadge from '../components/ui/StatusBadge'
 import EmptyState, { TableEmpty } from '../components/ui/EmptyState'
-import { deadlineMeta, greeting, peso, pesoCompact, todayLong } from '../utils/format'
+import { deadlineMeta, peso, pesoCompact } from '../utils/format'
+import { DashGrid, DashHeader, Panel, TabbedPanel } from '../components/ui/Dashboard'
 import KpiCard, { KpiRow } from '../components/ui/KpiCard'
 import Countdown, { useNow } from '../components/ui/Countdown'
 import Thumbnail from '../components/ui/Thumbnail'
@@ -1471,12 +1472,18 @@ function docProblems(profile) {
   return out.sort((a, b) => a.rank - b.rank)
 }
 
+const DOC_LIMIT = 4
+const OPP_LIMIT = 4
+const BID_LIMIT = 5
+
 function DocumentHealth({ profile, setToast, onUploaded }) {
+  const [showAll, setShowAll] = useState(false)
   if (!profile) return <div className="rf-card-body"><ListSkeleton rows={3} height={36} /></div>
   const problems = docProblems(profile)
   const total = (profile.documents || []).filter(d => d.required).length
   const ok = total - (profile.documents || []).filter(d => d.required && (d.missing || d.expired || d.review_status === 'needs_revision')).length
   const inRevision = profile.qualification_status === 'needs_revision'
+  const shownProblems = showAll ? problems : problems.slice(0, DOC_LIMIT)
   return (
     <>
       <dl className="rf-stat-line">
@@ -1487,8 +1494,9 @@ function DocumentHealth({ profile, setToast, onUploaded }) {
         <EmptyState compact icon={ShieldCheck} title="All documents in order"
           description="Nothing is missing, flagged or expiring in the next 30 days." />
       ) : (
+        <>
         <ul className="rf-doc-list">
-          {problems.map(({ d, tone, note }) => (
+          {shownProblems.map(({ d, tone, note }) => (
             <li key={d.key} className="rf-doc-row">
               <span className={`rf-attn-icon rf-tone-${tone}`} aria-hidden="true">
                 {tone === 'danger' ? <AlertTriangle size={15} /> : <Clock size={15} />}
@@ -1512,6 +1520,14 @@ function DocumentHealth({ profile, setToast, onUploaded }) {
             </li>
           ))}
         </ul>
+        {problems.length > DOC_LIMIT && (
+          <div className="dash-more">
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => setShowAll(v => !v)} aria-expanded={showAll}>
+              {showAll ? 'Show fewer' : `Show all ${problems.length}`}
+            </button>
+          </div>
+        )}
+        </>
       )}
     </>
   )
@@ -1529,10 +1545,12 @@ function lastSixMonths() {
   return out
 }
 
-// How the supplier's bids are doing, as pictures: outcome of every bid, and
-// bids submitted per month with how many of those were won.
+// How the supplier's bids are doing, in one panel with a tab per picture:
+// outcome of every bid, and bids submitted per month with how many were won.
 function SupplierCharts({ bids, loading }) {
-  if (loading && !bids.length) return <div className="ch-grid-2"><Skeleton height={220} radius={12} /><Skeleton height={220} radius={12} /></div>
+  if (loading && !bids.length) {
+    return <Panel title="My bid performance"><div className="rf-card-body"><Skeleton height={180} radius={8} /></div></Panel>
+  }
   const won = bids.filter(b => b.status === 'winner').length
   const disq = bids.filter(b => b.status === 'disqualified').length
   const lost = bids.filter(b => b.status !== 'winner' && b.status !== 'disqualified' && b.projectStatus === 'awarded').length
@@ -1547,30 +1565,32 @@ function SupplierCharts({ bids, loading }) {
     }
   })
   return (
-    <div className="ch-grid-2">
-      <section className="rf-card" aria-labelledby="sd-out-h">
-        <div className="rf-card-head"><div><h3 id="sd-out-h">My bids by outcome</h3><p>Every bid you have submitted</p></div></div>
-        <div className="ch-card-body">
-          {!bids.length ? <p className="rf-muted" style={{ margin: 0 }}>Your bids will be charted here once you submit one.</p> : (
-            <DonutChart ariaLabel="My bids by outcome" centerLabel="bids"
-              data={[
-                { label: 'Won', value: won, color: STATUS.success },
-                { label: 'Still being evaluated', value: pending, color: STATUS.info },
-                { label: 'Not selected', value: lost, color: STATUS.neutral },
-                { label: 'Disqualified', value: disq, color: STATUS.danger },
-              ]} />
-          )}
-        </div>
-      </section>
-      <section className="rf-card" aria-labelledby="sd-trend-h">
-        <div className="rf-card-head"><div><h3 id="sd-trend-h">Bids per month</h3><p>Submitted and won, last six months</p></div></div>
-        <div className="ch-card-body">
-          <ColumnChart ariaLabel="Bids submitted and won per month"
-            series={[{ key: 'submitted', label: 'Submitted' }, { key: 'won', label: 'Won' }]}
-            data={months.map(m => ({ label: monthLabel(m), values: perMonth[m] }))} />
-        </div>
-      </section>
-    </div>
+    <TabbedPanel title="My bid performance" link={{ to: '/supplier/reports', label: 'Reports' }} tabs={[
+      {
+        key: 'outcome', label: 'By outcome', render: () => (
+          <div className="ch-card-body">
+            {!bids.length ? <p className="rf-muted" style={{ margin: 0 }}>Your bids will be charted here once you submit one.</p> : (
+              <DonutChart ariaLabel="My bids by outcome" centerLabel="bids" size={128}
+                data={[
+                  { label: 'Won', value: won, color: STATUS.success },
+                  { label: 'Still being evaluated', value: pending, color: STATUS.info },
+                  { label: 'Not selected', value: lost, color: STATUS.neutral },
+                  { label: 'Disqualified', value: disq, color: STATUS.danger },
+                ]} />
+            )}
+          </div>
+        ),
+      },
+      {
+        key: 'month', label: 'Per month', render: () => (
+          <div className="ch-card-body">
+            <ColumnChart ariaLabel="Bids submitted and won per month" height={160}
+              series={[{ key: 'submitted', label: 'Submitted' }, { key: 'won', label: 'Won' }]}
+              data={months.map(m => ({ label: monthLabel(m), values: perMonth[m] }))} />
+          </div>
+        ),
+      },
+    ]} />
   )
 }
 
@@ -1609,15 +1629,8 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
     <div className="sd-content rf-home">
       {modal && <BidModal project={modal} profile={profile} onClose={() => setModal(null)} onSubmit={onBid} />}
 
-      <div className="rf-greeting">
-        <div>
-          <h2>{greeting()}, {profile?.representative_name || profile?.full_name || u.full_name || 'Supplier'}</h2>
-          <p>{todayLong()}</p>
-        </div>
-        <div className="rf-greeting-actions">
-          <Link to="/supplier/projects" className="ui-btn ui-btn--primary ui-btn--sm"><FolderOpen size={13} /> All opportunities</Link>
-        </div>
-      </div>
+      <DashHeader name={profile?.representative_name || profile?.full_name || u.full_name || 'Supplier'}
+        actions={<Link to="/supplier/projects" className="ui-btn ui-btn--primary ui-btn--sm"><FolderOpen size={13} aria-hidden="true" /> All opportunities</Link>} />
 
       <AccountStatusBanner profile={profile} />
       <EmailVerifyBanner profile={profile} setToast={setToast} />
@@ -1634,30 +1647,28 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
           </div>
         </div>
       )}
-      <KpiRow cols={5}>
+      <KpiRow cols={4}>
         <KpiCard label="Open opportunities" icon={FolderOpen} tone="info" loading={loadingProjects}
           value={failed.projects ? '—' : open.length} to="/supplier/projects"
           context={newCount ? `${newCount} new in 48 hours` : 'In your categories'} />
         <KpiCard label="My active bids" icon={FileText} loading={loadingBids} value={failed.bids ? '—' : active.length} to="/supplier/bids"
           context={`${active.filter(b => b.status === 'under_review').length} under evaluation`} />
+        {/* Win rate used to be its own card; it describes these same bids. */}
         <KpiCard label="Bids won" icon={Trophy} tone={won.length ? 'success' : 'neutral'} loading={loadingBids}
           value={failed.bids ? '—' : won.length} to="/supplier/bids"
-          context={won.length ? `${pesoCompact(won.reduce((s, b) => s + b.amountRaw, 0))} in contracts` : 'No awards yet'} />
-        <KpiCard label="Win rate" icon={BarChart2} loading={loadingBids}
-          value={failed.bids || winRate == null ? '—' : `${winRate}%`} to="/supplier/reports"
-          context={decided.length ? `${won.length} of ${decided.length} decided bid${decided.length === 1 ? '' : 's'}` : 'No decided bids yet'} />
+          title={decided.length ? `Win rate ${winRate}%: ${won.length} of ${decided.length} decided bid${decided.length === 1 ? '' : 's'}` : undefined}
+          context={won.length
+            ? `${winRate}% win rate · ${pesoCompact(won.reduce((s, b) => s + b.amountRaw, 0))}`
+            : decided.length ? `0 of ${decided.length} decided bid${decided.length === 1 ? '' : 's'}` : 'No awards yet'} />
         <KpiCard label="Documents to fix" icon={AlertTriangle} loading={!profile}
-          tone={problems.some(p => p.tone === 'danger') ? 'danger' : problems.length ? 'warning' : 'success'}
+          tone={problems.some(p => p.tone === 'danger') ? 'danger' : problems.length ? 'warning' : 'neutral'}
           value={problems.length} to="/supplier/profile"
           context={problems.length ? 'Missing, flagged or expiring' : 'All in order'} />
       </KpiRow>
 
-      {!failed.bids && <SupplierCharts bids={bids} loading={loadingBids} />}
-
-      <section className="rf-card" aria-labelledby="opp-h">
-        <div className="rf-card-head" style={{ flexWrap: 'wrap' }}>
-          <div><h3 id="opp-h">Opportunities for you</h3><p>In your registered categories</p></div>
-          {open.length > 0 && (
+      <DashGrid main={<>
+      <Panel id="opp" title="Opportunities for you" count={feed.length} countTone="info"
+        actions={open.length > 0 && (
             <div className="rf-filterbar">
               <label>Category
                 <select className="rf-select" value={category} onChange={e => setCategory(e.target.value)}>
@@ -1673,8 +1684,7 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
                 </select>
               </label>
             </div>
-          )}
-        </div>
+          )}>
         {loadingProjects && projects.length === 0 ? (
           <div className="rf-opp-grid">{[0, 1, 2].map(i => <Skeleton key={i} height={170} radius={12} />)}</div>
         ) : feed.length === 0 ? (
@@ -1685,8 +1695,9 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
               <Link to="/supplier/settings" className="ui-btn ui-btn--ghost ui-btn--sm">Review my categories</Link>
             </>} />
         ) : (
+          <>
           <div className="rf-opp-grid">
-            {feed.map(p => {
+            {feed.slice(0, OPP_LIMIT).map(p => {
               const mine = bidByProject[p.id]
               return (
                 <article key={p.id} className="rf-opp">
@@ -1724,15 +1735,17 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
               )
             })}
           </div>
+          {feed.length > OPP_LIMIT && (
+            <p className="dash-note">
+              Showing {OPP_LIMIT} of {feed.length}.{' '}
+              <Link to="/supplier/projects" className="rf-card-link">All opportunities</Link>
+            </p>
+          )}
+          </>
         )}
-      </section>
+      </Panel>
 
-      <div className="rf-grid-2">
-        <section className="rf-card" aria-labelledby="mybids-h">
-          <div className="rf-card-head">
-            <div><h3 id="mybids-h">My bids</h3></div>
-            {bids.length > 0 && <Link to="/supplier/bids" className="rf-card-link">All bids <ChevronRight size={13} /></Link>}
-          </div>
+        <Panel id="mybids" title="My bids" link={bids.length > 0 ? { to: '/supplier/bids', label: 'All bids' } : undefined}>
           {loadingBids && bids.length === 0 ? (
             <div className="rf-card-body"><ListSkeleton rows={2} height={60} /></div>
           ) : bids.length === 0 ? (
@@ -1740,7 +1753,7 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
               description={eligible ? 'Pick an opportunity above and submit your first bid.' : 'Once your account is verified you can start bidding.'} />
           ) : (
             <ul className="rf-list">
-              {bids.slice(0, 6).map(b => {
+              {bids.slice(0, BID_LIMIT).map(b => {
                 const receipt = b.status === 'winner' ? receiptFor(b) : null
                 const imgs = b.productImages || []
                 return (
@@ -1767,16 +1780,13 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
               })}
             </ul>
           )}
-        </section>
-
-        <section className="rf-card" aria-labelledby="docs-h">
-          <div className="rf-card-head">
-            <div><h3 id="docs-h">Document health</h3></div>
-            <Link to="/supplier/profile" className="rf-card-link">My documents <ChevronRight size={13} /></Link>
-          </div>
+        </Panel>
+      </>} side={<>
+        <Panel id="docs" title="Document health" link={{ to: '/supplier/profile', label: 'My documents' }}>
           <DocumentHealth profile={profile} setToast={setToast} onUploaded={onResubmitted} />
-        </section>
-      </div>
+        </Panel>
+        {!failed.bids && <SupplierCharts bids={bids} loading={loadingBids} />}
+      </>} />
 
       {preview && (
         <Lightbox images={preview.images} index={preview.index} title={preview.title}

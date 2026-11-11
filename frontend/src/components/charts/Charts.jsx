@@ -11,7 +11,7 @@
 // rank; text stays in the text tokens; every mark has a hover/focus tooltip;
 // a legend appears for two or more series and the values are always written
 // out (some fills are below 3:1 on white), plus a visually hidden table.
-import { useId, useRef, useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState } from 'react'
 import '../../style/charts.css'
 
 // Categorical slots, fixed order (validated: CVD ΔE ≥ 9 for adjacent pairs).
@@ -58,6 +58,24 @@ function useTooltip() {
   return { ref, show, hide, node }
 }
 
+// The drawn width of an element. Charts use it as their SVG width, so axis
+// text stays at its real size in a narrow side column or on a phone instead of
+// being scaled down with a fixed-width drawing.
+function useWidth(ref, fallback) {
+  const [width, setWidth] = useState(fallback)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(([entry]) => {
+      const w = Math.round(entry.contentRect.width)
+      if (w > 0) setWidth(w)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [ref])
+  return width
+}
+
 export function Legend({ items }) {
   return (
     <ul className="ch-legend">
@@ -88,7 +106,7 @@ function HiddenTable({ caption, head, rows }) {
  */
 export function ColumnChart({ data, series, mode = 'grouped', format = fmtCount, ariaLabel, height = 180 }) {
   const tip = useTooltip()
-  const W = 560, H = height, padL = 34, padB = 24, padT = 10
+  const W = Math.max(240, useWidth(tip.ref, 560)), H = height, padL = 34, padB = 24, padT = 10
   const plotW = W - padL - 8, plotH = H - padB - padT
   const totals = data.map(d => series.reduce((s, sr) => s + Number(d.values[sr.key] || 0), 0))
   const max = niceMax(mode === 'stacked' ? Math.max(0, ...totals)
