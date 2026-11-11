@@ -1,0 +1,13 @@
+/* components/ui/LocationPicker.jsx */
+.lp { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.lp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.lp-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: var(--fs-caption); color: var(--text-subtle); font-weight: var(--fw-medium); }
+.lp-field small { font-weight: var(--fw-regular); color: var(--text-faint); }
+.lp-field--wide { grid-column: 1 / -1; }
+.lp-field select:disabled { background: var(--surface-muted); color: var(--text-faint); }
+.lp-note { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-caption); color: var(--text-body); }
+.lp-note--warn { color: var(--tone-warning-fg); }
+.lp-switch { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none;
+  color: var(--tone-success-fg); font: inherit; font-size: var(--fs-caption); font-weight: var(--fw-medium); cursor: pointer; }
+.lp-switch:hover { text-decoration: underline; }
+@media (max-width: 640px) { .lp-grid { grid-template-columns: 1fr; } }

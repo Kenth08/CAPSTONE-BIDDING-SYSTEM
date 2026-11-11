@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
+import { ws, useBacStatus, canPrepare } from '../utils/workspace'
+import { statementYearOptions } from '../utils/statementYears'
+import { WARRANTY_MONTH_PRESETS, deliveryLabel as deliveryChoiceLabel, deliveryPresetsFor, warrantyLabel } from '../utils/bidTerms'
 import { Routes, Route, Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, Calendar, Users, Pencil, Award, BarChart2,
   Search, ChevronRight, ChevronLeft, LogOut, Shield, RefreshCw,
   Plus, FileText, Activity, UserCheck, Info, Eye, X, ExternalLink,
   CheckCircle2, AlertTriangle, XCircle, Check, Menu, ImageIcon, Clock, ArrowLeft,
-  Upload, ShieldCheck, Link2, Copy, Loader2, Hash,
+  Upload, ShieldCheck, Link2, Copy, Loader2, Hash, Download, Gavel, ScrollText, UserCog, Landmark,
 } from 'lucide-react'
 import {
   apiLogout, apiListSuppliers, apiGetSupplier,
@@ -19,7 +22,7 @@ import {
   useProjects, createProject, publishProject, refreshProjects, isExpired, deadlineLabel, deliveryLabel,
   resubmitProjectDocuments,
 } from '../store/projectsStore'
-import { findCategory, normalizeCategory } from '../constants/categories'
+import { findCategory, normalizeCategory, OTHERS_CATEGORY } from '../constants/categories'
 import { addCategory, useCategories } from '../store/categoriesStore'
 import CategoryDocumentFields, {
   appendCategoryDocs, categoryDocsProblem, pastExpiryProblem, todayIso,
@@ -45,7 +48,13 @@ import { runAnchor, runAnchorSequence } from '../blockchain/anchorStore'
 import { ANCHOR_STATES, anchorState } from '../blockchain/anchorState'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import AdminHome from './admin/AdminHome'
+import UsersPage from './admin/UsersPage'
+import BacCommitteePage from './admin/BacCommitteePage'
+import BacRecordsPage from './bac/BacRecordsPage'
+import BacMeetingsPage from './staff/BacMeetingsPage'
 import InfoTip from '../components/ui/InfoTip'
+import LocationPicker from '../components/ui/LocationPicker'
+import MoneyInput from '../components/ui/MoneyInput'
 import MoreInfo from '../components/ui/MoreInfo'
 import Toaster from '../components/ui/Toaster'
 import Thumbnail from '../components/ui/Thumbnail'
@@ -57,23 +66,39 @@ import ProcurementStepper from '../components/ui/ProcurementStepper'
 import ProcurementRecordPage, { prefetchRecord } from '../components/ProcurementRecord'
 import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import SecureImg from '../components/ui/SecureImg'
+import PreviewButton, { LocalPreviewButton } from '../components/ui/FilePreview'
 import '../style/AdminDashboard.css'
 
-const NAV_SECTIONS = [
-  { label: 'Overview', items: [
-    { icon: LayoutDashboard, label: 'Dashboard', to: '/admin' },
-  ] },
-  { label: 'Procurement', items: [
-    { icon: Calendar,   label: 'Planning', to: '/admin/planning' },
-    { icon: FolderOpen, label: 'Projects', to: '/admin/projects' },
-    { icon: Pencil,     label: 'Bids',     to: '/admin/bids' },
-    { icon: Award,      label: 'Awards',   to: '/admin/awards' },
-  ] },
-  { label: 'Management', items: [
-    { icon: Users,     label: 'Suppliers', to: '/admin/suppliers' },
-    { icon: BarChart2, label: 'Reports',   to: '/admin/reports' },
-  ] },
-]
+const workspaceRole = () => (ws('').startsWith('/staff') ? 'staff' : 'admin')
+
+// The menu for whoever is signed in. This file serves both the Admin (/admin)
+// and Procurement Staff (/staff). With separation of duties on
+// (utils/workspace.useBacStatus) the Admin oversees and manages accounts and
+// Staff prepare; with it off the Admin keeps every original page.
+function navSections(role, workflowOn) {
+  const prepare = canPrepare(role, workflowOn)
+  const procurement = [
+    ...(prepare ? [{ icon: Calendar, label: 'Planning', to: ws('/planning') }] : []),
+    { icon: FolderOpen, label: 'Projects', to: ws('/projects') },
+    { icon: Pencil,     label: 'Bids',     to: ws('/bids') },
+    ...(role === 'staff' ? [{ icon: Gavel, label: 'BAC Meetings', to: ws('/bac-meetings') }] : []),
+    { icon: Award,      label: 'Awards',   to: ws('/awards') },
+    ...(role === 'admin' ? [{ icon: ScrollText, label: 'BAC Records', to: ws('/bac-records') }] : []),
+  ]
+  const management = [
+    ...(role === 'admin' ? [
+      { icon: UserCog,  label: 'Users',         to: ws('/users') },
+      { icon: Landmark, label: 'BAC Committee', to: ws('/bac-committee') },
+    ] : []),
+    { icon: Users,     label: 'Suppliers', to: ws('/suppliers') },
+    { icon: BarChart2, label: 'Reports',   to: ws('/reports') },
+  ]
+  return [
+    { label: 'Overview', items: [{ icon: LayoutDashboard, label: 'Dashboard', to: ws('') }] },
+    { label: role === 'admin' && workflowOn ? 'Oversight' : 'Procurement', items: procurement },
+    { label: 'Management', items: management },
+  ]
+}
 
 const STATUS_LABEL = {
   draft: 'Draft', pending_head: 'Pending', needs_revision: 'Needs Revision', approved: 'Approved', rejected: 'Rejected',
@@ -154,6 +179,7 @@ const PIPELINE_STAGES = {
 }
 
 function ProjectsPage() {
+  const { workflow_enabled: workflowOn } = useBacStatus()
   const { projects, loading } = useProjects()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
@@ -215,7 +241,7 @@ function ProjectsPage() {
               <span className="sr-only">Search projects</span>
               <input placeholder="Search title or reference" value={search} onChange={e => setSearch(e.target.value)} />
             </label>
-            <button className="ad-btn-history" onClick={() => navigate('/admin/projects/history')}>
+            <button className="ad-btn-history" onClick={() => navigate(ws('/projects/history'))}>
               <Clock size={13} /> History{historyCount > 0 ? ` (${historyCount})` : ''}
             </button>
           </div>
@@ -253,7 +279,7 @@ function ProjectsPage() {
                   <td><StatusBadge domain="project" status={p.status} /></td>
                   <td className="ad-actions-col">
                     <div className="ad-actions">
-                      {p.status === 'approved' && (
+                      {p.status === 'approved' && canPrepare(workspaceRole(), workflowOn) && (
                         <PublishButton
                           project={p}
                           onPublished={(proj) => setToast({
@@ -262,7 +288,7 @@ function ProjectsPage() {
                           })}
                         />
                       )}
-                      <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/bids/${p.id}`)}>
+                      <button className="ad-btn-view-sm" onClick={() => navigate(`${ws('')}/bids/${p.id}`)}>
                         <Eye size={13} /> View Bids
                       </button>
                     </div>
@@ -315,7 +341,7 @@ function ProjectHistoryPage() {
     <div className="ad-content">
       <div className="ad-card">
         <div className="ad-card-header">
-          <button className="ad-btn-view-sm" onClick={() => navigate('/admin/projects')}>
+          <button className="ad-btn-view-sm" onClick={() => navigate(ws('/projects'))}>
             <ArrowLeft size={12} /> Back to Projects
           </button>
           <div className="ad-toolbar">
@@ -353,10 +379,10 @@ function ProjectHistoryPage() {
                     <StatusBadge tone={p.status === 'awarded' ? 'success' : 'neutral'} label={closedLabel(p)} />
                   </td>
                   <td className="ad-actions-col">
-                    <button className="ad-btn-view-sm" onClick={() => navigate(`/admin/bids/${p.id}`)}>
+                    <button className="ad-btn-view-sm" onClick={() => navigate(`${ws('')}/bids/${p.id}`)}>
                       <Eye size={13} /> View Bids
                     </button>
-                    <button className="ad-btn-view-sm" onMouseEnter={() => prefetchRecord(p.id)} onClick={() => navigate(`/admin/record/${p.id}`)}>
+                    <button className="ad-btn-view-sm" onMouseEnter={() => prefetchRecord(p.id)} onClick={() => navigate(`${ws('')}/record/${p.id}`)}>
                       <ShieldCheck size={13} /> Record
                     </button>
                   </td>
@@ -396,9 +422,16 @@ function PublishButton({ project, onPublished }) {
 // ── Planning Page ─────────────────────────────────────────────────────────────
 
 const PROCUREMENT_TYPES = ['Goods', 'Services', 'Infrastructure', 'Consulting Services']
+// Adds or removes a number from a sorted list (delivery / warranty choices).
+// Value of the "Others (add a new category)" option in the category dropdown.
+const NEW_CATEGORY = '__new__'
+
+const toggleNumber = (list, n) => (list.includes(n) ? list.filter(x => x !== n) : [...list, n].sort((a, b) => a - b))
+
 const EMPTY_PROJECT = {
-  name: '', category: '', type: 'Goods', budget: '',
+  name: '', category: '', category_other: '', type: 'Goods', budget: '',
   delivery_location: '', bidding_period_days: '', delivery_period_days: '', description: '',
+  delivery_options: [], warranty_options: [],   // choices bidders pick from (utils/bidTerms.js)
   reference_image: null,   // optional product reference photo (File)
   require_product_images: false,   // bidders must attach product photos
   product_image_instructions: '',  // optional guidance shown to bidders
@@ -438,7 +471,7 @@ const checkImage = (f) => {
 // ── Assisted Registration (admin fills the supplier's form for a walk-in
 // applicant who brought physical documents) ─────────────────────────────────
 const ASSISTED_EMPTY = {
-  full_name: '', email: '', password: '', confirm_password: '',
+  first_name: '', middle_name: '', last_name: '', email: '', password: '', confirm_password: '',
   company_name: '', company_address: '', phone_number: '', tin: '',
   representative_name: '', mayors_permit_expiry: '', tax_clearance_expiry: '',
   financial_statement_year: '', track_record_description: '',
@@ -541,6 +574,7 @@ function DocUploader({ doc, file, onFile, onRemove, optional }) {
         <div className="ad-doc-file">
           <FileText size={14} />
           <span className="ad-doc-name" title={file.name}>{file.name}</span>
+          <LocalPreviewButton file={file} className="sd-file-preview" />
           <button type="button" onClick={onRemove} aria-label="Remove"><X size={14} /></button>
         </div>
       ) : (
@@ -658,7 +692,7 @@ function ProjectDetailModal({ project, onClose, setToast }) {
                           : null}
                     </div>
                     {d.url
-                      ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                      ? <span className="ad-doc-actions"><PreviewButton url={d.url} name={d.label} className="ad-doc-view" /><a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><Download size={13} /> Download</a></span>
                       : <span className="ad-doc-missing">Not uploaded</span>}
                   </div>
                   {flagged && d.review_note && (
@@ -669,6 +703,7 @@ function ProjectDetailModal({ project, onClose, setToast }) {
                       <div className="ad-doc-file" style={{ marginTop: 8 }}>
                         <FileText size={14} />
                         <span className="ad-doc-name" title={files[d.key].name}>{files[d.key].name}</span>
+                        <LocalPreviewButton file={files[d.key]} className="sd-file-preview" />
                         <button type="button" onClick={() => setFiles(f => { const n = { ...f }; delete n[d.key]; return n })} aria-label="Remove"><X size={14} /></button>
                       </div>
                     ) : (
@@ -712,6 +747,16 @@ function PlanningPage() {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const categories = useCategories()
   const [addingCategory, setAddingCategory] = useState(false)
+  // The category is chosen from a dropdown of the shared list. Its last option,
+  // "Others", is how a new category is added: a box for the name appears, and
+  // the name is saved to the list on submit (saveCategory).
+  const [catChoice, setCatChoice] = useState('')        // a listed category, NEW_CATEGORY or ''
+  const [newCategory, setNewCategory] = useState('')
+  const listedCategories = categories.filter(c => c !== OTHERS_CATEGORY)
+  const chooseCategory = (v) => {
+    setCatChoice(v)
+    setForm(f => ({ ...f, category: v === NEW_CATEGORY ? newCategory : v, category_other: '' }))
+  }
   const typedCategory = normalizeCategory(form.category)
   const knownCategory = findCategory(categories, typedCategory)
   const isNewCategory = Boolean(typedCategory) && !knownCategory
@@ -755,12 +800,17 @@ function PlanningPage() {
     set('reference_image', file)
   }
 
-  const resetForm = () => { setForm(EMPTY_PROJECT); setFiles({}); setShowForm(false) }
+  const resetForm = () => { setForm(EMPTY_PROJECT); setFiles({}); setShowForm(false); setCatChoice(''); setNewCategory('') }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     const missingDocs = REQUIRED_PROCUREMENT_DOCS.filter(d => !files[d.key])
-    if (!typedCategory) { setSubmitErr('Enter or select a procurement category.'); return }
+    if (!typedCategory) {
+      setSubmitErr(catChoice === NEW_CATEGORY ? 'Type the name of the new category.' : 'Choose a procurement category.'); return
+    }
+    if (knownCategory === OTHERS_CATEGORY && !form.category_other.trim()) {
+      setSubmitErr('Specify what is being procured when the category is Others.'); return
+    }
     if (missingDocs.length) {
       setSubmitErr(`Upload all required documents (${missingDocs.length} missing).`); return
     }
@@ -819,27 +869,42 @@ function PlanningPage() {
                 <input value={form.name} onChange={e => set('name', e.target.value)} required />
               </div>
               <div className="ad-form-group">
-                <label>Procurement Category<span className="ui-req" aria-hidden="true">*</span></label>
-                <div className="ad-category-input">
-                  <input
-                    value={form.category}
-                    onChange={e => set('category', e.target.value)}
-                    onBlur={() => { if (knownCategory && knownCategory !== form.category) set('category', knownCategory) }}
-                    list="ad-category-options"
-                    placeholder="Type or pick a category…"
-                    maxLength={120}
-                    autoComplete="off"
-                    required
-                  />
-                  {isNewCategory && (
-                    <button type="button" className="ad-btn-primary-sm" onClick={saveCategory} disabled={addingCategory}>
-                      <Plus size={14} /> {addingCategory ? 'Adding…' : 'Add'}
-                    </button>
-                  )}
-                </div>
-                <datalist id="ad-category-options">
-                  {categories.map(c => <option key={c} value={c} />)}
-                </datalist>
+                <label htmlFor="ad-category">Procurement Category<span className="ui-req" aria-hidden="true">*</span></label>
+                <select id="ad-category" value={catChoice} onChange={e => chooseCategory(e.target.value)} required>
+                  <option value="" disabled>Choose a category…</option>
+                  {listedCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                  <option value={NEW_CATEGORY}>Others (add a new category)</option>
+                </select>
+                {catChoice === NEW_CATEGORY && (
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label htmlFor="ad-category-new">New category name<span className="ui-req" aria-hidden="true">*</span></label>
+                    <div className="ad-category-input">
+                      {/* autoFocus: after choosing Others the focus would stay on the
+                          dropdown, and typing there jumps between options instead. */}
+                      <input id="ad-category-new" value={newCategory} maxLength={120} autoComplete="off" required autoFocus
+                        placeholder="e.g. Laboratory Equipment"
+                        onChange={e => { setNewCategory(e.target.value); set('category', e.target.value) }} />
+                      {isNewCategory && (
+                        <button type="button" className="ad-btn-primary-sm" onClick={saveCategory} disabled={addingCategory}>
+                          <Plus size={14} /> {addingCategory ? 'Adding…' : 'Add'}
+                        </button>
+                      )}
+                    </div>
+                    {knownCategory && knownCategory !== OTHERS_CATEGORY && (
+                      <span className="ad-muted ad-small">"{knownCategory}" is already in the list, so it will be used.</span>
+                    )}
+                  </div>
+                )}
+                {knownCategory === OTHERS_CATEGORY && (
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label htmlFor="ad-category-other">Please specify<span className="ui-req" aria-hidden="true">*</span></label>
+                    <input id="ad-category-other" value={form.category_other} maxLength={200} required
+                      onChange={e => set('category_other', e.target.value)} placeholder="e.g. Event sound system rental" style={{ width: '100%' }} />
+                    <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
+                      Procurements under Others are open to every verified supplier.
+                    </span>
+                  </div>
+                )}
                 {isNewCategory && (
                   <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
                     "{typedCategory}" is a new category. It is added when you submit. No supplier
@@ -854,12 +919,12 @@ function PlanningPage() {
                 </select>
               </div>
               <div className="ad-form-group">
-                <label>Approved Budget (ABC)<span className="ui-req" aria-hidden="true">*</span></label>
-                <input value={form.budget} onChange={e => set('budget', e.target.value)} placeholder="e.g. ₱50,000" required />
+                <label htmlFor="plan-abc">Approved Budget (ABC)<span className="ui-req" aria-hidden="true">*</span></label>
+                <MoneyInput id="plan-abc" value={form.budget} onChange={v => set('budget', v)} required />
               </div>
               <div className="ad-form-group">
-                <label>Delivery Location<span className="ui-req" aria-hidden="true">*</span></label>
-                <input value={form.delivery_location} onChange={e => set('delivery_location', e.target.value)} placeholder="e.g. Main Campus" required />
+                <label htmlFor="plan-location">Delivery Location<span className="ui-req" aria-hidden="true">*</span></label>
+                <LocationPicker id="plan-location" value={form.delivery_location} onChange={v => set('delivery_location', v)} />
               </div>
               <div className="ad-form-group">
                 <label>Bidding Period<span className="ui-req" aria-hidden="true">*</span></label>
@@ -881,6 +946,32 @@ function PlanningPage() {
                   Counted from the day a winner is selected.
                 </span>
               </div>
+              <fieldset className="ad-form-group ad-form-full ad-choice-group">
+                <legend>Delivery timelines bidders may offer</legend>
+                <div className="ad-choice-list">
+                  {deliveryPresetsFor(form.delivery_period_days).map(d => (
+                    <label key={d} className="ad-choice">
+                      <input type="checkbox" checked={form.delivery_options.includes(d)}
+                        onChange={() => set('delivery_options', toggleNumber(form.delivery_options, d))} />
+                      {deliveryChoiceLabel(d)}
+                    </label>
+                  ))}
+                </div>
+                <span className="ad-muted ad-small">Pick the ones the specifications allow. Leave all unticked to let bidders type their own.</span>
+              </fieldset>
+              <fieldset className="ad-form-group ad-form-full ad-choice-group">
+                <legend>Warranty periods bidders may offer</legend>
+                <div className="ad-choice-list">
+                  {WARRANTY_MONTH_PRESETS.map(m => (
+                    <label key={m} className="ad-choice">
+                      <input type="checkbox" checked={form.warranty_options.includes(m)}
+                        onChange={() => set('warranty_options', toggleNumber(form.warranty_options, m))} />
+                      {warrantyLabel(m)}
+                    </label>
+                  ))}
+                </div>
+                <span className="ad-muted ad-small">Leave all unticked to let bidders type their own.</span>
+              </fieldset>
               <div className="ad-form-group ad-form-full">
                 <label>Project Description<span className="ui-req" aria-hidden="true">*</span></label>
                 <textarea value={form.description} onChange={e => set('description', e.target.value)} rows={3} required />
@@ -1275,7 +1366,7 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
 
   const validateStep = () => {
     if (step === 0) {
-      const need = ['full_name', 'email', 'company_name', 'company_address',
+      const need = ['first_name', 'last_name', 'email', 'company_name', 'company_address',
         'phone_number', 'tin', 'representative_name']
       if (need.some(k => !form[k].trim())) return 'Please fill in all required fields.'
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return 'Enter a valid email address.'
@@ -1348,8 +1439,14 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
               <section className="ui-form-section">
                 <div className="ui-form-section-title">Account login</div>
                 <div className="ad-form-grid">
-                  <FormField id="ar-full-name" label="Full Name">
-                    <input id="ar-full-name" autoComplete="off" value={form.full_name} onChange={e => set('full_name', e.target.value)} />
+                  <FormField id="ar-first-name" label="First Name">
+                    <input id="ar-first-name" autoComplete="off" value={form.first_name} onChange={e => set('first_name', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-middle-name" label="Middle Name" required={false} hint="Optional">
+                    <input id="ar-middle-name" autoComplete="off" value={form.middle_name} onChange={e => set('middle_name', e.target.value)} />
+                  </FormField>
+                  <FormField id="ar-last-name" label="Last Name">
+                    <input id="ar-last-name" autoComplete="off" value={form.last_name} onChange={e => set('last_name', e.target.value)} />
                   </FormField>
                   <FormField id="ar-email" label="Email Address" hint="Used to sign in and receive the verification link.">
                     <input id="ar-email" type="email" autoComplete="off" inputMode="email" value={form.email} onChange={e => set('email', e.target.value)} />
@@ -1433,10 +1530,12 @@ function AssistedRegisterModal({ form, set, types, toggleType, files, onFile, re
                   <FormField id="ar-tc-exp" label="Tax Clearance Expiry" required={false}>
                     <input id="ar-tc-exp" type="date" min={todayIso()} value={form.tax_clearance_expiry} onChange={e => set('tax_clearance_expiry', e.target.value)} />
                   </FormField>
-                  <FormField id="ar-fs-year" label="Financial Statement Year" required={false} hint="Four-digit year, e.g. 2026.">
-                    <input id="ar-fs-year" inputMode="numeric" autoComplete="off" value={form.financial_statement_year}
-                      onChange={e => set('financial_statement_year', e.target.value.replace(/[^\d]/g, '').slice(0, 4))}
-                      placeholder="e.g. 2026" />
+                  <FormField id="ar-fs-year" label="Financial Statement Year" required={false} hint="Year of the Audited Financial Statements.">
+                    <select id="ar-fs-year" value={form.financial_statement_year}
+                      onChange={e => set('financial_statement_year', e.target.value)}>
+                      <option value="">Select year</option>
+                      {statementYearOptions().map(y => <option key={y} value={y}>{y}</option>)}
+                    </select>
                   </FormField>
                 </div>
               </section>
@@ -1611,7 +1710,12 @@ function SupplierDocView({ doc }) {
       </span>
     )
   }
-  return <a className="ad-doc-view" href={doc.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+  return (
+    <span className="ad-doc-actions">
+      <PreviewButton url={doc.url} name={doc.label} className="ad-doc-view" />
+      <a className="ad-doc-view" href={doc.url} target="_blank" rel="noreferrer"><Download size={13} /> Download</a>
+    </span>
+  )
 }
 
 // Base documents first, then one group per business category (its extra
@@ -1637,13 +1741,30 @@ const initFlagsFrom = (data) => {
   return initial
 }
 
+// Supplier review starts from "everything checked": a document is flagged only
+// if it is already waiting for a revision, or a required file is missing or
+// no longer in storage (it can't be accepted, so it is always in the request).
+// The reviewer unticks what has a problem; the unticked ones are sent back.
+const isMissingFile = (d) => !d.url || d.present === false
+const initSupplierFlags = (data) => {
+  const initial = initFlagsFrom(data)
+  const undecided = !['verified', 'rejected'].includes(data?.qualification_status)
+  ;(data?.documents || []).forEach(d => {
+    if (undecided && d.required && isMissingFile(d) && !initial[d.key]) {
+      initial[d.key] = { checked: true, note: d.url ? 'The file is no longer in storage. Please upload it again.' : 'Not uploaded yet.' }
+    }
+  })
+  return initial
+}
+
 function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
   const cached = getCached(supplierDetailCache(supplierId))
   const [supplier, setSupplier] = useState(cached || null)
   const [loading, setLoading] = useState(!cached)
   const [error, setError] = useState('')
   // Seed the editable fields from cache so a reopened modal is fully populated.
-  const [flags, setFlags] = useState(() => initFlagsFrom(cached))   // { key: { checked, note } }
+  // flags[key].checked = flagged for revision (shown UNticked: a tick means "checked, OK").
+  const [flags, setFlags] = useState(() => initSupplierFlags(cached))   // { key: { checked, note } }
   const [note, setNote] = useState(cached?.admin_notes || '')        // overall message
   const [confirm, setConfirm] = useState(null) // { title, message, tone, onConfirm }
   const [busy, setBusy] = useState(false)
@@ -1659,7 +1780,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
         // admin's in-progress edits when a background refresh resolves.
         if (!hadCache) {
           setNote(data.admin_notes || '')
-          setFlags(initFlagsFrom(data))
+          setFlags(initSupplierFlags(data))
         }
       })
       // A failed background refresh keeps the cached profile on screen.
@@ -1706,7 +1827,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
   const handleRequestRevision = () => {
     const docs = flaggedDocs()
     if (Object.keys(docs).length === 0) {
-      setError('Flag at least one document for revision (check the box next to it).')
+      setError('Untick at least one document that needs fixing. Every ticked document is accepted as it is.')
       return
     }
     setConfirm({
@@ -1832,7 +1953,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                 <div className="ad-docs-hint">
                   <Info size={15} />
                   <span>
-                    <strong>Tick</strong> any document with a problem, then click <strong>Request Revision</strong>.
+                    Every uploaded document starts <strong>ticked</strong>. Open each one with <strong>Preview</strong>, <strong>untick</strong> any with a problem and say what to fix, then click <strong>Request Revision</strong>. Missing required files are included automatically.
                   </span>
                 </div>
               )}
@@ -1853,11 +1974,12 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                     <div className={`ad-doc-row${rowCls}`} key={d.key}>
                       <div className="ad-doc-main">
                         {canFlag(d) && (
-                          <label className="ad-doc-check">
+                          <label className="ad-doc-check" title={isMissingFile(d) ? 'No file to accept' : checked ? 'Tick when this document is acceptable' : 'Untick if this document has a problem'}>
                             <input
                               type="checkbox"
-                              checked={checked}
-                              disabled={!d.url}
+                              checked={!checked && !isMissingFile(d)}
+                              disabled={isMissingFile(d)}
+                              aria-label={`${d.label} is acceptable`}
                               onChange={() => toggleFlag(d.key)}
                             />
                           </label>
@@ -1889,7 +2011,7 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                       {rs === 'renewed' && !checked && (
                         <div className="ad-doc-prevnote">
                           New copy uploaded by the supplier{d.previous_expiry ? ` to replace one that expired ${fmtDate(d.previous_expiry)}` : ''}.
-                          Open it, then Accept, or tick it and Flag it with a note.
+                          Open it, then Accept, or untick it and Flag it with a note.
                         </div>
                       )}
                       {/* Remind the admin why this doc was sent back, now that it's been re-uploaded. */}
@@ -1945,8 +2067,9 @@ function SupplierDetailModal({ supplierId, onClose, onReviewed }) {
                       disabled state just explains why before the Admin tries. */}
                   <button
                     className="ad-btn-approve"
-                    disabled={busy || !supplier.email_verified}
-                    title={supplier.email_verified ? undefined : 'The supplier must verify their email address before approval.'}
+                    disabled={busy || !supplier.email_verified || pendingFlagCount > 0}
+                    title={!supplier.email_verified ? 'The supplier must verify their email address before approval.'
+                      : pendingFlagCount > 0 ? `${pendingFlagCount} document(s) are unticked. Request a revision, or tick them if they are acceptable.` : undefined}
                     onClick={handleApprove}
                   >
                     <Check size={14} /> {busy ? 'Working…' : 'Approve'}
@@ -2061,7 +2184,7 @@ function CategoryRequestPanel({ supplier, busy, onApprove, onReject }) {
                   ? <span className="cd-badge cd-badge-warn">Flagged</span>
                   : <DocExpiryBadges doc={d} />}
                 {d.url
-                  ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                  ? <span className="ad-doc-actions"><PreviewButton url={d.url} name={d.label} className="ad-doc-view" /><a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><Download size={13} /> Download</a></span>
                   : <span className="ad-doc-missing">Not uploaded</span>}
               </span>
             </li>
@@ -2298,7 +2421,7 @@ function BidsPage() {
                   ? 'Projects appear here once the Head approves them and you publish them for bidding.'
                   : 'Try a different search term, type, or status filter.'}
                 action={biddable.length === 0
-                  ? <Link to="/admin/projects" className="ad-btn-cancel">Go to Projects</Link>
+                  ? <Link to={ws('/projects')} className="ad-btn-cancel">Go to Projects</Link>
                   : <button type="button" className="ad-btn-cancel" onClick={() => update({ q: '', type: 'All', status: 'all' })}>Clear filters</button>}
               />
             </div>
@@ -2306,8 +2429,8 @@ function BidsPage() {
             <div
               className="ad-bid-card"
               key={p.id}
-              onClick={() => navigate(`/admin/bids/${p.id}`)}
-              onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); navigate(`/admin/bids/${p.id}`) } }}
+              onClick={() => navigate(`${ws('')}/bids/${p.id}`)}
+              onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); navigate(`${ws('')}/bids/${p.id}`) } }}
               role="button"
               tabIndex={0}
               aria-label={`Evaluate bids for ${p.name}`}
@@ -2658,7 +2781,7 @@ function BidProductGallery({ bid }) {
 // Full bid detail modal (admin evaluation) — opened by clicking a supplier's row.
 // Shows every field, with images previewed inline so the admin doesn't have to
 // download each one to check it.
-function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqualify, onMarkWinner, onRequestRevision, confirm, onConfirmWinner, onCancelConfirm, onClose }) {
+function BidDetailModal({ bid, awarded, readOnly = false, busyId, projectName, onQualify, onDisqualify, onMarkWinner, onRequestRevision, confirm, onConfirmWinner, onCancelConfirm, onClose }) {
   const files = collectBidFiles(bid)
   const images = files.filter(f => isImageFile(f.name))
   const docs = files.filter(f => !isImageFile(f.name))
@@ -2676,7 +2799,9 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
     return out
   }
   const hasFlaggedDocs = (bid.documents || []).some(d => d.review_status === 'needs_revision')
-  const canDecide = bid.status !== 'winner' && !awarded
+  // readOnly: the BAC workflow is on, so the committee evaluates and the Head
+  // awards (pages/BacDashboard.jsx, pages/head/AwardApprovalsPage.jsx).
+  const canDecide = bid.status !== 'winner' && !awarded && !readOnly
 
   return (
     <div className="ad-modal-overlay" onClick={onClose}>
@@ -2798,7 +2923,7 @@ function BidDetailModal({ bid, awarded, busyId, projectName, onQualify, onDisqua
                               : null}
                       </div>
                       {d.url
-                        ? <a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><ExternalLink size={13} /> View</a>
+                        ? <span className="ad-doc-actions"><PreviewButton url={d.url} name={d.label} className="ad-doc-view" /><a className="ad-doc-view" href={d.url} target="_blank" rel="noreferrer"><Download size={13} /> Download</a></span>
                         : <span className="ad-doc-missing">Not uploaded</span>}
                     </div>
                     {!checked && rs === 'resubmitted' && d.review_note && (
@@ -2930,6 +3055,7 @@ function bidDocState(b) {
 function BidEvaluationPage() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { workflow_enabled: workflowOn } = useBacStatus()
   const [project, setProject] = useState(null)
   const [bids, setBids] = useState([])
   const [award, setAward] = useState(null)       // for the post-award stepper stages
@@ -3143,7 +3269,7 @@ function BidEvaluationPage() {
             <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => setViewBid(b)}>
               <Eye size={13} /> Review
             </button>
-            {!awarded && b.status !== 'winner' && (
+            {!awarded && !workflowOn && b.status !== 'winner' && (
               <>
                 {b.status !== 'qualified' && (
                   <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy} onClick={() => ask('qualify', b)}>
@@ -3179,7 +3305,7 @@ function BidEvaluationPage() {
     <div className="ad-content">
       {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
 
-      <button className="ad-back-link" onClick={() => navigate('/admin/bids')}>
+      <button className="ad-back-link" onClick={() => navigate(ws('/bids'))}>
         <ArrowLeft size={14} /> Back to bid evaluation
       </button>
 
@@ -3200,7 +3326,7 @@ function BidEvaluationPage() {
         <div className="ad-card">
           <EmptyState icon={Search} title="Procurement not found"
             description="It may have been removed, or the link is incorrect."
-            action={<button className="ad-btn-cancel" onClick={() => navigate('/admin/projects')}><ArrowLeft size={14} /> Back to projects</button>} />
+            action={<button className="ad-btn-cancel" onClick={() => navigate(ws('/projects'))}><ArrowLeft size={14} /> Back to projects</button>} />
         </div>
       ) : (
         <>
@@ -3227,7 +3353,7 @@ function BidEvaluationPage() {
                 <button className="ad-btn-timeline" onClick={() => setShowTimeline(true)}>
                   <Clock size={14} /> View Timeline
                 </button>
-                <button className="ad-btn-timeline" onMouseEnter={() => prefetchRecord(project.id)} onClick={() => navigate(`/admin/record/${project.id}`)}
+                <button className="ad-btn-timeline" onMouseEnter={() => prefetchRecord(project.id)} onClick={() => navigate(`${ws('')}/record/${project.id}`)}
                   title="The whole procurement, with blockchain evidence for each step">
                   <ShieldCheck size={14} /> Procurement record
                 </button>
@@ -3238,6 +3364,19 @@ function BidEvaluationPage() {
             </div>
           </section>
 
+          {workflowOn && (
+            <div className="ad-card ad-bac-note" role="note">
+              <Landmark size={16} aria-hidden="true" />
+              <div>
+                <strong>Evaluated by the BAC Committee</strong>
+                <p className="ad-muted ad-small" style={{ margin: '2px 0 0' }}>
+                  Each of the five members evaluates every bid; a bid qualifies when three of them pass it.
+                  The committee then post-qualifies the lowest bid and votes on a resolution, and the Head approves the award.
+                  {workspaceRole() === 'staff' ? ' Draft the resolution from BAC Meetings once a bid passes post-qualification.' : ''}
+                </p>
+              </div>
+            </div>
+          )}
           <section aria-labelledby="bids-h" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div className="rf-greeting">
               <div>
@@ -3285,6 +3424,7 @@ function BidEvaluationPage() {
         <BidDetailModal
           bid={viewBid}
           awarded={awarded}
+          readOnly={workflowOn}
           busyId={busyId}
           projectName={project.name}
           onQualify={(b) => { setViewBid(null); ask('qualify', b) }}
@@ -3326,7 +3466,7 @@ function BidEvaluationPage() {
 // (with its blockchain state) once it has. Re-uploading is allowed and appends a
 // NEW anchor rather than rewriting the old one, so a replacement is visible in
 // the trail instead of silently overwriting history.
-function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
+function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor, readOnly = false }) {
   const inputRef = useRef(null)
   const issued = !!doc.url
   const shortLabel = doc.label.replace(/ \(.*\)/, '')
@@ -3356,6 +3496,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
       />
       {issued ? (
         <>
+          <PreviewButton url={doc.url} name={doc.label} className="ui-icon-btn ad-award-doc-upload" />
           <a className="ad-award-doc-name" href={doc.url} target="_blank" rel="noreferrer"
             title={`Issued ${issuedOn} — click to open`}>
             <FileText size={13} aria-hidden="true" /> <span>{shortLabel}</span>
@@ -3387,7 +3528,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
           )}
           {/* Replace the generated notice with the signed scan once it comes
               back. Appends a new anchor, so both versions stay in the trail. */}
-          <button
+          {!readOnly && <button
             className="ui-icon-btn ad-award-doc-upload"
             disabled={busy}
             onClick={() => inputRef.current?.click()}
@@ -3396,7 +3537,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
             aria-label={`Replace ${shortLabel} with the signed copy`}
           >
             {busy ? <Loader2 size={13} className="ui-spin" /> : <Upload size={13} />}
-          </button>
+          </button>}
         </>
       ) : (
         // Not issued yet: generate it from the award record (the normal path —
@@ -3407,6 +3548,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
             <FileText size={13} aria-hidden="true" /> <span>{shortLabel}</span>
           </span>
           <span className="ad-award-doc-chain is-pending">Pending</span>
+          {!readOnly && <>
           <button className="ad-award-doc-gen" disabled={busy} onClick={() => onGenerate(award, doc)}>
             {busy ? <><Loader2 size={12} className="ui-spin" /> Working…</> : <>Generate</>}
           </button>
@@ -3420,6 +3562,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
           >
             <Upload size={13} />
           </button>
+          </>}
         </>
       )}
     </div>
@@ -3429,6 +3572,7 @@ function AwardDocButton({ award, doc, busy, onUpload, onGenerate, onAnchor }) {
 const AWARDS_CACHE = 'admin:awards'
 
 function AwardsPage() {
+  const { workflow_enabled: workflowOn } = useBacStatus()
   // A revisit shows the last list at once; the effect below refreshes it.
   const [awards, setAwards] = useState(() => getCached(AWARDS_CACHE) || [])
   const [loading, setLoading] = useState(() => getCached(AWARDS_CACHE) === undefined)
@@ -3556,7 +3700,7 @@ function AwardsPage() {
                 description={search
                   ? 'Try a different supplier, project, or ref code.'
                   : 'Awards appear here after you mark a winning bid in Bid Evaluation.'}
-                action={!search && <Link to="/admin/bids" className="ad-btn-cancel">Go to Bid Evaluation</Link>} />
+                action={!search && <Link to={ws('/bids')} className="ad-btn-cancel">Go to Bid Evaluation</Link>} />
             ) : filtered.map(a => (
               <tr key={a.id}>
                 <td className="ad-bold">{a.supplier_name}</td>
@@ -3564,7 +3708,7 @@ function AwardsPage() {
                   <div className="ad-cell-stack">
                     <span>{a.project_name}</span>
                     <RefCode code={a.project_code} />
-                    <Link to={`/admin/record/${a.project}`} onMouseEnter={() => prefetchRecord(a.project)} className="ad-btn-view-sm" style={{ alignSelf: 'flex-start' }}>
+                    <Link to={`${ws('')}/record/${a.project}`} onMouseEnter={() => prefetchRecord(a.project)} className="ad-btn-view-sm" style={{ alignSelf: 'flex-start' }}>
                       <ShieldCheck size={12} /> Procurement record
                     </Link>
                   </div>
@@ -3583,6 +3727,7 @@ function AwardsPage() {
                         onUpload={uploadDoc}
                         onGenerate={generateDoc}
                         onAnchor={anchorDoc}
+                        readOnly={!canPrepare(workspaceRole(), workflowOn)}
                       />
                     ))}
                   </div>
@@ -3849,10 +3994,13 @@ function ReportsPage() {
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 
-export default function AdminDashboard() {
+export default function AdminDashboard({ workspace = 'admin' }) {
   const loc = useLocation()
   const navigate = useNavigate()
   const [navOpen, setNavOpen] = useState(false)
+  const bacStatus = useBacStatus()
+  const workflowOn = bacStatus.workflow_enabled
+  const base = `/${workspace}`
   // Close the mobile drawer whenever the route changes.
   useEffect(() => { setNavOpen(false) }, [loc.pathname])
 
@@ -3865,49 +4013,53 @@ export default function AdminDashboard() {
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = 0 }, [loc.pathname])
 
   const PAGE_TITLES = {
-    '/admin':           'Dashboard',
-    '/admin/projects':  'Projects',
-    '/admin/projects/history': 'Bidding History',
-    '/admin/planning':  'Planning',
-    '/admin/suppliers': 'Suppliers',
-    '/admin/bids':      'Bids',
-    '/admin/awards':    'Awards',
-    '/admin/reports':   'Reports',
+    '':           'Dashboard',
+    '/projects':  'Projects',
+    '/projects/history': 'Bidding History',
+    '/planning':  'Planning',
+    '/suppliers': 'Suppliers',
+    '/bids':      'Bids',
+    '/awards':    'Awards',
+    '/reports':   'Reports',
+    '/users':     'Users',
+    '/bac-committee': 'BAC Committee',
+    '/bac-records':   'BAC Records',
+    '/bac-meetings':  'BAC Meetings',
   }
-  const title = PAGE_TITLES[loc.pathname]
-    || (loc.pathname.startsWith('/admin/bids/') ? 'Bid Evaluation'
-      : loc.pathname.startsWith('/admin/record/') ? 'Procurement Record' : 'Dashboard')
+  const rel = loc.pathname.slice(base.length).replace(/\/$/, '')
+  const title = PAGE_TITLES[rel]
+    || (rel.startsWith('/bids/') ? 'Bid Evaluation'
+      : rel.startsWith('/record/') ? 'Procurement Record' : 'Dashboard')
 
-  // Breadcrumbs: Admin › Section › (sub-page)
+  // Breadcrumbs: Admin (or Staff) › Section › (sub-page)
   const CRUMB_SECTIONS = {
     projects: 'Projects', planning: 'Planning', suppliers: 'Suppliers',
     bids: 'Bids', awards: 'Awards', reports: 'Reports', record: 'Procurement Record',
+    users: 'Users', 'bac-committee': 'BAC Committee', 'bac-records': 'BAC Records', 'bac-meetings': 'BAC Meetings',
   }
   const [, , section, sub] = loc.pathname.split('/')
-  const crumbs = [{ label: 'Admin', to: '/admin' }]
+  const crumbs = [{ label: workspace === 'staff' ? 'Staff' : 'Admin', to: base }]
   if (!section || !CRUMB_SECTIONS[section]) crumbs.push({ label: 'Dashboard' })
   else {
-    // /admin/record has no index page of its own, so that crumb is plain text.
-    crumbs.push({ label: CRUMB_SECTIONS[section], to: section === 'record' ? undefined : `/admin/${section}` })
+    // .../record has no index page of its own, so that crumb is plain text.
+    crumbs.push({ label: CRUMB_SECTIONS[section], to: section === 'record' ? undefined : `${base}/${section}` })
     if (sub) crumbs.push({ label: section === 'bids' ? 'Evaluation' : section === 'record' ? `#${sub}` : sub === 'history' ? 'History' : sub })
   }
 
-  // "/admin/projects/history" and "/admin/bids/:id" keep their parent highlighted.
-  const isActive = (to) => to === '/admin' ? loc.pathname === '/admin' : loc.pathname === to || loc.pathname.startsWith(`${to}/`)
+  // ".../projects/history" and ".../bids/:id" keep their parent highlighted.
+  const isActive = (to) => to === base ? loc.pathname === base : loc.pathname === to || loc.pathname.startsWith(`${to}/`)
 
   const u = storedUser()
-  const user = {
-    name: u.full_name || u.username || 'System Administrator',
-    email: u.email || '',
-    role: 'Administrator',
-  }
+  const user = workspace === 'staff'
+    ? { name: u.full_name || u.username || 'Procurement Staff', email: u.email || '', role: 'Procurement Staff' }
+    : { name: u.full_name || u.username || 'System Administrator', email: u.email || '', role: 'Administrator' }
 
   return (
     <div className="ad-layout">
       <AppSidebar
-        workspace="Admin Workspace"
+        workspace={workspace === 'staff' ? 'Staff Workspace' : 'Admin Workspace'}
         logoIcon={Shield}
-        sections={NAV_SECTIONS}
+        sections={navSections(workspace, workflowOn)}
         isActive={isActive}
         open={navOpen}
         onClose={() => setNavOpen(false)}
@@ -3931,9 +4083,13 @@ export default function AdminDashboard() {
             <Route path="bids"      element={<BidsPage />} />
             <Route path="bids/:id"  element={<BidEvaluationPage />} />
             <Route path="awards"    element={<AwardsPage />} />
-            <Route path="record/:id" element={<ProcurementRecordPage className="ad-content" backTo="/admin/awards" backLabel="Back to awards" />} />
+            <Route path="record/:id" element={<ProcurementRecordPage className="ad-content" backTo={`${base}/awards`} backLabel="Back to awards" />} />
             <Route path="record/:id/anchor/:anchorId" element={<ProjectAnchorDetailPage className="ad-content" />} />
             <Route path="reports"   element={<ReportsPage />} />
+            {workspace === 'admin' && <Route path="users" element={<UsersPage />} />}
+            {workspace === 'admin' && <Route path="bac-committee" element={<BacCommitteePage />} />}
+            {workspace === 'admin' && <Route path="bac-records" element={<BacRecordsPage className="ad-content" />} />}
+            {workspace === 'staff' && <Route path="bac-meetings" element={<BacMeetingsPage />} />}
             <Route path="*"         element={<AdminHome />} />
           </Routes>
         </div>

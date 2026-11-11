@@ -5,6 +5,7 @@ import {
   ChevronDown, LogOut,
   ClipboardCheck, AlertCircle, AlertTriangle, FolderOpen, Eye,
   ThumbsUp, FileText, Menu, X, Image as ImageIcon, ChevronRight, ShieldCheck, Link2, Loader2, Trophy,
+  Gavel, ScrollText,
 } from 'lucide-react'
 import { apiLogout, apiHeadSummary } from '../api'
 import {
@@ -34,18 +35,28 @@ import { runAnchor, isAnchorBusy, useAnchorActivity } from '../blockchain/anchor
 import { ANCHOR_STATES, anchorState } from '../blockchain/anchorState'
 import { daysSince, greeting, peso, todayLong } from '../utils/format'
 import SecureImg from '../components/ui/SecureImg'
+import AwardApprovalsPage from './head/AwardApprovalsPage'
+import { BarList, ColumnChart, SERIES, monthLabel } from '../components/charts/Charts'
+import BacRecordsPage from './bac/BacRecordsPage'
+import { useBacStatus } from '../utils/workspace'
+import PreviewButton from '../components/ui/FilePreview'
 import '../style/HeadDashboard.css'
 
-const NAV_SECTIONS = (pendingCount) => [
+// Award Approvals and BAC Records appear once separation of duties is on
+// (utils/workspace.useBacStatus): then the Head approves the award the BAC
+// Committee recommends.
+const NAV_SECTIONS = (pendingCount, workflowOn) => [
   { label: 'Overview', items: [
     { icon: LayoutDashboard, label: 'Dashboard', to: '/head' },
   ] },
   { label: 'Approvals', items: [
     { icon: Clock, label: 'Pending Approval', to: '/head/pending', badge: pendingCount },
     { icon: CheckCircle2, label: 'Reviewed Projects', to: '/head/approved' },
+    ...(workflowOn ? [{ icon: Gavel, label: 'Award Approvals', to: '/head/awards' }] : []),
   ] },
   { label: 'Outcomes', items: [
     { icon: Trophy, label: 'Results', to: '/head/results' },
+    ...(workflowOn ? [{ icon: ScrollText, label: 'BAC Records', to: '/head/bac-records' }] : []),
   ] },
 ]
 
@@ -200,7 +211,10 @@ function PendingCard({ project, onApprove, onRequestRevision, defaultExpanded = 
                             <span className="hd-doc-review-label">{d.label}</span>
                             {checked && <StatusBadge tone="warning" label="Flagged" />}
                             {d.url
-                              ? <a href={d.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="hd-doc-link" style={{ marginLeft: 'auto' }}>View</a>
+                              ? <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                                  <PreviewButton url={d.url} name={d.label} className="hd-doc-link" />
+                                  <a href={d.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="hd-doc-link">Download</a>
+                                </span>
                               : <span className="hd-muted" style={{ marginLeft: 'auto', fontSize: 12 }}>Not provided</span>}
                           </label>
                           {checked && (
@@ -382,13 +396,17 @@ function HeadHome() {
     .sort((a, b) => String(metaById[a.id]?.waiting_since || '').localeCompare(String(metaById[b.id]?.waiting_since || '')))
   const k = summary?.kpis || {}
   const oldest = daysSince(summary?.queue?.[0]?.waiting_since)
+  // With the BAC workflow on, Procurement Staff publish and fix projects, and
+  // the Head also approves awards; without it the Admin does both jobs.
+  const bacOn = !!summary?.workflow_enabled
+  const preparer = bacOn ? 'Procurement Staff' : 'the Admin'
 
   const run = async () => {
     const { project } = decide
     setBusy(true)
     try {
       await storeApprove(project.id)
-      toast.success(`${project.code} approved — sent to the Admin to publish for bidding.`)
+      toast.success(`${project.code} approved — sent to ${preparer} to publish for bidding.`)
       setDecide(null)
       loadSummary()
     } catch (e) {
@@ -423,12 +441,43 @@ function HeadHome() {
           tone={!summary ? 'neutral' : k.waiting ? (oldest >= WAIT_WARN_DAYS ? 'warning' : 'info') : 'success'} value={k.waiting ?? '—'}
           context={!summary ? 'Unavailable' : k.waiting ? `Oldest waiting ${oldest === 0 ? 'since today' : `${oldest} day${oldest === 1 ? '' : 's'}`}` : 'All caught up'} />
         <KpiCard label="Approved this month" icon={CheckCircle2} tone="success" loading={sumLoading}
-          value={k.approved_this_month ?? '—'} to="/head/approved" context="Sent to the Admin to publish" />
+          value={k.approved_this_month ?? '—'} to="/head/approved" context={`Sent to ${preparer} to publish`} />
         <KpiCard label="Returned for revision" icon={AlertTriangle} tone={k.returned_for_revision ? 'warning' : 'neutral'}
-          loading={sumLoading} value={k.returned_for_revision ?? '—'} to="/head/approved" context="Waiting on the Admin to fix" />
-        <KpiCard label="Rejected" icon={XCircle} tone="neutral" loading={sumLoading}
-          value={k.rejected ?? '—'} to="/head/approved" context="All time" />
+          loading={sumLoading} value={k.returned_for_revision ?? '—'} to="/head/approved" context={`Waiting on ${preparer} to fix`} />
+        {bacOn ? (
+          <KpiCard label="Awards to approve" icon={Gavel} tone={k.awards_waiting ? 'warning' : 'neutral'} loading={sumLoading}
+            value={k.awards_waiting ?? '—'} to="/head/awards" context="Adopted BAC resolutions" />
+        ) : (
+          <KpiCard label="Rejected" icon={XCircle} tone="neutral" loading={sumLoading}
+            value={k.rejected ?? '—'} to="/head/approved" context="Older projects only" />
+        )}
       </KpiRow>
+
+      <div className="ch-grid-2">
+        <section className="rf-card" aria-labelledby="hd-trend-h">
+          <div className="rf-card-head">
+            <div><h3 id="hd-trend-h">My decisions</h3><p>Approved and returned for revision, last six months</p></div>
+          </div>
+          <div className="ch-card-body">
+            {sumLoading ? <Skeleton height={180} radius={8} /> : (
+              <ColumnChart mode="stacked" ariaLabel="Head decisions per month"
+                series={[{ key: 'approved', label: 'Approved' }, { key: 'revision', label: 'Returned for revision' }]}
+                data={(summary?.trend || []).map(m => ({ label: monthLabel(m.month), values: { approved: m.approved, revision: m.revision } }))} />
+            )}
+          </div>
+        </section>
+        <section className="rf-card" aria-labelledby="hd-mix-h">
+          <div className="rf-card-head">
+            <div><h3 id="hd-mix-h">Where procurements are</h3><p>Every procurement by its current stage</p></div>
+          </div>
+          <div className="ch-card-body">
+            {sumLoading ? <ListSkeleton rows={5} height={20} /> : (
+              <BarList ariaLabel="Procurements by stage" color={SERIES[0]}
+                data={(summary?.status_mix || []).map(s => ({ label: s.label, value: s.count }))} />
+            )}
+          </div>
+        </section>
+      </div>
 
       <section className="rf-card" aria-labelledby="queue-h">
         <div className="rf-card-head">
@@ -688,6 +737,7 @@ export default function HeadDashboard() {
   const { projects } = useProjects()   // shared store — no extra request
   const pendingCount = projects.filter(p => p.status === 'pending_head').length
   const [navOpen, setNavOpen] = useState(false)
+  const { workflow_enabled: workflowOn } = useBacStatus()
   useEffect(() => { setNavOpen(false) }, [loc.pathname])
 
   const PAGE_TITLES = {
@@ -695,6 +745,8 @@ export default function HeadDashboard() {
     '/head/pending': 'Pending Approval',
     '/head/approved': 'Reviewed Projects',
     '/head/results': 'Results',
+    '/head/awards': 'Award Approvals',
+    '/head/bac-records': 'BAC Records',
   }
   const title = PAGE_TITLES[loc.pathname] || (loc.pathname.startsWith('/head/record/') ? 'Procurement Record' : 'Dashboard')
 
@@ -710,7 +762,7 @@ export default function HeadDashboard() {
       <AppSidebar
         workspace="Head Workspace"
         logoIcon={ClipboardCheck}
-        sections={NAV_SECTIONS(pendingCount)}
+        sections={NAV_SECTIONS(pendingCount, workflowOn)}
         isActive={(to) => loc.pathname === to || (to === '/head/results' && loc.pathname.startsWith('/head/record/'))}
         open={navOpen}
         onClose={() => setNavOpen(false)}
@@ -730,6 +782,8 @@ export default function HeadDashboard() {
             <Route path="pending" element={<PendingPage />} />
             <Route path="approved" element={<ApprovedPage />} />
             <Route path="results" element={<ResultsPage />} />
+            <Route path="awards" element={<AwardApprovalsPage />} />
+            <Route path="bac-records" element={<BacRecordsPage className="hd-content" />} />
             <Route path="record/:id" element={<ProcurementRecordPage className="hd-content" backTo="/head/results" backLabel="Back to results" />} />
             <Route path="record/:id/anchor/:anchorId" element={<ProjectAnchorDetailPage className="hd-content" />} />
             <Route path="*" element={<HeadHome />} />

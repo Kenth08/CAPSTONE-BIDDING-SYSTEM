@@ -34,7 +34,17 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connections, transaction
 
-from procurement.models import Award, Bid, Document, Project, Supplier
+from procurement.models import (
+    Award,
+    BACMembership,
+    BACResolution,
+    Bid,
+    BidEvaluation,
+    BidPostQualification,
+    Document,
+    Project,
+    Supplier,
+)
 from procurement.views import next_project_code  # same random PC- codes as real projects
 
 User = get_user_model()
@@ -116,6 +126,14 @@ class Command(BaseCommand):
             ("admin", "admin@gmail.com", "admin123", "admin", "System Administrator", True),
             ("head", "head@gmail.com", "head123", "head", "Department Head", False),
             ("supplier", "supplier@gmail.com", "password123", "supplier", "Kenthcharles Repollo", False),
+            # Separation of duties (settings.BAC_WORKFLOW_ENABLED): Procurement
+            # Staff and the five-member BAC Committee.
+            ("staff", "staff@gmail.com", "staff123", "staff", "Procurement Staff", False),
+            ("bac1", "bac1@gmail.com", "bac123", "bac", "Maria Santos", False),
+            ("bac2", "bac2@gmail.com", "bac123", "bac", "Jose Reyes", False),
+            ("bac3", "bac3@gmail.com", "bac123", "bac", "Ana Cruz", False),
+            ("bac4", "bac4@gmail.com", "bac123", "bac", "Ramon Garcia", False),
+            ("bac5", "bac5@gmail.com", "bac123", "bac", "Liza Mendoza", False),
         ]
         # Clean up any older demo accounts (email-based or bare-role variants).
         User.objects.filter(username__in=["admin", "head", "admin@gmail.com", "head@gmail.com"]).delete()
@@ -132,6 +150,20 @@ class Command(BaseCommand):
             user.set_password(password)
             user.save()
             self.stdout.write(f"  user: {username} / {password} ({role})")
+
+        # --- BAC Committee seats -------------------------------------------
+        # BAC records point at bids and seats with PROTECT, so they go first.
+        BACResolution.objects.all().delete()
+        BidEvaluation.objects.all().delete()
+        BidPostQualification.objects.all().delete()
+        BACMembership.objects.all().delete()
+        positions = ["chair", "vice_chair", "member", "member", "member"]
+        for n, position in enumerate(positions, start=1):
+            BACMembership.objects.create(
+                user=User.objects.get(username=f"bac{n}"), position=position,
+                designated_on=date(2026, 1, 5), designation_reference="Office Order No. 2026-001",
+                recorded_by=User.objects.get(username="admin"))
+        self.stdout.write("  BAC Committee: bac1 Chairperson, bac2 Vice-Chairperson, bac3-bac5 Members")
 
         # --- Clear existing demo rows -------------------------------------
         Award.objects.all().delete()

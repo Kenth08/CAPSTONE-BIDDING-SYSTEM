@@ -72,7 +72,13 @@ PROCUREMENT_CATEGORIES = [
     "Electrical Supplies", "Laboratory Equipment", "Printing Services",
     "Janitorial Supplies", "Food & Catering", "Transportation Services",
     "Medical Supplies", "Sports Equipment", "Books & Educational Materials",
+    "Others",
 ]
+
+# A procurement that fits no category. It carries a "please specify"
+# description (Project.category_other) and is open to every verified
+# supplier, since no supplier's registered categories could match it.
+OTHERS_CATEGORY = "Others"
 
 CATEGORY_NAME_MAX_LENGTH = 120
 
@@ -393,6 +399,12 @@ class Project(SecureUploadsMixin, models.Model):
     type = models.CharField(max_length=120, blank=True)
     # Procurement category (one of all_categories()) — drives supplier eligibility.
     category = models.CharField(max_length=120, blank=True)
+    # What the procurement is when category is OTHERS_CATEGORY ("please specify").
+    category_other = models.CharField(max_length=200, blank=True, default="", db_default="")
+    # Delivery (calendar days) and warranty (months) choices bidders pick from
+    # (procurement/bid_terms.py). Empty = free text, as on older projects.
+    delivery_options = models.JSONField(default=list, blank=True, db_default=[])
+    warranty_options = models.JSONField(default=list, blank=True, db_default=[])
     delivery_location = models.CharField(max_length=255, blank=True)
     # Expected delivery date. NOT set by the Admin directly — like `deadline`,
     # it's computed automatically (at AWARD time: awarded_at + delivery_period_days)
@@ -501,6 +513,10 @@ class Bid(SecureUploadsMixin, models.Model):
     #    submitted before these fields existed are never broken) ──────────────
     delivery_timeline = models.CharField(max_length=100, blank=True)
     additional_comments = models.TextField(blank=True)
+    # The chosen delivery and warranty as numbers, when the project offers
+    # choices (procurement/bid_terms.py). The text fields keep the label.
+    delivery_days = models.PositiveIntegerField(null=True, blank=True)
+    warranty_months = models.PositiveIntegerField(null=True, blank=True)
 
     # ── Product specification match (offered product details) ─────────────────
     brand_name = models.CharField(max_length=255, blank=True, null=True)
@@ -1006,3 +1022,275 @@ class FileDownloadToken(models.Model):
 
     def __str__(self):
         return f"{self.user_id} {self.kind}/{self.object_id}/{self.field}"
+
+
+# ── Separation of duties: BAC Committee (docs/BAC_ROLES_PLAN.md) ──────────────
+# Used when settings.BAC_WORKFLOW_ENABLED is on. Nothing here is written to the
+# blockchain directly: member names, evaluations, votes and comments stay in
+# the database. The adopted BAC Resolution PDF, which contains them, is what
+# the existing RESOLUTION_ISSUED anchor fingerprints once the award is made.
+
+def bac_document_path(instance, filename):
+    """BAC designations, meeting minutes and resolutions. Random name only; see procurement/uploads.py."""
+    return random_storage_name("bac_docs", filename)
+
+
+class BACMembership(SecureUploadsMixin, models.Model):
+    """One seat on the Bids and Awards Committee, as designated by the Head.
+
+    The Admin RECORDS the designation (with the Head's office order number);
+    the Head makes it. A seat is never deleted: a resignation or end of term
+    sets active=False and ended_on, so every evaluation and vote the member
+    gave stays attributed to them. Users with votes or evaluations can't be
+    deleted at all (on_delete=PROTECT)."""
+
+    # The committee has five seats; a decision needs a majority of them.
+    SEATS = 5
+    MAJORITY = 3
+
+    class Position(models.TextChoices):
+        CHAIR = "chair", "Chairperson"
+        VICE_CHAIR = "vice_chair", "Vice-Chairperson"
+        MEMBER = "member", "Member"
+
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="bac_memberships")
+    position = models.CharField(max_length=20, choices=Position.choices)
+    designated_on = models.DateField()
+    # The Head's Office Order / Memorandum number that made the designation.
+    designation_reference = models.CharField(max_length=120)
+    designation_document = models.FileField(
+        upload_to=bac_document_path, validators=[validate_upload],
+        max_length=255, blank=True, null=True)
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    recorded_at = models.DateTimeField(auto_now_add=True)
+    active = models.BooleanField(default=True)
+    ended_on = models.DateField(null=True, blank=True)
+    end_reason = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ["-active", "position", "designated_on"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["position"], condition=models.Q(active=True, position="chair"),
+                name="one_active_bac_chair"),
+            models.UniqueConstraint(
+                fields=["position"], condition=models.Q(active=True, position="vice_chair"),
+                name="one_active_bac_vice_chair"),
+            models.UniqueConstraint(
+                fields=["user"], condition=models.Q(active=True),
+                name="one_active_bac_seat_per_user"),
+        ]
+
+    def __str__(self):
+        return f"{self.user} - {self.get_position_display()}{'' if self.active else ' (ended)'}"
+
+
+class BidEvaluation(models.Model):
+    """One BAC member's evaluation of one bid: three pass/fail checks and remarks.
+
+    Every active member evaluates every bid on their own. The bid's status
+    (qualified / disqualified) follows the majority (BACMembership.MAJORITY),
+    computed in procurement/bac.py, so no single person decides it."""
+
+    bid = models.ForeignKey(Bid, on_delete=models.CASCADE, related_name="evaluations")
+    member = models.ForeignKey(BACMembership, on_delete=models.PROTECT, related_name="evaluations")
+    eligibility_ok = models.BooleanField()
+    technical_ok = models.BooleanField()
+    financial_ok = models.BooleanField()
+    remarks = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["bid", "member"], name="one_evaluation_per_member_per_bid"),
+        ]
+
+    @property
+    def passed(self):
+        return self.eligibility_ok and self.technical_ok and self.financial_ok
+
+    def __str__(self):
+        return f"{self.member} on bid {self.bid_id}: {'pass' if self.passed else 'fail'}"
+
+
+class BidPostQualification(models.Model):
+    """The BAC's post-qualification finding on the lowest-ranked qualified bid,
+    recorded by the Chairperson. Written once: a failed bid drops out and the
+    next one in the ranking becomes the candidate (procurement/bac.py)."""
+
+    class Result(models.TextChoices):
+        PASSED = "passed", "Passed"
+        FAILED = "failed", "Failed"
+
+    bid = models.OneToOneField(Bid, on_delete=models.CASCADE, related_name="post_qualification")
+    result = models.CharField(max_length=10, choices=Result.choices)
+    remarks = models.TextField()
+    recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None and not self._state.adding:
+            raise ValueError("A post-qualification finding cannot be changed once recorded.")
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"bid {self.bid_id} post-qualification {self.result}"
+
+
+class BACResolution(SecureUploadsMixin, models.Model):
+    """A BAC Resolution recommending the award to one bid.
+
+    Prepared by Staff, voted on by the members, then decided by the Head. When
+    it is adopted the system writes its PDF (with every vote and comment) and
+    stores the SHA-256: from then on the file is never regenerated. On the
+    Head's approval that same file becomes Award.award_resolution, so the
+    RESOLUTION_ISSUED anchor fingerprints exactly what the members adopted.
+
+    A project has at most one open resolution (draft, voting or adopted); a
+    returned or failed one stays as history."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        VOTING = "voting", "Voting"
+        ADOPTED = "adopted", "Adopted"
+        NOT_ADOPTED = "not_adopted", "Not adopted"
+        RETURNED = "returned", "Returned by the Head"
+
+    class HeadDecision(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPROVED = "approved", "Approved"
+        RETURNED = "returned", "Returned"
+
+    class MeetingMode(models.TextChoices):
+        IN_PERSON = "in_person", "In person"
+        ONLINE = "online", "Online"
+
+    OPEN_STATUSES = ("draft", "voting", "adopted")
+
+    original_filenames = models.JSONField(default=dict, db_default={}, blank=True)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="bac_resolutions")
+    recommended_bid = models.ForeignKey(Bid, on_delete=models.PROTECT, related_name="+")
+    number = models.CharField(max_length=60, unique=True)
+    meeting_date = models.DateField()
+    meeting_mode = models.CharField(max_length=20, choices=MeetingMode.choices, default=MeetingMode.IN_PERSON)
+    venue = models.CharField(max_length=200, blank=True)
+    justification = models.TextField()
+    minutes = models.FileField(
+        upload_to=bac_document_path, validators=[validate_upload], max_length=255, blank=True, null=True)
+    prepared_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    created_at = models.DateTimeField(auto_now_add=True)
+    voting_opened_at = models.DateTimeField(null=True, blank=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    # Frozen at adoption (procurement/bac.py).
+    resolution_file = models.FileField(upload_to=bac_document_path, max_length=255, blank=True, null=True)
+    resolution_sha256 = models.CharField(max_length=64, blank=True)
+    head_decision = models.CharField(max_length=10, choices=HeadDecision.choices, default=HeadDecision.PENDING)
+    head_remarks = models.TextField(blank=True)
+    head_decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    head_decided_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project"], condition=models.Q(status__in=["draft", "voting", "adopted"]),
+                name="one_open_bac_resolution_per_project"),
+        ]
+
+    def __str__(self):
+        return f"{self.number} ({self.status})"
+
+
+class BACVoteImmutable(Exception):
+    """Raised on any attempt to change or delete a cast vote."""
+
+
+class BACVote(models.Model):
+    """One member's vote on a resolution, with the reason in their own words.
+
+    Write-once. The member's name and position are copied onto the row when
+    the vote is cast, so a later resignation, renamed account or new
+    Chairperson never changes what the record says.
+
+    A vote given at an in-person meeting is entered by Staff (the Secretariat)
+    from the ballot or minutes: `source` is then IN_PERSON and `recorded_by`
+    names the Staff account, so the record never passes it off as the member's
+    own click. A mistake is never fixed by editing: a BACVoteNote is added."""
+
+    class Choice(models.TextChoices):
+        APPROVE = "approve", "Approve"
+        DISAPPROVE = "disapprove", "Disapprove"
+        ABSTAIN = "abstain", "Abstain"
+
+    class Source(models.TextChoices):
+        ONLINE = "online", "Cast by the member"
+        IN_PERSON = "in_person", "Given in person, recorded by Staff"
+
+    resolution = models.ForeignKey(BACResolution, on_delete=models.CASCADE, related_name="votes")
+    member = models.ForeignKey(BACMembership, on_delete=models.PROTECT, related_name="votes")
+    voter_name = models.CharField(max_length=150)
+    voter_position = models.CharField(max_length=20, choices=BACMembership.Position.choices)
+    choice = models.CharField(max_length=12, choices=Choice.choices)
+    comment = models.TextField()
+    cast_at = models.DateTimeField(auto_now_add=True)
+    source = models.CharField(max_length=12, choices=Source.choices, default=Source.ONLINE,
+                              db_default=Source.ONLINE)
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    recorded_by_name = models.CharField(max_length=150, blank=True, default="", db_default="")
+
+    class Meta:
+        ordering = ["cast_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["resolution", "member"], name="one_vote_per_member_per_resolution"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None and not self._state.adding:
+            raise BACVoteImmutable("A vote cannot be changed once cast.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise BACVoteImmutable("A vote cannot be deleted.")
+
+    def __str__(self):
+        return f"{self.voter_name} {self.choice} on {self.resolution_id}"
+
+
+class BACVoteNote(models.Model):
+    """A correction note on a cast vote, e.g. "my comment cites the wrong
+    meeting date" or "transcribed from the signed ballot; the ballot reads ...".
+
+    The vote itself never changes, and neither does the count: a note only
+    explains. Added by the member who voted or by Staff, write-once like the
+    vote, with the author's name and role copied onto the row. Notes added
+    before adoption are printed in the frozen resolution PDF; later ones are
+    shown in the BAC Records beside the vote."""
+
+    vote = models.ForeignKey(BACVote, on_delete=models.PROTECT, related_name="notes")
+    note = models.TextField()
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    author_name = models.CharField(max_length=150)
+    author_role = models.CharField(max_length=20)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None and not self._state.adding:
+            raise BACVoteImmutable("A correction note cannot be changed once added.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise BACVoteImmutable("A correction note cannot be deleted.")
+
+    def __str__(self):
+        return f"Note by {self.author_name} on vote {self.vote_id}"

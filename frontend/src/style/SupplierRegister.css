@@ -5,26 +5,16 @@
 
 .sr-page {
   min-height: 100vh;
-  display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  /* paints the navy column full height even when the form is very long */
-  background: linear-gradient(to right, var(--dark-bg) 300px, var(--light-bg) 300px);
+  background: var(--light-bg);
 }
 
-/* ── Branding panel ──────────────────────────────────────────────────────── */
-.sr-aside {
+/* ── Branding bar ────────────────────────────────────────────────────────── */
+.sr-topbar {
   background: var(--dark-bg);
   color: var(--text-light);
-  padding: 32px 28px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 24px;
-  position: sticky;
-  top: 0;
-  height: 100vh;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 28px;
 }
-.sr-aside-top { display: flex; flex-direction: column; gap: 28px; }
 .sr-back {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 13px; color: var(--text-muted);
@@ -40,17 +30,6 @@
   background: var(--primary);
   display: flex; align-items: center; justify-content: center; color: white;
 }
-.sr-aside-mid h1 { font-size: 28px; font-weight: 800; color: white; line-height: 1.15; margin-bottom: 14px; letter-spacing: -0.01em; }
-.sr-aside-mid p { font-size: 14px; color: var(--text-muted); line-height: 1.6; margin-bottom: 24px; }
-.sr-perks { list-style: none; display: flex; flex-direction: column; gap: 14px; }
-.sr-perks li { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text-light); }
-.sr-perks svg {
-  flex-shrink: 0;
-  background: rgba(16,185,129,0.15);
-  color: var(--primary);
-  border-radius: 50%; padding: 3px; width: 22px; height: 22px;
-}
-.sr-aside-foot { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 
 /* ── Main column ─────────────────────────────────────────────────────────── */
 .sr-main { padding: 40px 48px 32px; min-width: 0; }
@@ -147,6 +126,7 @@
 .sr-field textarea { resize: vertical; min-height: 88px; line-height: 1.5; }
 .sr-field input::placeholder, .sr-field textarea::placeholder { color: var(--text-faint); }
 .sr-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.sr-row-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 .sr-pass { position: relative; }
 .sr-pass input { padding-right: 44px; }
@@ -488,25 +468,12 @@
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 1100px) {
-  .sr-page {
-    grid-template-columns: 260px minmax(0, 1fr);
-    background: linear-gradient(to right, var(--dark-bg) 260px, var(--light-bg) 260px);
-  }
-  .sr-aside { padding: 28px 22px; }
   .sr-main { padding: 32px 28px 28px; }
   .sr-checks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-/* Tablet and below: the branding panel becomes a compact top bar. */
 @media (max-width: 900px) {
-  .sr-page { grid-template-columns: 1fr; background: var(--light-bg); }
-  .sr-aside {
-    position: static; height: auto;
-    flex-direction: row; align-items: center; justify-content: space-between;
-    padding: 14px 20px; gap: 12px;
-  }
-  .sr-aside-top { flex-direction: row-reverse; justify-content: space-between; align-items: center; width: 100%; gap: 12px; }
-  .sr-aside-mid, .sr-aside-foot { display: none; }
+  .sr-topbar { padding: 14px 20px; }
   .sr-main { padding: 24px 20px 24px; }
   .sr-pwchecks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

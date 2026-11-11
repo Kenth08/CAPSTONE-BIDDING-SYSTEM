@@ -67,11 +67,27 @@ def notify_role(role, message, link=""):
 
 
 def notify_admins(message, link=""):
-    notify_role(User.Role.ADMIN, message, link)
+    """The procurement office: Admins and Procurement Staff. Staff do the
+    preparation work these messages are about; the Admin oversees it. Links
+    point at /admin/...; the Staff dashboard maps them to its own pages."""
+    notify_users(
+        User.objects.filter(role__in=[User.Role.ADMIN, User.Role.STAFF], is_active=True), message, link)
 
 
 def notify_heads(message, link=""):
     notify_role(User.Role.HEAD, message, link)
+
+
+def notify_staff(message, link=""):
+    notify_role(User.Role.STAFF, message, link)
+
+
+def notify_bac_members(message, link=""):
+    """Every member holding an active seat on the BAC Committee."""
+    from .models import BACMembership  # noqa: PLC0415
+
+    users = [m.user for m in BACMembership.objects.filter(active=True, user__is_active=True).select_related("user")]
+    notify_users(users, message, link)
 
 
 def notify_supplier(supplier, message, link="", email_subject=None):

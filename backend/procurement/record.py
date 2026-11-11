@@ -44,6 +44,7 @@ from .blockchain import (
 )
 from .files import protected_file_url
 from .models import AWARD_DOCUMENT_FIELDS, Award, Bid, BlockchainAnchor, Project, Supplier
+from .permissions import INTERNAL_ROLES
 from .verification import summarize
 
 Stage = BlockchainAnchor.Stage
@@ -59,10 +60,11 @@ DOC_LABELS = {stage: label for _, label, stage, _ in AWARD_DOCUMENT_FIELDS}
 # ── Who may open which record ────────────────────────────────────────────────
 
 def viewer_for(user, project):
-    """("admin" | "head" | "supplier", supplier_or_None), or None when this user
-    may not see this procurement's record at all."""
+    """(role, supplier_or_None), or None when this user may not see this
+    procurement's record at all. Internal accounts (permissions.INTERNAL_ROLES:
+    admin, staff, bac, head) see every procurement; a supplier only those they bid on."""
     role = getattr(user, "role", None)
-    if role in {"admin", "head"}:
+    if role in INTERNAL_ROLES:
         return role, None
     if role == "supplier":
         supplier = Supplier.objects.filter(user=user).first()
@@ -258,10 +260,10 @@ def build_record(project, role, supplier, request, *, deep=False):
             award.project = project  # the row already in hand, not a second read
             known.append((Entity.AWARD, award))
         preload = preload_verification(raw, known=known)
-    anchors = [_anchor_row(a, include_payload=(role == "admin"), deep=deep_check, preload=preload)
+    anchors = [_anchor_row(a, include_payload=(role in {"admin", "staff"}), deep=deep_check, preload=preload)
                for a in raw]
 
-    winner_amount_visible = role in {"admin", "head"} or is_winner
+    winner_amount_visible = role in INTERNAL_ROLES or is_winner
 
     result = None
     if award:

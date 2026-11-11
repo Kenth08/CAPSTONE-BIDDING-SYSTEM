@@ -14,7 +14,7 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from procurement.permissions import IsAdminRole
+from procurement.permissions import IsAdminOrStaffRole, IsAdminRole
 
 from . import lockout, mfa
 from .audit import log_action
@@ -106,7 +106,8 @@ class AdminAssistedSupplierRegisterView(generics.CreateAPIView):
 
     queryset = User.objects.all()
     serializer_class = SupplierRegisterSerializer
-    permission_classes = [IsAdminRole]
+    # Walk-in registration is front-office work: the Admin or Procurement Staff.
+    permission_classes = [IsAdminOrStaffRole]
     parser_classes = [MultiPartParser, FormParser]
 
     def create(self, request, *args, **kwargs):

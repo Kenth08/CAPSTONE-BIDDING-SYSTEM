@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Bell, BellOff } from 'lucide-react'
 import { apiListNotifications, apiMarkNotificationsRead } from '../api'
+import { linkForRole } from '../utils/workspace'
 import './NotificationBell.css'
 
 // Action verbs that follow an actor name (e.g. "pacia company submitted a bid on ...")
@@ -71,7 +72,7 @@ export default function NotificationBell() {
 
   const go = (link) => {
     setOpen(false)
-    if (link) navigate(link)
+    if (link) navigate(linkForRole(link))
   }
 
   return (

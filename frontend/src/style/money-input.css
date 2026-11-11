@@ -1,0 +1,7 @@
+/* components/ui/MoneyInput.jsx: a fixed ₱ sign inside the field. */
+.money-input { position: relative; display: flex; align-items: center; }
+.money-input-sign {
+  position: absolute; left: 14px; pointer-events: none;
+  color: var(--text-strong); font-weight: var(--fw-semibold);
+}
+.money-input input { width: 100%; padding-left: 32px !important; font-variant-numeric: tabular-nums; }

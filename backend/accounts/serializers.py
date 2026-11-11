@@ -18,11 +18,22 @@ from procurement.models import Supplier, SupplierCategoryDocument, known_categor
 from procurement.validators import validate_upload
 
 from . import lockout, mfa
+from .names import resolve_name
 from .emails import email_verification_token, send_verification_email
 
 User = get_user_model()
 
 # Documents the supplier must upload to register (the optional ones are excluded).
+# Audited Financial Statements: the last two completed years are accepted.
+STATEMENT_YEARS_BACK = 2
+
+
+def statement_year_options(today=None):
+    """Newest first, in Manila time, moving forward every January."""
+    year = (today or timezone.localdate()).year
+    return [year - 1 - i for i in range(STATEMENT_YEARS_BACK)]
+
+
 REQUIRED_DOCUMENTS = [
     "sec_dti_certificate", "mayors_permit", "philgeps_certificate", "valid_id",
     "tax_clearance_certificate", "audited_financial_statements",
@@ -104,8 +115,13 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
     account in 'waiting admin approval' (the verification gate).
     """
 
-    # Account fields (live on User, not the Supplier profile)
-    full_name = serializers.CharField(max_length=150)
+    # Account fields (live on User, not the Supplier profile). The form sends
+    # First / Middle / Last; a single full_name from an older client still works
+    # (accounts/names.py composes and checks them in validate()).
+    full_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    middle_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     # `create()` below also uses this value as the username, so it's capped at
     # 150 (AbstractUser.username's max_length) rather than email's usual 254 —
     # otherwise a long-but-valid email could pass this check yet still blow up
@@ -122,7 +138,8 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
         model = Supplier
         fields = [
             # account
-            "full_name", "email", "password", "confirm_password",
+            "full_name", "first_name", "middle_name", "last_name",
+            "email", "password", "confirm_password",
             # company details
             "company_name", "company_address", "phone_number", "tin",
             "representative_name", "business_types",
@@ -166,6 +183,19 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Select only valid procurement categories.")
         return value
 
+    def validate_financial_statement_year(self, value):
+        """Only the last STATEMENT_YEARS_BACK completed years (the form's
+        dropdown, frontend/src/utils/statementYears.js). Optional, like before.
+        Applies to new registrations only; years already on file are kept."""
+        if value in (None, ""):
+            return None
+        allowed = statement_year_options()
+        if value not in allowed:
+            raise serializers.ValidationError(
+                f"Choose the year of your latest audited financial statements: "
+                f"{' or '.join(str(y) for y in allowed)}.")
+        return value
+
     def validate_tin(self, value):
         if not value.replace("-", "").isdigit():
             raise serializers.ValidationError("TIN must contain digits only.")
@@ -190,6 +220,9 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        for key in ("full_name", "first_name", "middle_name", "last_name"):
+            attrs.pop(key, None)
+        attrs["_name"] = resolve_name(self.initial_data)
         if attrs["password"] != attrs.pop("confirm_password"):
             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
         # Run Django's configured password-strength validators.
@@ -249,7 +282,7 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         email = validated_data.pop("email")
         password = validated_data.pop("password")
-        full_name = validated_data.pop("full_name")
+        first, middle, last, full_name = validated_data.pop("_name")
 
         # The User and the Supplier profile are one registration and must
         # succeed or fail together. Unwrapped, a failure while creating the
@@ -270,6 +303,9 @@ class SupplierRegisterSerializer(serializers.ModelSerializer):
                     username=email,
                     email=email,
                     full_name=full_name,
+                    first_name=first,
+                    middle_name=middle,
+                    last_name=last,
                     role=User.Role.SUPPLIER,
                 )
                 user.set_password(password)
@@ -327,7 +363,9 @@ class EmailVerifyConfirmSerializer(serializers.Serializer):
 
         if not email_verification_token.check_token(user, attrs["token"]):
             raise serializers.ValidationError(
-                {"detail": "This verification link is invalid or has expired."}
+                {"detail": "This verification link is invalid, has expired, or was already used. "
+                           "If your email is already verified, just sign in; otherwise send a new "
+                           "link from your dashboard."}
             )
 
         attrs["user"] = user

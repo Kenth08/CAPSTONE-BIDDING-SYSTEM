@@ -1,0 +1,110 @@
+/* BAC Committee, Staff meetings, Head award approvals, Admin users/designations.
+   Built only from tokens.css so it sits inside the shared dashboard layout. */
+
+.bac-page { display: flex; flex-direction: column; gap: 20px; flex: 1; min-height: 0; }
+.bac-page > * { flex-shrink: 0; }
+
+.bac-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  display: flex; flex-direction: column; min-width: 0;
+}
+.bac-card-head {
+  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+}
+.bac-card-head h3 { margin: 0; font-size: var(--fs-section-title); color: var(--text-strong); }
+.bac-card-head p { margin: 2px 0 0; font-size: var(--fs-caption); color: var(--text-subtle); }
+.bac-card-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+.bac-note {
+  display: flex; gap: 10px; align-items: flex-start; padding: 12px 16px; border-radius: 10px;
+  background: var(--tone-info-bg); border: 1px solid var(--tone-info-border); color: var(--tone-info-fg);
+  font-size: var(--fs-small);
+}
+.bac-note--warning { background: var(--tone-warning-bg); border-color: var(--tone-warning-border); color: var(--tone-warning-fg); }
+.bac-note--success { background: var(--tone-success-bg); border-color: var(--tone-success-border); color: var(--tone-success-fg); }
+.bac-note--danger { background: var(--tone-danger-bg); border-color: var(--tone-danger-border); color: var(--tone-danger-fg); }
+.bac-note strong { display: block; color: inherit; }
+.bac-note p { margin: 2px 0 0; color: var(--text-body); }
+.ad-bac-note { display: flex; gap: 10px; align-items: flex-start; padding: 12px 16px; color: var(--tone-info-fg); }
+.ad-bac-note strong { color: var(--text-strong); }
+
+.bac-table-wrap { overflow-x: auto; }
+.bac-table { width: 100%; border-collapse: collapse; font-size: var(--fs-small); min-width: 560px; }
+.bac-table th, .bac-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.bac-table thead th {
+  font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-subtle);
+  font-weight: var(--fw-semibold); background: var(--surface-muted);
+}
+.bac-table tbody tr:last-child td { border-bottom: 0; }
+.bac-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bac-table tr.is-candidate td { background: var(--tone-success-bg); }
+.bac-table tr.is-clickable { cursor: pointer; }
+.bac-table tr.is-clickable:hover td { background: var(--surface-muted); }
+
+.bac-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
+.bac-form .full { grid-column: 1 / -1; }
+.bac-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.bac-field label, .bac-field legend { font-size: var(--fs-caption); font-weight: var(--fw-semibold); color: var(--text-body); }
+.bac-field input, .bac-field select, .bac-field textarea {
+  font: inherit; font-size: var(--fs-small); padding: 8px 10px; border: 1px solid var(--border-strong);
+  border-radius: 8px; background: var(--surface); color: var(--text-strong); min-width: 0;
+}
+.bac-field textarea { min-height: 84px; resize: vertical; }
+.bac-field input:focus-visible, .bac-field select:focus-visible, .bac-field textarea:focus-visible {
+  outline: none; border-color: var(--c-primary-500); box-shadow: 0 0 0 3px var(--c-primary-100);
+}
+.bac-hint { font-size: var(--fs-caption); color: var(--text-subtle); }
+.bac-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
+.bac-error { color: var(--tone-danger-fg); font-size: var(--fs-small); }
+
+.bac-checks { display: flex; flex-wrap: wrap; gap: 8px; border: 0; padding: 0; margin: 0; }
+.bac-check {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--border-strong);
+  border-radius: 8px; font-size: var(--fs-small); cursor: pointer; background: var(--surface);
+}
+.bac-check input { accent-color: var(--c-primary-600); }
+.bac-check.is-fail { border-color: var(--tone-danger-border); background: var(--tone-danger-bg); }
+
+.bac-votes { display: flex; flex-direction: column; gap: 10px; }
+.bac-vote { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.bac-vote-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; justify-content: space-between; }
+.bac-vote-who { font-weight: var(--fw-semibold); color: var(--text-strong); }
+.bac-vote-who small { font-weight: var(--fw-regular); color: var(--text-subtle); margin-left: 6px; }
+.bac-vote-comment { margin: 0; color: var(--text-body); font-size: var(--fs-small); white-space: pre-wrap; overflow-wrap: anywhere; }
+.bac-vote-meta { font-size: var(--fs-caption); color: var(--text-subtle); }
+.bac-vote-notes { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 3px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.bac-vote-notes li { display: flex; flex-direction: column; gap: 2px; }
+
+.bac-counts { display: flex; flex-wrap: wrap; gap: 8px; }
+.bac-count { padding: 4px 10px; border-radius: 999px; font-size: var(--fs-caption); font-weight: var(--fw-semibold);
+  background: var(--tone-neutral-bg); color: var(--tone-neutral-fg); border: 1px solid var(--tone-neutral-border); }
+.bac-count.approve { background: var(--tone-success-bg); color: var(--tone-success-fg); border-color: var(--tone-success-border); }
+.bac-count.disapprove { background: var(--tone-danger-bg); color: var(--tone-danger-fg); border-color: var(--tone-danger-border); }
+
+.bac-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 16px; margin: 0; }
+.bac-kv div { min-width: 0; }
+.bac-kv dt { font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-subtle); }
+.bac-kv dd { margin: 2px 0 0; color: var(--text-strong); font-size: var(--fs-small); overflow-wrap: anywhere; }
+
+.bac-hash { font-family: var(--font-mono); font-size: var(--fs-caption); overflow-wrap: anywhere; color: var(--text-body); }
+.bac-list { display: flex; flex-direction: column; }
+.bac-list-row {
+  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between;
+  padding: 12px 18px; border-top: 1px solid var(--border); text-align: left; background: transparent;
+  border-left: 0; border-right: 0; border-bottom: 0; font: inherit; color: inherit; width: 100%; cursor: pointer;
+}
+.bac-list-row:first-child { border-top: 0; }
+.bac-list-row:hover { background: var(--surface-muted); }
+.bac-list-row:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--c-primary-500); }
+.bac-list-row strong { color: var(--text-strong); }
+.bac-list-row .sub { display: block; font-size: var(--fs-caption); color: var(--text-subtle); margin-top: 2px; }
+.bac-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.bac-filters .bac-field { flex: 1 1 180px; }
+.bac-seats { display: flex; gap: 6px; }
+.bac-seat { width: 26px; height: 8px; border-radius: 4px; background: var(--border-strong); }
+.bac-seat.is-filled { background: var(--c-primary-500); }
+
+@media (max-width: 640px) {
+  .bac-card-head, .bac-card-body, .bac-list-row { padding-left: 14px; padding-right: 14px; }
+}

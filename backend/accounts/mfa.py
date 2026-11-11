@@ -42,7 +42,7 @@ from django.utils import timezone
 
 from .audit import log_action
 
-MFA_ROLES = {"admin", "head"}
+MFA_ROLES = {"admin", "head", "staff", "bac"}
 TOKEN_SALT = "accounts.mfa.login-ticket"
 TOKEN_MAX_AGE = 5 * 60
 ISSUER = "E-Procurement"

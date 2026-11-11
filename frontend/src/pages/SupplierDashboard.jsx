@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { ColumnChart, DonutChart, STATUS, monthLabel } from '../components/charts/Charts'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, FolderOpen, FileText, Clock, CheckCircle2,
@@ -39,6 +40,8 @@ import { ProjectAnchorDetailPage } from '../components/AnchorDetail'
 import { exportReportCSV, exportReportPDF } from '../utils/exportReport'
 import SecureImg from '../components/ui/SecureImg'
 import '../style/SupplierDashboard.css'
+import { deliveryLabel, warrantyLabel } from '../utils/bidTerms'
+import PreviewButton, { LocalPreviewButton } from '../components/ui/FilePreview'
 
 // API → UI mapping (backend uses code/decimal/ISO; the UI shows ₱ + dates).
 const fmtDate = (v) => v ? new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''
@@ -50,7 +53,9 @@ const todayISO = () => new Date().toISOString().slice(0, 10)
 const mapProject = (p) => ({
   id: p.code, pk: p.id, name: p.name, budget: fmtPeso(p.budget),
   budgetRaw: Number(p.budget || 0),  // numeric ABC for the live budget comparison
-  deadline: fmtDate(p.deadline), category: p.category, description: p.description,
+  deadline: fmtDate(p.deadline), category: p.category, categoryOther: p.category_other || '', description: p.description,
+  // Delivery (days) and warranty (months) choices; empty = free text (older projects).
+  deliveryOptions: p.delivery_options || [], warrantyOptions: p.warranty_options || [],
   deadlineRaw: p.deadline || null, publishedAt: p.published_at || null,
   referenceImage: p.reference_image_url || '',  // optional required-product reference
   // Whether bidders must attach product photos, plus the Admin's guidance.
@@ -171,11 +176,13 @@ const BID_STATUS = {
 // ─── Bid submit modal — building blocks ──────────────────────────────────────
 
 // Checklist row shown after a file is selected: filled emerald check + name + X.
-function BidFileRow({ name, onRemove }) {
+function BidFileRow({ name, file, onRemove }) {
   return (
     <div className="sd-file-row">
       <span className="sd-file-check"><Check size={12} /></span>
       <span className="sd-file-rowname" title={name}>{name}</span>
+      {/* Check the picked file before it is submitted. */}
+      <LocalPreviewButton file={file} className="sd-file-preview" />
       <button type="button" className="sd-file-remove" onClick={onRemove} aria-label="Remove file">
         <X size={14} />
       </button>
@@ -193,7 +200,7 @@ function BidUpload({ label, required, rule, hint, file, error, onPick, onRemove 
         {label}{required ? <span className="sd-req"> *</span> : <span className="sd-optional"> (optional)</span>}
       </label>
       {file ? (
-        <BidFileRow name={file.name} onRemove={onRemove} />
+        <BidFileRow name={file.name} file={file} onRemove={onRemove} />
       ) : (
         <button type="button" className="sd-upload-box" onClick={() => ref.current?.click()}>
           <Upload size={16} />
@@ -318,6 +325,10 @@ function BidModal({ project, profile, onClose, onSubmit }) {
   const [step, setStep] = useState(0)
   const [amount, setAmount] = useState('')
   const [deliveryTimeline, setDeliveryTimeline] = useState('')
+  const [deliveryDays, setDeliveryDays] = useState('')       // when the project lists choices
+  const [warrantyMonths, setWarrantyMonths] = useState('')
+  const deliveryChoices = project.deliveryOptions || []
+  const warrantyChoices = project.warrantyOptions || []
   const [notes, setNotes] = useState('')
   const [additionalComments, setAdditionalComments] = useState('')
   const [brandName, setBrandName] = useState('')
@@ -369,7 +380,9 @@ function BidModal({ project, profile, onClose, onSubmit }) {
     const errs = {}
     if (s === 0) {
       if (!(bidValue > 0)) errs.amount = 'Please enter a valid bid amount greater than zero.'
-      if (!deliveryTimeline.trim()) errs.deliveryTimeline = 'Please specify your delivery timeline.'
+      if (deliveryChoices.length ? !deliveryDays : !deliveryTimeline.trim()) {
+        errs.deliveryTimeline = deliveryChoices.length ? 'Choose your delivery timeline.' : 'Please specify your delivery timeline.'
+      }
       if (notes.trim().length < 20) errs.notes = 'Please provide a more detailed proposal of at least 20 characters.'
     }
     if (s === 1) {
@@ -406,12 +419,14 @@ function BidModal({ project, profile, onClose, onSubmit }) {
 
     const fd = new FormData()
     fd.append('amount', bidValue)
-    fd.append('delivery_timeline', deliveryTimeline.trim())
+    if (deliveryChoices.length) fd.append('delivery_days', deliveryDays)
+    else fd.append('delivery_timeline', deliveryTimeline.trim())
     fd.append('notes', notes.trim())
     fd.append('additional_comments', additionalComments.trim())
     fd.append('brand_name', brandName.trim())
     fd.append('model_number', modelNumber.trim())
-    fd.append('warranty_period', warrantyPeriod.trim())
+    if (warrantyChoices.length) { if (warrantyMonths) fd.append('warranty_months', warrantyMonths) }
+    else fd.append('warranty_period', warrantyPeriod.trim())
     fd.append('terms_accepted', terms)
     fd.append('interest_declared', interest)
     fd.append('scm_declared', scm)
@@ -476,7 +491,7 @@ function BidModal({ project, profile, onClose, onSubmit }) {
           <div className="sd-modal-meta">
             <div><span>Budget</span><strong>{project.budget}</strong></div>
             <div><span>Deadline</span><strong>{project.deadline}</strong></div>
-            <div><span>Category</span><strong>{project.category}</strong></div>
+            <div><span>Category</span><strong>{project.category}{project.categoryOther ? ` · ${project.categoryOther}` : ''}</strong></div>
           </div>
 
           <div className="sd-bid-body">
@@ -501,9 +516,20 @@ function BidModal({ project, profile, onClose, onSubmit }) {
 
                 <div className="sd-form-group">
                   <label>Delivery Timeline <span className="sd-req">*</span></label>
-                  <input type="text" placeholder="e.g. 30 days or 6 weeks" value={deliveryTimeline}
-                    onChange={e => { setDeliveryTimeline(e.target.value); setErrors(x => ({ ...x, deliveryTimeline: '' })) }} />
-                  <span className="sd-upload-hint">Days or weeks from contract signing to full delivery.</span>
+                  {deliveryChoices.length ? (
+                    <select value={deliveryDays}
+                      onChange={e => { setDeliveryDays(e.target.value); setErrors(x => ({ ...x, deliveryTimeline: '' })) }}>
+                      <option value="">Select delivery timeline</option>
+                      {deliveryChoices.map(d => <option key={d} value={d}>{deliveryLabel(d)}</option>)}
+                    </select>
+                  ) : (
+                    <input type="text" placeholder="e.g. 30 days or 6 weeks" value={deliveryTimeline}
+                      onChange={e => { setDeliveryTimeline(e.target.value); setErrors(x => ({ ...x, deliveryTimeline: '' })) }} />
+                  )}
+                  <span className="sd-upload-hint">
+                    {deliveryChoices.length ? 'Calendar days from the Notice to Proceed to full delivery, as allowed for this procurement.'
+                      : 'Days or weeks from contract signing to full delivery.'}
+                  </span>
                   {errors.deliveryTimeline && <span className="sd-field-error">{errors.deliveryTimeline}</span>}
                 </div>
 
@@ -537,8 +563,15 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                 </div>
                 <div className="sd-form-group">
                   <label>Warranty Period</label>
-                  <input type="text" placeholder="e.g. 1 year parts and labor" value={warrantyPeriod}
-                    onChange={e => setWarrantyPeriod(e.target.value)} />
+                  {warrantyChoices.length ? (
+                    <select value={warrantyMonths} onChange={e => setWarrantyMonths(e.target.value)}>
+                      <option value="">No warranty offered</option>
+                      {warrantyChoices.map(m => <option key={m} value={m}>{warrantyLabel(m)}</option>)}
+                    </select>
+                  ) : (
+                    <input type="text" placeholder="e.g. 1 year parts and labor" value={warrantyPeriod}
+                      onChange={e => setWarrantyPeriod(e.target.value)} />
+                  )}
                 </div>
               </div>
             )}
@@ -616,7 +649,7 @@ function BidModal({ project, profile, onClose, onSubmit }) {
                   <div className="sd-upload-field">
                     <label className="sd-upload-label">Other Attachments <span className="sd-optional"> (optional)</span></label>
                     {others.map((f, i) => (
-                      <BidFileRow key={i} name={f.name}
+                      <BidFileRow key={i} name={f.name} file={f}
                         onRemove={() => setOthers(list => list.filter((_, idx) => idx !== i))} />
                     ))}
                     {others.length === 0 ? (
@@ -733,6 +766,7 @@ function BidDocRevisionRow({ doc, file, onFile, onRemove }) {
         {file ? (
           <div className="sd-revision-file">
             <FileText size={14} /><span className="sd-file-name" title={file.name}>{file.name}</span>
+            <LocalPreviewButton file={file} className="sd-file-preview" />
             <button onClick={onRemove}><X size={14} /></button>
           </div>
         ) : (
@@ -1228,6 +1262,7 @@ function RevisionPanel({ profile, onResubmitted, setToast }) {
               {files[d.key] ? (
                 <div className="sd-revision-file">
                   <FileText size={14} /><span className="sd-file-name" title={files[d.key].name}>{files[d.key].name}</span>
+                  <LocalPreviewButton file={files[d.key]} className="sd-file-preview" />
                   <button onClick={() => setFiles(f => { const n = { ...f }; delete n[d.key]; return n })}><X size={14} /></button>
                 </div>
               ) : (
@@ -1482,6 +1517,63 @@ function DocumentHealth({ profile, setToast, onUploaded }) {
   )
 }
 
+// The last six months as "YYYY-MM", oldest first.
+function lastSixMonths() {
+  const out = []
+  const d = new Date()
+  d.setDate(1)
+  for (let i = 0; i < 6; i++) {
+    out.unshift(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
+    d.setMonth(d.getMonth() - 1)
+  }
+  return out
+}
+
+// How the supplier's bids are doing, as pictures: outcome of every bid, and
+// bids submitted per month with how many of those were won.
+function SupplierCharts({ bids, loading }) {
+  if (loading && !bids.length) return <div className="ch-grid-2"><Skeleton height={220} radius={12} /><Skeleton height={220} radius={12} /></div>
+  const won = bids.filter(b => b.status === 'winner').length
+  const disq = bids.filter(b => b.status === 'disqualified').length
+  const lost = bids.filter(b => b.status !== 'winner' && b.status !== 'disqualified' && b.projectStatus === 'awarded').length
+  const pending = bids.length - won - disq - lost
+  const months = lastSixMonths()
+  const perMonth = Object.fromEntries(months.map(m => [m, { submitted: 0, won: 0 }]))
+  bids.forEach(b => {
+    const m = String(b.submittedAt || '').slice(0, 7)
+    if (perMonth[m]) {
+      perMonth[m].submitted += 1
+      if (b.status === 'winner') perMonth[m].won += 1
+    }
+  })
+  return (
+    <div className="ch-grid-2">
+      <section className="rf-card" aria-labelledby="sd-out-h">
+        <div className="rf-card-head"><div><h3 id="sd-out-h">My bids by outcome</h3><p>Every bid you have submitted</p></div></div>
+        <div className="ch-card-body">
+          {!bids.length ? <p className="rf-muted" style={{ margin: 0 }}>Your bids will be charted here once you submit one.</p> : (
+            <DonutChart ariaLabel="My bids by outcome" centerLabel="bids"
+              data={[
+                { label: 'Won', value: won, color: STATUS.success },
+                { label: 'Still being evaluated', value: pending, color: STATUS.info },
+                { label: 'Not selected', value: lost, color: STATUS.neutral },
+                { label: 'Disqualified', value: disq, color: STATUS.danger },
+              ]} />
+          )}
+        </div>
+      </section>
+      <section className="rf-card" aria-labelledby="sd-trend-h">
+        <div className="rf-card-head"><div><h3 id="sd-trend-h">Bids per month</h3><p>Submitted and won, last six months</p></div></div>
+        <div className="ch-card-body">
+          <ColumnChart ariaLabel="Bids submitted and won per month"
+            series={[{ key: 'submitted', label: 'Submitted' }, { key: 'won', label: 'Won' }]}
+            data={months.map(m => ({ label: monthLabel(m), values: perMonth[m] }))} />
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligible, profile, onResubmitted, setToast, loadingProjects, loadingBids }) {
   const now = useNow()
   const [modal, setModal] = useState(null)
@@ -1559,6 +1651,8 @@ function SupplierHome({ projects, bids, awards = [], failed = {}, onBid, eligibl
           value={problems.length} to="/supplier/profile"
           context={problems.length ? 'Missing, flagged or expiring' : 'All in order'} />
       </KpiRow>
+
+      {!failed.bids && <SupplierCharts bids={bids} loading={loadingBids} />}
 
       <section className="rf-card" aria-labelledby="opp-h">
         <div className="rf-card-head" style={{ flexWrap: 'wrap' }}>
@@ -2208,6 +2302,7 @@ function CategoryDocUpload({ doc, setToast, onUploaded }) {
         <span className="cd-file">
           <FileText size={14} aria-hidden="true" />
           <span className="cd-file-name" title={file.name}>{file.name}</span>
+          <LocalPreviewButton file={file} className="sd-file-preview" />
           <button type="button" className="cd-icon-btn" onClick={() => setFile(null)} aria-label="Remove file"><X size={13} /></button>
         </span>
       ) : (
@@ -2376,7 +2471,8 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry, setToast,
                       ? <span className="cd-badge cd-badge-missing">Missing — please upload</span>
                       : <span className={`ui-badge ${badge.cls}`}><span className="ui-badge-dot" aria-hidden="true" />{badge.label}</span>}
                   {expiryEl}
-                  {d.url && <a className="sd-doc-view" href={d.url} target="_blank" rel="noreferrer"><Eye size={13} /> View</a>}
+                  {d.url && <PreviewButton url={d.url} name={d.label} className="sd-doc-view" />}
+                  {d.url && <a className="sd-doc-view" href={d.url} target="_blank" rel="noreferrer"><Eye size={13} /> Download</a>}
                   {canUploadCategoryDoc(d, profile) && (
                     <CategoryDocUpload doc={d} setToast={setToast} onUploaded={onUpdated} />
                   )}
@@ -2428,7 +2524,8 @@ function SupplierProfile({ profile, eligible, loading, error, onRetry, setToast,
 
 function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetry }) {
   const allCategories = useCategories()
-  const [fullName, setFullName] = useState('')
+  const [fullName, setFullName] = useState('')   // display name on record
+  const [nameParts, setNameParts] = useState({ first_name: '', middle_name: '', last_name: '' })
   const [repName, setRepName] = useState('')
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
@@ -2457,6 +2554,7 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
   useEffect(() => {
     if (!profile) return
     setFullName(profile.full_name || profile.contact || '')
+    setNameParts({ first_name: profile.first_name || '', middle_name: profile.middle_name || '', last_name: profile.last_name || '' })
     setRepName(profile.representative_name || '')
     setPhone(profile.phone_number || '')
     setAddress(profile.company_address || '')
@@ -2500,7 +2598,10 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
     try {
       const before = profile?.category_request_status || ''
       const saved = await apiUpdateMySupplier({
-        full_name: fullName.trim(),
+        // Only when a part is filled in: an account from before the name split
+        // keeps its name exactly as typed until the supplier enters the parts.
+        ...(Object.values(nameParts).some(v => v.trim())
+          ? Object.fromEntries(Object.entries(nameParts).map(([k, v]) => [k, v.trim()])) : {}),
         representative_name: repName.trim(),
         phone_number: phone.trim(),
         company_address: address.trim(),
@@ -2570,8 +2671,22 @@ function SupplierSettings({ profile, setToast, onUpdated, loading, error, onRetr
       </div>
       <form className="sd-profile-form" onSubmit={saveProfile}>
         <div className="sd-form-group">
-          <label>Full Name</label>
-          <input type="text" value={fullName} onChange={e => setFullName(e.target.value)} />
+          <label htmlFor="sd-first-name">First Name</label>
+          <input id="sd-first-name" type="text" autoComplete="given-name" value={nameParts.first_name}
+            onChange={e => setNameParts(n => ({ ...n, first_name: e.target.value }))} />
+        </div>
+        <div className="sd-form-group">
+          <label htmlFor="sd-middle-name">Middle Name (optional)</label>
+          <input id="sd-middle-name" type="text" autoComplete="additional-name" value={nameParts.middle_name}
+            onChange={e => setNameParts(n => ({ ...n, middle_name: e.target.value }))} />
+        </div>
+        <div className="sd-form-group">
+          <label htmlFor="sd-last-name">Last Name</label>
+          <input id="sd-last-name" type="text" autoComplete="family-name" value={nameParts.last_name}
+            onChange={e => setNameParts(n => ({ ...n, last_name: e.target.value }))} />
+          {!nameParts.first_name && !nameParts.last_name && fullName && (
+            <small className="sd-muted">Name on record: {fullName}. Enter your first and last name to update it.</small>
+          )}
         </div>
         <div className="sd-form-group">
           <label>Representative Name</label>

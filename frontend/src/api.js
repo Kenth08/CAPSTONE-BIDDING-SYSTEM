@@ -731,3 +731,62 @@ export const apiAnchorNextPending = () =>
 export const apiListNotifications = () => apiFetch('/notifications/', { fresh: true })
 export const apiMarkNotificationsRead = () =>
   apiFetch('/notifications/mark-read/', { method: 'POST', body: '{}' })
+
+// ── Separation of duties: accounts, BAC Committee, Head award approval ─────────
+// (backend/procurement/bac_views.py, accounts/user_admin.py). The BAC endpoints
+// that change something answer 409 { code: 'bac_workflow_off' } until the
+// backend's BAC_WORKFLOW_ENABLED switch is on.
+export const apiBacStatus = () => apiFetch('/bac/status/')
+
+// Admin: the procuring entity's accounts (Staff, BAC Committee, Head; Admins listed read-only).
+export const apiListManagedUsers = () => apiFetch('/auth/users/', { fresh: true })
+export const apiCreateManagedUser = (data) =>
+  apiFetch('/auth/users/', { method: 'POST', body: JSON.stringify(data) })
+export const apiUpdateManagedUser = (id, data) =>
+  apiFetch(`/auth/users/${id}/`, { method: 'PATCH', body: JSON.stringify(data) })
+
+// BAC designations (recorded by the Admin, made by the Head).
+export const apiListBacMemberships = () => apiFetch('/bac/memberships/', { fresh: true })
+export const apiCreateBacMembership = (formData) => apiUpload('/bac/memberships/', formData)
+export const apiEndBacMembership = (id, data) =>
+  apiFetch(`/bac/memberships/${id}/end/`, { method: 'POST', body: JSON.stringify(data) })
+
+// Evaluation, ranking and post-qualification.
+export const apiBacProjects = () => apiFetch('/bac/projects/', { fresh: true })
+export const apiBacProject = (projectId) => apiFetch(`/bac/projects/${projectId}/`, { fresh: true })
+export const apiBacEvaluateBid = (bidId, data) =>
+  apiFetch(`/bac/bids/${bidId}/evaluate/`, { method: 'POST', body: JSON.stringify(data) })
+export const apiBacPostQualify = (bidId, data) =>
+  apiFetch(`/bac/bids/${bidId}/post-qualify/`, { method: 'POST', body: JSON.stringify(data) })
+
+// Resolutions, votes and the Head's decision.
+export const apiBacResolutions = (params = {}) => {
+  const query = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null)).toString()
+  return apiFetch(`/bac/resolutions/${query ? `?${query}` : ''}`, { fresh: true })
+}
+export const apiBacResolution = (id) => apiFetch(`/bac/resolutions/${id}/`, { fresh: true })
+export const apiBacCreateResolution = (formData) => apiUpload('/bac/resolutions/', formData)
+export const apiBacDiscardResolution = (id) =>
+  apiFetch(`/bac/resolutions/${id}/discard/`, { method: 'POST', body: '{}' })
+export const apiBacOpenVoting = (id) =>
+  apiFetch(`/bac/resolutions/${id}/open-voting/`, { method: 'POST', body: '{}' })
+export const apiBacVote = (id, data) =>
+  apiFetch(`/bac/resolutions/${id}/vote/`, { method: 'POST', body: JSON.stringify(data) })
+// Philippine locations (PSGC), proxied and cached by the backend
+// (procurement/locations.py). Each answers [{ code, name, label? }].
+export const apiLocRegions = () => apiFetch('/locations/regions/')
+export const apiLocRegionProvinces = (code) => apiFetch(`/locations/regions/${code}/provinces/`)
+export const apiLocRegionCities = (code) => apiFetch(`/locations/regions/${code}/cities/`)
+export const apiLocProvinceCities = (code) => apiFetch(`/locations/provinces/${code}/cities/`)
+export const apiLocCityBarangays = (code) => apiFetch(`/locations/cities/${code}/barangays/`)
+
+// Staff: a vote a member gave at an in-person meeting. data = { member, choice, comment }.
+export const apiBacRecordVote = (id, data) =>
+  apiFetch(`/bac/resolutions/${id}/record-vote/`, { method: 'POST', body: JSON.stringify(data) })
+// The voter or Staff: a correction note beside a vote. The vote itself never changes.
+export const apiBacAddVoteNote = (voteId, note) =>
+  apiFetch(`/bac/votes/${voteId}/notes/`, { method: 'POST', body: JSON.stringify({ note }) })
+export const apiBacApproveAward = (id, data = {}) =>
+  apiFetch(`/bac/resolutions/${id}/approve/`, { method: 'POST', body: JSON.stringify(data) })
+export const apiBacReturnAward = (id, remarks) =>
+  apiFetch(`/bac/resolutions/${id}/return/`, { method: 'POST', body: JSON.stringify({ remarks }) })

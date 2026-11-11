@@ -16,6 +16,7 @@ Rules shared by every view here:
 from datetime import timedelta
 
 from django.db.models import Count, Q, Sum
+from django.db.models.functions import TruncMonth
 from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.response import Response
@@ -27,7 +28,7 @@ from .blockchain import ETHERSCAN_TX_URL, anchor_summary
 from .document_requirements import approved_categories, expiring_documents, missing_documents
 from .models import Award, Bid, BlockchainAnchor, Project, Supplier
 from .payload_v3_reader import completeness
-from .permissions import IsAdminRole, IsHeadRole
+from .permissions import IsAdminOrStaffRole, IsHeadRole
 from .verification import INCOMPLETE_STATES
 from .views import close_expired_published_projects
 
@@ -70,6 +71,42 @@ def _waiting_since(projects):
     return {p.id: max(p.created_at, latest.get(str(p.id), p.created_at)) for p in projects}
 
 
+TREND_MONTHS = 6
+
+
+def last_months(today, n=TREND_MONTHS):
+    """The first day of each of the last `n` months, oldest first, this month last."""
+    firsts, y, m = [], today.year, today.month
+    for _ in range(n):
+        firsts.append(today.replace(year=y, month=m, day=1))
+        y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    return list(reversed(firsts))
+
+
+def monthly_trend(today, created_by_month, awards):
+    """Procurements created and awards made per month, for the dashboard chart.
+
+    Adds no query: `created_by_month` comes from the status count the
+    dashboard already runs (grouped by status and month), and `awards` is the
+    list of won awards it already loads. Every query costs about 220 ms in
+    production (PageSpeedQueryBudgetTests keeps the count fixed)."""
+    months = last_months(today)
+    rows = {(d.year, d.month): {"month": d.isoformat()[:7], "created": 0, "awarded": 0, "awarded_amount": 0}
+            for d in months}
+    for (year, month), n in created_by_month.items():
+        if (year, month) in rows:
+            rows[(year, month)]["created"] += n
+    for a in awards:
+        row = rows.get((a.awarded_at.year, a.awarded_at.month)) if a.awarded_at else None
+        if row:
+            row["awarded"] += 1
+            row["awarded_amount"] += a.amount or 0
+    out = list(rows.values())
+    for row in out:
+        row["awarded_amount"] = _money(row["awarded_amount"])
+    return out
+
+
 def incomplete_evidence_count():
     """v3 anchors that recorded a missing or unreadable document. Counted apart from
     every other figure: such a record can verify, and is still not complete."""
@@ -78,9 +115,9 @@ def incomplete_evidence_count():
 
 
 class AdminSummaryView(APIView):
-    """Everything the Admin dashboard home shows, in one request."""
+    """Everything the Admin (and the Staff) dashboard home shows, in one request."""
 
-    permission_classes = [IsAdminRole]
+    permission_classes = [IsAdminOrStaffRole]
 
     def get(self, request):
         close_expired_published_projects()
@@ -140,12 +177,19 @@ class AdminSummaryView(APIView):
             .filter(pending__gt=0)
             .order_by("deadline")
         )
+        from .permissions import bac_workflow_on  # noqa: PLC0415
+        committee = bac_workflow_on()
         for p in closed_with_pending:
+            plural = "s" if p.pending != 1 else ""
             attention.append({
-                "kind": "evaluate", "tone": "danger",
-                "title": f"Evaluate {p.pending} bid{'s' if p.pending != 1 else ''} on {p.code}",
+                # With the BAC workflow on, the committee evaluates: the office
+                # follows its progress (BAC Meetings) instead of being told to act.
+                "kind": "evaluate", "tone": "info" if committee else "danger",
+                "title": (f"{p.pending} bid{plural} on {p.code} with the BAC Committee" if committee
+                          else f"Evaluate {p.pending} bid{plural} on {p.code}"),
                 "detail": f"{p.name} · bidding closed {p.deadline.isoformat() if p.deadline else ''}".strip(),
-                "link": f"/admin/bids/{p.id}", "since": p.deadline,
+                "link": ("/admin/bac-meetings" if committee and request.user.role == "staff"
+                         else f"/admin/bids/{p.id}"), "since": p.deadline,
             })
         reviewed = list(Project.objects.filter(
             status__in=[Project.Status.NEEDS_REVISION, Project.Status.APPROVED]).order_by("reviewed_at"))
@@ -200,7 +244,15 @@ class AdminSummaryView(APIView):
         attention.sort(key=lambda i: (rank[i["tone"]], str(i["since"] or "9999")))
 
         # ── Pipeline (one grouped COUNT) ─────────────────────────────────────
-        by_status = dict(Project.objects.values_list("status").annotate(n=Count("id")))
+        # One query gives both the stage counts and the monthly "created" series:
+        # grouped by status and by month (TruncMonth uses the Manila time zone).
+        by_status, created_by_month = {}, {}
+        for row in Project.objects.annotate(month=TruncMonth("created_at")).values("status", "month").annotate(
+                n=Count("id")):
+            by_status[row["status"]] = by_status.get(row["status"], 0) + row["n"]
+            if row["month"] is not None:
+                key = (row["month"].year, row["month"].month)
+                created_by_month[key] = created_by_month.get(key, 0) + row["n"]
         closed_with_bids = Project.objects.filter(
             status=Project.Status.CLOSED, bids__isnull=False).distinct().count()
         pipeline = [
@@ -268,6 +320,7 @@ class AdminSummaryView(APIView):
                 "rows": savings_rows[:LIST_LIMIT],
             },
             "categories": categories,
+            "trend": monthly_trend(today, created_by_month, awards),
             "activity": activity,
             "chain": {
                 "anchored": anchored_count,          # transactions reported (any state)
@@ -323,8 +376,34 @@ class HeadSummaryView(APIView):
                 "anchor": anchor_summary(a),
             })
 
+        # Decisions per month (last six), from each project's latest review.
+        months = last_months(timezone.localdate())
+        trend = {(d.year, d.month): {"month": d.isoformat()[:7], "approved": 0, "revision": 0} for d in months}
+        for p in Project.objects.filter(reviewed_at__date__gte=months[0]).only("status", "reviewed_at"):
+            local = timezone.localtime(p.reviewed_at)
+            row = trend.get((local.year, local.month))
+            kind = decision(p)
+            if row and kind in row:
+                row[kind] += 1
+
+        by_status = dict(Project.objects.values_list("status").annotate(n=Count("id")))
+        status_mix = [
+            {"key": key, "label": label, "count": by_status.get(key, 0)}
+            for key, label in (("pending_head", "Waiting for me"), ("needs_revision", "Returned for revision"),
+                               ("approved", "Approved, not yet published"), ("published", "Open for bidding"),
+                               ("closed", "Bidding closed"), ("awarded", "Awarded"))
+        ]
+        from .models import BACResolution  # noqa: PLC0415
+        from .permissions import bac_workflow_on  # noqa: PLC0415
+        awards_waiting = BACResolution.objects.filter(
+            status=BACResolution.Status.ADOPTED, head_decision=BACResolution.HeadDecision.PENDING).count()
+
         return Response({
+            "workflow_enabled": bac_workflow_on(),
+            "trend": list(trend.values()),
+            "status_mix": status_mix,
             "kpis": {
+                "awards_waiting": awards_waiting,
                 "waiting": len(pending),
                 "approved_this_month": Project.objects.filter(
                     status__in=POST_APPROVAL, reviewed_at__gte=month_start).count(),

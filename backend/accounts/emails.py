@@ -29,8 +29,15 @@ class EmailVerificationTokenGenerator(PasswordResetTokenGenerator):
         password hash keeps a reset from leaving old links alive.
 
         NOTE: links issued before this change no longer validate; the supplier
-        resends one from their dashboard."""
-        return f"{user.pk}{user.password}{(user.email or '').lower()}{timestamp}"
+        resends one from their dashboard.
+
+        The supplier's verified state is hashed too, so a link works ONCE:
+        confirming the address changes the hash and every earlier link stops
+        validating (it would otherwise stay usable until it expired)."""
+        from procurement.models import Supplier  # noqa: PLC0415 - avoid an import cycle
+
+        verified = Supplier.objects.filter(user_id=user.pk, email_verified=True).exists()
+        return f"{user.pk}{user.password}{(user.email or '').lower()}{int(verified)}{timestamp}"
 
 
 email_verification_token = EmailVerificationTokenGenerator()

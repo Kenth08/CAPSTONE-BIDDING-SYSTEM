@@ -15,8 +15,10 @@ from .document_requirements import (
     prefetch_file_exists,
 )
 from .files import SUPPLIER_VISIBLE_PROJECT_FIELDS, protected_file_url
+from . import bid_terms
 from .models import (
     AWARD_DOCUMENT_FIELDS,
+    OTHERS_CATEGORY,
     BID_DOCUMENT_FIELDS,
     canonical_categories,
     known_categories,
@@ -81,6 +83,11 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
     and the supplier's own dashboard."""
 
     full_name = serializers.CharField(source="user.full_name", read_only=True, default="")
+    # The parts behind full_name (accounts/names.py); empty for accounts made
+    # before the split, whose full_name is kept exactly as typed.
+    first_name = serializers.CharField(source="user.first_name", read_only=True, default="")
+    middle_name = serializers.CharField(source="user.middle_name", read_only=True, default="")
+    last_name = serializers.CharField(source="user.last_name", read_only=True, default="")
     email = serializers.EmailField(source="user.email", read_only=True, default="")
     documents = serializers.SerializerMethodField()
     # Sign-in lockout state, so the Admin can unlock the account (accounts/lockout.py).
@@ -95,7 +102,8 @@ class SupplierDetailSerializer(serializers.ModelSerializer):
         model = Supplier
         fields = [
             "id", "user_id", "account_locked_until",
-            "company", "contact", "full_name", "email", "business_type",
+            "company", "contact", "full_name", "first_name", "middle_name", "last_name",
+            "email", "business_type",
             "business_types", "company_address", "phone_number", "tin",
             "representative_name", "track_record_description",
             "mayors_permit_expiry", "tax_clearance_expiry", "financial_statement_year",
@@ -315,6 +323,17 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
 
         if sent("category") and not known_categories([attrs.get("category")]):
             raise serializers.ValidationError({"category": "Select a valid procurement category."})
+        if sent("category"):
+            # "Others" needs a description of what is being procured; any other
+            # category clears it so a stale description never lingers.
+            if attrs.get("category") == OTHERS_CATEGORY:
+                other = str(attrs.get("category_other") or "").strip()
+                if not other:
+                    raise serializers.ValidationError(
+                        {"category_other": "Specify what is being procured when the category is Others."})
+                attrs["category_other"] = other[:200]
+            else:
+                attrs["category_other"] = ""
         required_fields = {
             "name": "Procurement Name", "type": "Procurement Type",
             "delivery_location": "Delivery Location",
@@ -340,6 +359,20 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             if not delivery_period or delivery_period < 1 or delivery_period > 365:
                 raise serializers.ValidationError(
                     {"delivery_period_days": "Enter a delivery period between 1 and 365 days."})
+        # Delivery and warranty choices (procurement/bid_terms.py). A delivery
+        # choice can't promise more than the procurement's delivery period.
+        for field, maximum, label in (("delivery_options", bid_terms.MAX_DELIVERY_DAYS, "delivery"),
+                                      ("warranty_options", bid_terms.MAX_WARRANTY_MONTHS, "warranty")):
+            if field in self.initial_data:
+                try:
+                    attrs[field] = bid_terms.parse_options(
+                        self.initial_data.get(field), maximum=maximum, label=label)
+                except ValueError as exc:
+                    raise serializers.ValidationError({field: str(exc)}) from None
+        period = attrs.get("delivery_period_days") or getattr(self.instance, "delivery_period_days", None)
+        if period and any(d > period for d in attrs.get("delivery_options") or []):
+            raise serializers.ValidationError(
+                {"delivery_options": f"A delivery choice can't exceed the {period}-day delivery period."})
         if sent("budget") and (attrs.get("budget") is None or attrs["budget"] <= 0):
             raise serializers.ValidationError(
                 {"budget": "Enter the Approved Budget (ABC) as an amount greater than zero."})
@@ -354,7 +387,8 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
         model = Project
         fields = [
             "id", "code", "name", "description", "budget", "deadline", "bidding_period_days",
-            "type", "category", "delivery_location", "expected_delivery_date", "delivery_period_days",
+            "type", "category", "category_other", "delivery_location", "expected_delivery_date",
+            "delivery_period_days", "delivery_options", "warranty_options",
             "eligible_types", "status", "bid_count", "created_at",
             "reviewed_at", "reject_reason", "document_reviews", "published_at", "awarded_at", "documents",
             "anchors",
@@ -456,7 +490,7 @@ class BidSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             "id", "project", "project_name", "project_code", "project_category",
             "supplier", "supplier_name", "amount", "notes", "status", "submitted_at", "reviewed_at",
             # required + product info
-            "delivery_timeline", "additional_comments",
+            "delivery_timeline", "additional_comments", "delivery_days", "warranty_months",
             "brand_name", "model_number", "warranty_period",
             # file URLs (read side)
             "quotation_document_url", "technical_document_url",

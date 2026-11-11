@@ -282,6 +282,84 @@ def build_bac_resolution(award, issued_on=None):
     return pdf.output_bytes()
 
 
+def build_committee_resolution(resolution, ranking_rows, decided_at):
+    """The BAC Resolution as the five-member committee adopted it (separation
+    of duties, procurement/bac.py): the ranking, the post-qualification
+    finding, and every member's vote with their comment.
+
+    Built ONCE, at the moment the resolution is adopted, and stored with its
+    SHA-256. It is an internal document (never public); only its fingerprint
+    reaches the ledger, through the RESOLUTION_ISSUED anchor."""
+    project = resolution.project
+    bid = resolution.recommended_bid
+    pdf = _OfficialDocument("BAC RESOLUTION")
+    pdf.add_page()
+    pdf.field("Number:", resolution.number)
+    pdf.field("Reference:", project.code)
+    pdf.field("Meeting:", f"{_fmt_date(resolution.meeting_date)} "
+                          f"({resolution.get_meeting_mode_display()}"
+                          f"{', ' + resolution.venue if resolution.venue else ''})")
+    pdf.ln(3)
+    pdf.line_out(
+        f"RESOLUTION RECOMMENDING THE AWARD OF CONTRACT FOR \"{project.name.upper()}\" "
+        f"({project.code}) TO {bid.supplier.company.upper()}",
+        height=5.6, bold=True, size=10.5, align="C", wrap=True,
+    )
+    pdf.ln(4)
+    pdf.para(
+        f"WHEREAS, the Bids and Awards Committee conducted the procurement of "
+        f"\"{project.name}\" with an Approved Budget for the Contract of {peso(project.budget)}, "
+        f"and received {project.bids.count()} bid(s);"
+    )
+    pdf.para(
+        "WHEREAS, each member of the Committee evaluated every bid for eligibility, technical "
+        "and financial compliance, and the bids that passed by majority were ranked from the "
+        "lowest calculated amount, as follows:"
+    )
+    pdf.set_font("Helvetica", "B", 9)
+    for width, head in ((14, "Rank"), (78, "Bidder"), (40, "Amount"), (38, "Post-qualification")):
+        pdf.cell(width, 6, head, border=1)
+    pdf.ln()
+    pdf.set_font("Helvetica", "", 9)
+    for row in ranking_rows:
+        pdf.cell(14, 6, str(row["rank"]), border=1)
+        pdf.cell(78, 6, _safe(row["company"])[:48], border=1)
+        pdf.cell(40, 6, peso(row["amount"]), border=1)
+        pdf.cell(38, 6, _safe(row["post_qualification"] or "-"), border=1)
+        pdf.ln()
+    pdf.ln(3)
+    pq = getattr(bid, "post_qualification", None)
+    if pq is not None:
+        pdf.para(f"WHEREAS, the post-qualification of {bid.supplier.company} found it "
+                 f"{pq.get_result_display().upper()}: {pq.remarks}")
+    pdf.para(f"WHEREAS, {resolution.justification}")
+    pdf.para(
+        f"NOW THEREFORE, the Bids and Awards Committee RESOLVES to recommend to the Head of "
+        f"the Procuring Entity the award of the contract for \"{project.name}\" to "
+        f"{bid.supplier.company}, the Lowest Calculated Responsive Bid, in the amount of "
+        f"{peso(bid.amount)}."
+    )
+    pdf.ln(2)
+    pdf.line_out("VOTES OF THE MEMBERS", bold=True)
+    pdf.ln(1)
+    for vote in resolution.votes.all():
+        cast = timezone.localtime(vote.cast_at).strftime("%d %B %Y %H:%M")
+        pdf.line_out(f"{vote.voter_name}, {vote.get_voter_position_display()}: "
+                     f"{vote.get_choice_display().upper()} ({cast})", bold=True, size=9.5)
+        if vote.source == "in_person":
+            pdf.para(f"Given in person; recorded by {vote.recorded_by_name or 'Procurement Staff'}.", gap=1)
+        pdf.para(f"Comment: {vote.comment}", gap=2)
+        # Correction notes added before adoption. The vote above is unchanged;
+        # notes added after this file is frozen appear only in the BAC Records.
+        for note in vote.notes.all():
+            when = timezone.localtime(note.created_at).strftime("%d %B %Y %H:%M")
+            pdf.para(f"Correction note by {note.author_name} ({note.author_role}, {when}): {note.note}", gap=2)
+    approvals = sum(1 for v in resolution.votes.all() if v.choice == "approve")
+    pdf.para(f"ADOPTED with {approvals} approving vote(s) on "
+             f"{timezone.localtime(decided_at).strftime('%d %B %Y %H:%M')}.")
+    return pdf.output_bytes()
+
+
 # Which builder produces which document (keys match AWARD_DOCUMENT_FIELDS).
 DOCUMENT_BUILDERS = {
     "award_resolution": build_bac_resolution,

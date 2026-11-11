@@ -6,17 +6,26 @@ from django.db import models
 class User(AbstractUser):
     """Custom user with a procurement role.
 
-    The frontend currently stores `localStorage.role` as one of
-    admin / head / supplier. This replaces that with a real account.
+    The role decides which dashboard opens and which endpoints answer. Values are
+    append-only: they are stored on every account and in every issued token.
+    STAFF and BAC belong to the separation-of-duties workflow
+    (settings.BAC_WORKFLOW_ENABLED); a BAC account's position (Chairperson,
+    Vice-Chairperson, Member) is its procurement.BACMembership, not its role.
     """
 
     class Role(models.TextChoices):
         ADMIN = "admin", "Admin"
         HEAD = "head", "Head"
         SUPPLIER = "supplier", "Supplier"
+        STAFF = "staff", "Procurement Staff"
+        BAC = "bac", "BAC Committee"
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.SUPPLIER)
+    # The display name, composed from first_name, middle_name and last_name
+    # (AbstractUser already has first_name and last_name). Accounts created
+    # before the split keep the name as typed with empty parts (accounts/names.py).
     full_name = models.CharField(max_length=150, blank=True)
+    middle_name = models.CharField(max_length=150, blank=True, default="", db_default="")
     # Set whenever the password is changed (self-service change or reset
     # confirm) so a failed login can tell the user how recently it happened.
     password_changed_at = models.DateTimeField(null=True, blank=True)
