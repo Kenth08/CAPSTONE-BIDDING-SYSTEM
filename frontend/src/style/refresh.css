@@ -749,3 +749,88 @@ a.rf-list-row:focus-visible { outline: none; box-shadow: inset var(--focus-ring)
     white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   }
 }
+
+/* ── Checkboxes and radios, app-wide ─────────────────────────────────────
+   One modern control instead of the browser default. A page can recolour it
+   with --check-color (e.g. the Head's warning-toned "flag for revision"). */
+input[type="checkbox"],
+input[type="radio"] {
+  -webkit-appearance: none;
+  appearance: none;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  display: inline-grid;
+  place-content: center;
+  vertical-align: middle;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+input[type="radio"] { border-radius: 50%; }
+
+input[type="checkbox"]::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  transform: scale(0);
+  transition: transform .12s ease-in-out;
+  background: #fff;
+  /* check mark */
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+input[type="radio"]::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: scale(0);
+  transition: transform .12s ease-in-out;
+  background: #fff;
+}
+
+input[type="checkbox"]:hover:not(:disabled),
+input[type="radio"]:hover:not(:disabled) { border-color: var(--check-color, var(--c-primary-500)); }
+
+input[type="checkbox"]:checked,
+input[type="radio"]:checked,
+input[type="checkbox"]:indeterminate {
+  background: var(--check-color, var(--c-primary-600));
+  border-color: var(--check-color, var(--c-primary-600));
+}
+input[type="checkbox"]:checked::before,
+input[type="radio"]:checked::before { transform: scale(1); }
+input[type="checkbox"]:indeterminate::before {
+  transform: scale(1); height: 2px; clip-path: none; border-radius: 1px;
+}
+
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled { cursor: not-allowed; opacity: .5; }
+
+/* Page-specific tones (these rules used accent-color before). */
+.ad-doc-check input,
+.hd-doc-review-main input { --check-color: var(--tone-warning-solid); }
+.bac-check.is-fail input { --check-color: var(--tone-danger-solid); }
+
+/* Choice chips (Planning: delivery timelines / warranty periods bidders may offer). */
+.ad-choice-list { gap: 8px; }
+.ad-choice {
+  gap: 8px; padding: 8px 14px 8px 10px; border: 1.5px solid var(--border);
+  border-radius: 999px; background: var(--surface); color: var(--text-body);
+  font-weight: var(--fw-medium, 500); user-select: none;
+  transition: border-color .15s ease, background-color .15s ease, color .15s ease, box-shadow .15s ease;
+}
+.ad-choice:hover { border-color: var(--c-primary-500); }
+.ad-choice:has(input:checked) {
+  border-color: var(--c-primary-500); background: var(--c-primary-50); color: var(--c-primary-700);
+}
+.ad-choice:has(input:focus-visible) { box-shadow: var(--focus-ring); }
+.ad-choice:has(input:focus-visible) input { box-shadow: none; }
+.ad-choice input { width: 16px; height: 16px; border-radius: 50%; }
+.ad-choice input::before { width: 9px; height: 9px; }
