@@ -22,4 +22,4 @@ Domain knowledge (roles, lifecycle, statuses, blockchain stages):
   - `frontend-design`, `webapp-testing` — from `anthropics/skills` (UI design guidance, Playwright testing against the local app).
 - Prefer reading `backend/procurement/blockchain.py` docstrings before changing anything anchor-related; they document past bugs (e.g. why `PAYLOAD_VERSION` is 2).
 - The shell is Windows (PowerShell / Git Bash). The backend venv Python is `backend/venv/Scripts/python`.
-- Don't push to `main` or trigger deploys without the user asking — `main` is wired to Render and Vercel.
+- Don't push to `main` or trigger deploys without the user asking — `main` auto-deploys to Vercel, Heroku deploys `main` manually, and the legacy Render service may still build from it.

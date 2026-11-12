@@ -2,6 +2,10 @@ node_modules/
 dist/
 .env
 .env.local
+# Every .env variant (.env.production, .env.development, .env.staging, ...)
+# at any depth. Only the documented templates are tracked.
+.env.*
+!.env.example
 .DS_Store
 *.log
 

@@ -69,7 +69,7 @@ IP). Responses carry these headers:
 - No URL serves openings yet.
 
 **Storage safety checks** (`procurement/checks.py`):
-- `migrate` (and so the Render build) **fails** if the S3 settings would expose files: public ACL, unsigned URLs, custom domain, or long URL expiry.
+- `migrate` (and so the legacy Render build, or `heroku run python manage.py migrate`) **fails** if the S3 settings would expose files: public ACL, unsigned URLs, custom domain, or long URL expiry.
 - The same problems are logged at startup.
 
 ## 3. Accounts and sessions
@@ -80,7 +80,7 @@ IP). Responses carry these headers:
 | Account lockout | 5 wrong passwords or codes lock an account for **15 minutes** (`accounts/lockout.py`). Unknown usernames get the same answer. Admins unlock from the supplier review modal, the Django admin action, or `manage.py unlock_account <user>`. |
 | Two-factor (TOTP) | Required for Admin and Head accounts and the Django admin when `MFA_REQUIRED` is on (default in production). Ten single-use backup codes are issued, stored hashed. Codes cannot be replayed. `manage.py reset_mfa <user>` resets a lost device. |
 | Tokens | 15-minute access tokens. 1-day refresh tokens, **rotated** on every refresh, with the old one blacklisted. Logout blacklists the refresh token. The frontend refreshes silently, serialised across tabs. |
-| Token storage | Tokens stay in `localStorage`. httpOnly cookies would have to be cross-site (`SameSite=None`) between Vercel and Render, and browsers that block third-party cookies would then break login. The risk is contained instead by the strict CSP (no inline or third-party scripts) and the short token lifetime. |
+| Token storage | Tokens stay in `localStorage`. httpOnly cookies would have to be cross-site (`SameSite=None`) between Vercel and the API host (Heroku), and browsers that block third-party cookies would then break login. The risk is contained instead by the strict CSP (no inline or third-party scripts) and the short token lifetime. |
 | Django admin | Mounted only at the secret `ADMIN_URL`, with the same lockout and audit logging plus a TOTP code. |
 | Audit log | Append-only: refused by the ORM and, on PostgreSQL, by a database trigger. Records logins, failed logins, locks and unlocks, MFA events, permission denials (403), file downloads and denials, and every procurement action. |
 
@@ -94,7 +94,7 @@ The backend (Django) and the frontend (Vercel, `frontend/vercel.json`) both send
 - `Referrer-Policy: strict-origin-when-cross-origin`
 - `Permissions-Policy`: camera, microphone, geolocation, payment and USB disabled
 
-The SPA's `connect-src` allows only the Render API and the default Sepolia RPC.
+The SPA's `connect-src` allows only the API hosts (Heroku, plus the legacy Render origin until it is retired) and the default Sepolia RPC.
 **If `VITE_SEPOLIA_RPC_URL` points somewhere else, add that origin to
 `connect-src` in `frontend/vercel.json`**, or the public verifier cannot read the chain.
 
@@ -121,7 +121,7 @@ Choose the signer model first:
 ledger. Reads always stay public.
 
 `BLOCKCHAIN_PRIVATE_KEY` must belong to a dedicated test wallet. It is stored
-only in Render's environment and never in git or `VITE_*` variables.
+only in the backend host's environment (Heroku config vars) and never in git or `VITE_*` variables.
 
 ### Award disclosure policy
 
@@ -154,15 +154,15 @@ only in Render's environment and never in git or `VITE_*` variables.
 
 | Variable | Where | Purpose |
 |---|---|---|
-| `FILE_ENCRYPTION_KEY` | Render | Fernet key for supplier documents, TOTP secrets and backups. **Back it up.** |
-| `FILE_ENCRYPTION_OLD_KEYS` | Render | Retired keys during a rotation (comma-separated) |
-| `COMMITMENT_KEY` | Render, only when v3 is approved | Fernet key for commitment openings. Separate from `FILE_ENCRYPTION_KEY`. See custody below. |
-| `COMMITMENT_OLD_KEYS` | Render | Retired commitment keys (comma-separated, decrypt only) |
+| `FILE_ENCRYPTION_KEY` | Heroku | Fernet key for supplier documents, TOTP secrets and backups. **Back it up.** |
+| `FILE_ENCRYPTION_OLD_KEYS` | Heroku | Retired keys during a rotation (comma-separated) |
+| `COMMITMENT_KEY` | Heroku, only when v3 is approved | Fernet key for commitment openings. Separate from `FILE_ENCRYPTION_KEY`. See custody below. |
+| `COMMITMENT_OLD_KEYS` | Heroku | Retired commitment keys (comma-separated, decrypt only) |
 | `PAYLOAD_V3_ENABLED` | Nowhere yet | Must stay unset or `False`. The app refuses to start with it on. |
-| `ADMIN_URL` | Render | Secret Django admin path, e.g. `staff-<random>/`. Unset in production means no admin site. |
-| `MFA_REQUIRED` | Render | `True` in production (the default when `DEBUG=False`) |
-| `TRUSTED_PROXY_COUNT` | Render | Proxies that append to `X-Forwarded-For`. `1` on Render. |
-| `SECRET_KEY`, `DB_*`, `AWS_*`, `BREVO_API_KEY`, `BLOCKCHAIN_PRIVATE_KEY` | Render | Existing secrets, unchanged |
+| `ADMIN_URL` | Heroku | Secret Django admin path, e.g. `staff-<random>/`. Unset in production means no admin site. |
+| `MFA_REQUIRED` | Heroku | `True` in production (the default when `DEBUG=False`) |
+| `TRUSTED_PROXY_COUNT` | Heroku | Proxies that append to `X-Forwarded-For`. `1` on Heroku (its router) and on Render. **Set it explicitly on Heroku**: settings.py defaults to `1` only when it detects Render, otherwise `0`. |
+| `SECRET_KEY`, `DB_*`, `AWS_*`, `BREVO_API_KEY`, `BLOCKCHAIN_PRIVATE_KEY` | Heroku | Existing secrets, unchanged |
 | `VITE_API_URL`, `VITE_LEDGER_ADDRESS`, `VITE_SEPOLIA_RPC_URL` | Vercel | Public build-time values. Never put secrets in `VITE_*`. |
 
 ### Commitment key custody

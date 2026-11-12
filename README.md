@@ -59,8 +59,8 @@ Each key lifecycle step is fingerprinted (SHA-256 of the record + its key docume
 | Blockchain  | Solidity 0.8 contract on the Ethereum Sepolia testnet, MetaMask (demo) / web3.py (optional server signing) |
 | Database    | PostgreSQL via Supabase (SQLite for local dev) |
 | File Storage | S3-compatible (Supabase Storage / AWS S3) |
-| Deployment  | Render (backend API), Vercel (frontend) |
-| Email       | SMTP (Gmail) via Django's email backend |
+| Deployment  | Heroku (backend API), Vercel (frontend). A legacy Render service is still running, retirement pending |
+| Email       | Brevo HTTPS API in production (`BREVO_API_KEY`); SMTP or the console backend otherwise |
 
 ---
 
@@ -91,7 +91,7 @@ Capstone-project/
 │           └── commands/
 │               ├── seed.py       # Demo data + role accounts
 │               └── backup_db.py  # Manual DB export
-├── render.yaml             # Render deployment blueprint
+├── render.yaml             # Legacy Render blueprint (backend now on Heroku: backend/Procfile)
 ├── BLOCKCHAIN.md           # Blockchain setup + end-to-end demo guide
 └── README.md
 ```
@@ -187,7 +187,7 @@ Passwords are set when running `python manage.py seed`. Check the seed command o
 | `DEBUG` | `True` for development, `False` in production |
 | `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | PostgreSQL connection (Supabase). Leave unset to use SQLite locally |
 | `FRONTEND_URL` | Frontend origin for CORS and password reset links (e.g. `https://your-app.vercel.app`) |
-| `BREVO_API_KEY` | Sends email through Brevo's HTTPS API instead of SMTP. Needed on Render's free plan, which blocks outbound SMTP ports. Takes priority over `EMAIL_HOST`; `DEFAULT_FROM_EMAIL` must be a sender verified in Brevo |
+| `BREVO_API_KEY` | Sends email through Brevo's HTTPS API instead of SMTP. Used in production; it also works on hosts that block outbound SMTP ports (such as Render's free plan). Takes priority over `EMAIL_HOST`; `DEFAULT_FROM_EMAIL` must be a sender verified in Brevo |
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` | SMTP settings for email delivery (password reset, MFA codes, email verification). Unset (and no `BREVO_API_KEY`) = console backend |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_ENDPOINT_URL` | S3-compatible file storage (Supabase Storage or AWS S3). Unset = local media/ folder |
 | `LEDGER_CONTRACT_ADDRESS`, `SEPOLIA_RPC_URL` | Deployed ProcurementLedger address + Sepolia RPC. Optional — see [BLOCKCHAIN.md](BLOCKCHAIN.md) |
@@ -198,7 +198,7 @@ Passwords are set when running `python manage.py seed`. Check the seed command o
 
 | Variable | Description |
 |----------|-------------|
-| `VITE_API_URL` | Backend API base URL (e.g. `https://your-api.onrender.com/api`). Defaults to `http://127.0.0.1:8000/api` |
+| `VITE_API_URL` | Backend API base URL (e.g. `https://your-app.herokuapp.com/api`). Defaults to `http://127.0.0.1:8000/api` |
 | `VITE_LEDGER_ADDRESS` | Deployed ProcurementLedger contract address on Sepolia. Unset = records stay "not anchored" |
 | `VITE_SEPOLIA_RPC_URL` | Read-only Sepolia RPC for the public verification page. Defaults to a public endpoint |
 
@@ -250,18 +250,34 @@ Every transition endpoint above additionally returns an `anchor` object (`{ id, 
 ## Deployment
 
 The app is deployed using:
-- **Backend** → [Render](https://render.com) (Web Service, Gunicorn)
-- **Frontend** → [Vercel](https://vercel.com)
+- **Backend** → [Heroku](https://heroku.com) app `e-procurement` (Gunicorn, `backend/Procfile`, Python from `backend/.python-version`)
+- **Frontend** → [Vercel](https://vercel.com) (`frontend/vercel.json`), auto-deploys from `main`
 - **Database** → [Supabase](https://supabase.com) (PostgreSQL)
 - **File Storage** → Supabase Storage (S3-compatible)
+- **Email** → Brevo HTTPS API
 
-### Deploy via Render Blueprint
+### Backend on Heroku
+
+Heroku is connected to GitHub with **automatic deploys off**: a deploy is a manual
+"Deploy Branch" of `main` in the Heroku dashboard (Deploy tab). Heroku builds only
+`backend/`, which is why the ledger ABI is copied into `backend/procurement/`.
+
+The Procfile has no `release:` phase, so **a deploy never runs migrations**. Ship a
+model change in this order: back up, deploy, then run migrations by hand:
 
 ```bash
-# Push to GitHub, then in Render:
-# New → Blueprint → select this repository
-# Fill in environment variables in the Render dashboard
+heroku run python manage.py migrate -a e-procurement
 ```
+
+Heroku Scheduler runs one daily job: `python manage.py notify_document_expiry`
+(00:00 UTC = 08:00 Philippine time).
+
+### Legacy Render service
+
+`render.yaml` and `backend/build.sh` describe the old Render backend. It still
+runs against the same Supabase database, and its build runs `migrate` and
+`confirm_anchors --apply`. It is being retired; until it is suspended, a Render
+deploy can apply migrations to production.
 
 ### Manual backup
 

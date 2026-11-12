@@ -1,9 +1,17 @@
-# Render Blueprint — the Django API only.
+# Render Blueprint — the Django API only. LEGACY: retirement pending.
 #
-# HOW THIS PROJECT IS ACTUALLY DEPLOYED
-#   Backend  → Render web service  https://capstone-bidding-system.onrender.com
-#   Frontend → Vercel              https://capstone-bidding-system.vercel.app
+# HOW THIS PROJECT IS ACTUALLY DEPLOYED (2026-11)
+#   Backend  → Heroku app e-procurement  https://e-procurement-363179e05df6.herokuapp.com
+#              (backend/Procfile; manual deploy of main; no release phase, so
+#              migrations are run by hand with `heroku run python manage.py migrate`)
+#   Frontend → Vercel                    https://capstone-bidding-system.vercel.app
+#              (VITE_API_URL points at the Heroku API)
 #   Database → Supabase PostgreSQL
+#
+# The Render service below (https://capstone-bidding-system.onrender.com) is
+# still running against the SAME Supabase database. Its build (build.sh) runs
+# `migrate` and `confirm_anchors --apply`, so a Render deploy changes the
+# production schema. Nothing in the frontend calls it any more.
 #
 # The frontend is NOT on Render, so it is not described here — see the Vercel
 # section at the bottom of this file for the variables it needs.
@@ -170,7 +178,7 @@ services:
 # ── Frontend (Vercel — not managed by this file) ────────────────────────────
 # Set in the Vercel dashboard under Settings → Environments → Production:
 #
-#   VITE_API_URL         https://capstone-bidding-system.onrender.com/api
+#   VITE_API_URL         https://e-procurement-363179e05df6.herokuapp.com/api   (live bundle, verified 2026-11-12)
 #   VITE_LEDGER_ADDRESS  0x0c832739F61dCCb644e21799b1432842572EdcF5
 #
 # Vite inlines VITE_* variables at BUILD time, so changing either one requires

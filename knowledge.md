@@ -142,7 +142,7 @@ becomes private, `amount` joins the list and the Notice of Award file stops bein
 `select_winner`, in the award transaction under the project row lock, and a re-award
 is refused. It is stored and hashed in UTC, and the public procurement detail shows only
 its Philippine date. `Award.awarded_at` is only a date, taken
-from the server process's local clock (Asia/Manila on Render). So from 16:00 to 23:59
+from the server process's local clock (Asia/Manila: on the Linux hosts Django sets the process TZ from `TIME_ZONE`). So from 16:00 to 23:59
 UTC, a committed `awarded_at` shows the day before the Manila award date: convert to
 Asia/Manila before comparing dates. Awards made before this field existed may have no
 exact time, and their openings are refused rather than filled in.
@@ -191,7 +191,7 @@ prevention, prepared versus published) are in [SECURITY.md](SECURITY.md), sectio
 | Env | Backend | Frontend | DB |
 |-----|---------|----------|----|
 | Local | `runserver` :8000 | Vite :3000 | SQLite (unless `DB_*` set) |
-| Production | Render (`render.yaml`, gunicorn) | Vercel | Supabase Postgres + Supabase Storage |
+| Production | Heroku (`backend/Procfile`, gunicorn; legacy Render service pending retirement) | Vercel | Supabase Postgres + Supabase Storage |
 
 Key env vars: backend `SECRET_KEY`, `DEBUG`, `DB_*`, `FRONTEND_URL` (CORS), `EMAIL_*`,
 `AWS_*`, `LEDGER_CONTRACT_ADDRESS`, `SEPOLIA_RPC_URL`, `BLOCKCHAIN_*`, `COMMITMENT_KEY`,

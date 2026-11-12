@@ -15,9 +15,9 @@ E-Procurement system with a blockchain audit trail (capstone project).
 | Frontend | React 19 + Vite 8, React Router 7, lucide-react, jsPDF, ethers v6 (plain JSX, no TypeScript; unit tests with `node --test`) | `frontend/` |
 | Backend | Django 6 + DRF + SimpleJWT, fpdf2, optional web3.py | `backend/` |
 | Contract | Solidity 0.8 `ProcurementLedger` on Sepolia testnet | `contracts/` |
-| Deploy | Render (API, `render.yaml`), Vercel (SPA, `frontend/vercel.json`), Supabase (Postgres + S3 storage) | — |
+| Deploy | Heroku (API, `backend/Procfile`, manual deploy of `main`), Vercel (SPA, `frontend/vercel.json`, auto-deploys `main`), Supabase (Postgres + S3 storage). Legacy Render service (`render.yaml`) still running, retirement pending | — |
 
-The system is **live in production**. `main` deploys automatically, so treat
+The system is **live in production**. `main` deploys Vercel automatically (Heroku is a manual deploy of `main`), so treat
 every change as a production change.
 
 ## Commands
@@ -75,7 +75,7 @@ npm run dev
 4. **Nothing personal goes on-chain** — only hashes, entity type, procurement code and stage. The public anchors endpoint exposes hashes only, never payloads.
 5. **Don't edit applied migrations.** Add a new migration instead. Run `makemigrations --check` before committing model changes.
 6. **Tests must not hit Supabase.** Keep the `RUNNING_TESTS` SQLite override in `config/settings.py` intact.
-7. **Secrets stay out of git and out of `VITE_*` vars** (those ship to the browser). `BLOCKCHAIN_PRIVATE_KEY`, DB passwords, SMTP passwords belong only in `.env` / Render / Vercel dashboards.
+7. **Secrets stay out of git and out of `VITE_*` vars** (those ship to the browser). `BLOCKCHAIN_PRIVATE_KEY`, DB passwords, SMTP passwords belong only in `.env` / Heroku config vars / Vercel dashboards (and the legacy Render service until it is retired).
 8. **Frontend HTTP goes through `api.js`** — don't call `fetch` directly from pages; the wrappers handle JWT refresh and errors.
 9. Currency is Philippine peso (`₱`). Keep the existing shared dark-sidebar dashboard layout consistent across roles.
 10. Work on a feature branch, not `main`. Commit only when asked.
