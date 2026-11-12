@@ -464,23 +464,46 @@ export default function PlanningPage() {
                 <LocationPicker id="plan-location" value={form.delivery_location} onChange={v => set('delivery_location', v)} />
               </div>
               <div className="ad-form-group">
-                <label>Bidding Period<span className="ui-req" aria-hidden="true">*</span></label>
-                <select value={form.bidding_period_days} onChange={e => set('bidding_period_days', e.target.value)} required>
-                  <option value="" disabled>Select a period…</option>
+                <label htmlFor="plan-bidding-period">Bidding Period (days)<span className="ui-req" aria-hidden="true">*</span></label>
+                {/* Typed in, not picked: any whole number of days the backend
+                    accepts (1–180, ProjectSerializer.validate). The common
+                    periods are offered as suggestions. */}
+                <input id="plan-bidding-period" type="number" inputMode="numeric"
+                  min={1} max={180} step={1} placeholder="e.g. 14"
+                  list="plan-bidding-period-options"
+                  value={form.bidding_period_days}
+                  onChange={e => set('bidding_period_days', e.target.value.replace(/\D/g, ''))}
+                  required />
+                <datalist id="plan-bidding-period-options">
                   {BIDDING_PERIOD_OPTIONS.map(n => <option key={n} value={n}>{n} days</option>)}
-                </select>
+                </datalist>
                 <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
-                  The deadline is set when you publish, so suppliers get the full period.
+                  Type 1 to 180 days. The deadline is set when you publish, so suppliers get the full period.
                 </span>
               </div>
               <div className="ad-form-group">
-                <label>Delivery Period<span className="ui-req" aria-hidden="true">*</span></label>
-                <select value={form.delivery_period_days} onChange={e => set('delivery_period_days', e.target.value)} required>
-                  <option value="" disabled>Select a period…</option>
+                <label htmlFor="plan-delivery-period">Delivery Period (days)<span className="ui-req" aria-hidden="true">*</span></label>
+                {/* Typed in, 1–365 days (ProjectSerializer.validate). Changing it
+                    drops any ticked delivery choice longer than the new period,
+                    which the backend would refuse. */}
+                <input id="plan-delivery-period" type="number" inputMode="numeric"
+                  min={1} max={365} step={1} placeholder="e.g. 30"
+                  list="plan-delivery-period-options"
+                  value={form.delivery_period_days}
+                  onChange={e => {
+                    const v = e.target.value.replace(/\D/g, '')
+                    setForm(f => ({
+                      ...f,
+                      delivery_period_days: v,
+                      delivery_options: Number(v) ? f.delivery_options.filter(d => d <= Number(v)) : f.delivery_options,
+                    }))
+                  }}
+                  required />
+                <datalist id="plan-delivery-period-options">
                   {DELIVERY_PERIOD_OPTIONS.map(n => <option key={n} value={n}>{n} days</option>)}
-                </select>
+                </datalist>
                 <span className="ad-muted ad-small" style={{ marginTop: 4, display: 'block' }}>
-                  Counted from the day a winner is selected.
+                  Type 1 to 365 days, counted from the day a winner is selected.
                 </span>
               </div>
               <fieldset className="ad-form-group ad-form-full ad-choice-group">
