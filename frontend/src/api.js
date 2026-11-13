@@ -740,7 +740,7 @@ export const apiMarkNotificationsRead = () =>
 // (backend/procurement/bac_views.py, accounts/user_admin.py). The BAC endpoints
 // that change something answer 409 { code: 'bac_workflow_off' } until the
 // backend's BAC_WORKFLOW_ENABLED switch is on.
-export const apiBacStatus = () => apiFetch('/bac/status/')
+export const apiBacStatus = ({ fresh = false } = {}) => apiFetch('/bac/status/', { fresh })
 
 // Admin: the procuring entity's accounts (Staff, BAC Committee, Head; Admins listed read-only).
 export const apiListManagedUsers = () => apiFetch('/auth/users/', { fresh: true })
@@ -758,6 +758,9 @@ export const apiEndBacMembership = (id, data) =>
 // Evaluation, ranking and post-qualification.
 export const apiBacProjects = () => apiFetch('/bac/projects/', { fresh: true })
 export const apiBacUpcomingProjects = () => apiFetch('/bac/projects/upcoming/', { fresh: true })
+// DEMO ONLY, temporary: closes bidding before the deadline (DemoCloseBiddingView).
+export const apiDemoCloseBidding = (projectId) =>
+  apiFetch(`/bac/projects/${projectId}/demo-close-bidding/`, { method: 'POST', body: '{}' })
 export const apiBacProject = (projectId) => apiFetch(`/bac/projects/${projectId}/`, { fresh: true })
 export const apiBacEvaluateBid = (bidId, data) =>
   apiFetch(`/bac/bids/${bidId}/evaluate/`, { method: 'POST', body: JSON.stringify(data) })

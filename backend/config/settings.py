@@ -455,6 +455,12 @@ MFA_REQUIRED = os.environ.get(
 # procurement.permissions.bac_workflow_on() so tests can override it.
 BAC_WORKFLOW_ENABLED = os.environ.get('BAC_WORKFLOW_ENABLED', 'False').lower() == 'true'
 
+# DEMO ONLY, temporary: lets the Admin, Staff or a BAC member close a published
+# procurement's bidding before its deadline ("Close bidding now (demo)") so a
+# demo can go straight to evaluation. On unless DEMO_CLOSE_BIDDING_ENABLED=False.
+# Remove it with procurement.bac_views.DemoCloseBiddingView after the demo.
+DEMO_CLOSE_BIDDING_ENABLED = os.environ.get('DEMO_CLOSE_BIDDING_ENABLED', 'True').lower() == 'true'
+
 # ── Security headers ─────────────────────────────────────────────────────────
 # This backend serves JSON, file downloads and the Django admin; the SPA's own
 # headers are set by Vercel (frontend/vercel.json). Django's defaults already
