@@ -8,6 +8,8 @@ import {
   apiListProjectBids, apiQualifyBid, apiDisqualifyBid, apiSelectWinner, apiGetProject, apiListAwards, apiBidRequestRevision,
 } from '../../api'
 import { refreshProjects } from '../../store/projectsStore'
+import EndBiddingButton from '../../components/EndBiddingButton'
+import { END_BIDDING_SUCCESS } from '../../utils/endBidding'
 import { Skeleton } from '../../components/Skeleton'
 import StatusBadge from '../../components/ui/StatusBadge'
 import EmptyState from '../../components/ui/EmptyState'
@@ -724,12 +726,18 @@ export default function BidEvaluationPage() {
     },
   ] : []
 
-  // A procurement can be awarded before its deadline — "closed" with a future
-  // date would be false, so say what actually happened.
+  // A procurement can be awarded, or have its bidding force-ended, before its
+  // deadline — "closed" with a future date would be false, so say what
+  // actually happened.
   const deadlinePassed = project?.deadline && new Date(project.deadline) < new Date(new Date().toDateString())
   const closedLabel = project && project.status !== 'published' && project.deadline
-    ? (deadlinePassed ? `Bidding closed ${fmtDate(project.deadline)}` : `Awarded before the ${fmtDate(project.deadline)} deadline`)
+    ? (project.bidding_closed_at
+      ? `Bidding ended early ${fmtDate(project.bidding_closed_at)} (deadline was ${fmtDate(project.deadline)})`
+      : deadlinePassed ? `Bidding closed ${fmtDate(project.deadline)}` : `Awarded before the ${fmtDate(project.deadline)} deadline`)
     : null
+  const closedTip = project?.bidding_closed_at
+    ? `Ended by ${project.bidding_closed_by_name || 'the procurement office'}: ${project.bidding_close_reason}`
+    : undefined
 
   return (
     <div className="ad-content">
@@ -769,16 +777,24 @@ export default function BidEvaluationPage() {
                 <div className="ad-eval-title-row">
                   <h2 className="ad-eval-title" id="eval-title">{project.name}</h2>
                   <StatusBadge domain="project" status={project.status} />
+                  {project.bidding_phase && project.status !== 'awarded' && (
+                    <StatusBadge domain="bidding" status={project.bidding_phase} />
+                  )}
                 </div>
                 <div className="ad-ref-line" style={{ marginTop: 8, flexWrap: 'wrap' }}>
                   <RefCode code={project.code} size="lg" />
                   <span className="ad-muted ad-small">{project.category || '—'}</span>
                   <span className="ad-muted ad-small">ABC <strong className="ad-eval-abc">{peso(project.budget)}</strong></span>
                   {project.status === 'published' && project.deadline && <Countdown deadline={project.deadline} />}
-                  {closedLabel && <StatusBadge tone="neutral" icon={Clock} label={closedLabel} />}
+                  {closedLabel && <span title={closedTip}><StatusBadge tone="neutral" icon={Clock} label={closedLabel} /></span>}
                 </div>
               </div>
               <div className="ad-eval-head-actions">
+                <EndBiddingButton project={project} role={workspaceRole()} className="ad-btn-timeline"
+                  onEnded={() => {
+                    setToast({ type: 'success', message: END_BIDDING_SUCCESS })
+                    load()
+                  }} />
                 <BlockchainBadge anchors={project.anchors} />
                 <button className="ad-btn-timeline" onClick={() => setShowTimeline(true)}>
                   <Clock size={14} /> View Timeline

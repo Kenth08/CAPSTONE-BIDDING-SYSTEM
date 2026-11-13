@@ -62,6 +62,7 @@ from .document_requirements import (
 )
 from .document_alerts import send_document_alerts
 from . import bid_terms
+from . import bac
 from .bac import evaluation_lock_reason, frozen_resolution_bytes, membership_for
 from .documents import DOCUMENT_BUILDERS
 from .models import (
@@ -756,6 +757,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return [IsAdminOrHeadRole()]
         if self.action == "verify_chain":
             return [IsAnchorSignerRole()]
+        # Force-ending bidding early is the procurement office's call (Admin and
+        # Staff, BAC Secretariat). Never the committee members who evaluate the
+        # bids: they must not be able to cut the bidding period short themselves.
+        if self.action == "end_bidding":
+            return [IsAdminOrStaffRole()]
         # Creating, editing, submitting, publishing, resubmitting: whoever
         # prepares procurements (Staff; also the Admin while the BAC workflow
         # is off, see permissions.preparer_roles).
@@ -1056,7 +1062,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         close_expired_published_projects()
         # Annotate the bid count in one query instead of a COUNT per project.
-        qs = Project.objects.annotate(num_bids=Count("bids"))
+        qs = Project.objects.annotate(num_bids=Count("bids")).select_related("bidding_closed_by")
+        # Evidence for the derived bidding phase (bac.bidding_phase), in this query.
+        qs = bac.with_phase_evidence(qs)
         # Suppliers only ever see PUBLISHED procurements whose category matches
         # one of the categories they registered for (eligibility = category match).
         if getattr(self.request.user, "role", None) == "supplier":
@@ -1558,6 +1566,75 @@ class ProjectViewSet(viewsets.ModelViewSet):
         # what stops the criteria being quietly rewritten after bids are in.
         anchor = anchor_project(project, BlockchainAnchor.Stage.BIDDING_OPEN)
         return anchored_response(self.get_serializer(project).data, anchor)
+
+    END_BIDDING_REASON_LIMIT = 1000
+
+    @action(detail=True, methods=["post"], url_path="end-bidding")
+    def end_bidding(self, request, pk=None):
+        """Force-end bidding before the deadline: published → closed, now.
+
+        POST {"reason": "..."} (required). Admin and Staff only (get_permissions).
+        Does the same flip close_expired_published_projects makes when the
+        deadline passes, so everything gated on a closed procurement follows on
+        its own: bid submission, withdrawal and product-image changes are refused
+        (bidding_open), and BAC evaluation, post-qualification and voting open
+        (bac.bidding_closed). Only Project fields change; bids, attachments and
+        images are not touched.
+
+        `deadline` is kept as published; when bidding actually ended, who ended
+        it and why go in bidding_closed_at / _by / _close_reason. Only an open
+        procurement can be closed, so this never reopens one and a second
+        request (a double click, a retry) is refused. Closing has no ledger
+        stage, so nothing is anchored."""
+        reason = str(request.data.get("reason") or "").strip()
+        if not reason:
+            return Response({"reason": ["Give the reason for ending bidding early."]},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+        if len(reason) > self.END_BIDDING_REASON_LIMIT:
+            return Response({"reason": [f"Keep the reason under {self.END_BIDDING_REASON_LIMIT} characters."]},
+                            status=http_status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            # get_object first runs close_expired_published_projects (get_queryset),
+            # so a procurement whose deadline already passed is closed by its
+            # deadline, not recorded as force-ended. The row lock makes a second,
+            # concurrent request wait and then see `closed`.
+            project = self._lock(self.get_object())
+            if project.status != Project.Status.PUBLISHED:
+                already = project.status in (Project.Status.CLOSED, Project.Status.AWARDED)
+                return Response(
+                    {"detail": f"Bidding on {project.code} is already closed." if already
+                     else "Only a procurement whose bidding is open can be ended."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            previous = project.status
+            project.status = Project.Status.CLOSED
+            project.bidding_closed_at = timezone.now()
+            project.bidding_closed_by = request.user
+            project.bidding_close_reason = reason
+            project.save(update_fields=["status", "bidding_closed_at", "bidding_closed_by", "bidding_close_reason"])
+            bidders = [b.supplier.user for b in project.bids.select_related("supplier__user")]
+        notify_bac_members(
+            f"Bidding on \"{project.name}\" ({project.code}) was ended early. "
+            "The bids are ready for evaluation and voting.",
+            link=f"/bac/evaluation/{project.id}",
+        )
+        # Bidders learn why their bid can no longer be changed or withdrawn.
+        notify_users(
+            bidders,
+            f"Bidding on \"{project.name}\" ({project.code}) was closed before its deadline. "
+            "Your bid is unchanged and is now being evaluated.",
+            link="/supplier/bids",
+        )
+        actor = request.user.full_name or request.user.username
+        closed_at = timezone.localtime(project.bidding_closed_at).strftime("%Y-%m-%d %H:%M:%S %Z")
+        log_action(
+            request, "project.bidding_force_ended",
+            entity_type="Project", entity_id=project.id,
+            description=(f"Manual force end of bidding on {project.code}: {previous} → {project.status}, "
+                         f"by {actor} (user #{request.user.pk}, {request.user.role}) at {closed_at}; "
+                         f"published deadline {project.deadline} kept. Reason: {reason}"),
+        )
+        return Response(self.get_serializer(project).data)
 
     @action(detail=False, methods=["get"])
     def stats(self, request):

@@ -18,6 +18,14 @@ const MAPS = {
     awarded:        ['Awarded', 'success'],
     closed:         ['Closed', 'neutral'],
   },
+  // Bidding phase (backend procurement/bac.py bidding_phase): derived from the
+  // evaluation and resolution data, never stored as a project status.
+  bidding: {
+    open:             ['Open', 'info'],
+    closed:           ['Closed', 'neutral'],
+    under_evaluation: ['Under Evaluation', 'warning'],
+    completed:        ['Completed', 'success'],
+  },
   supplier: {
     draft:    ['Draft', 'neutral'],
     pending:  ['Pending', 'warning'],

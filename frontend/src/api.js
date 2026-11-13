@@ -605,6 +605,10 @@ export const apiApproveProject = (id) =>
   apiFetch(`/projects/${id}/approve/`, { method: 'POST', body: '{}' })
 export const apiPublishProject = (id) =>
   apiFetch(`/projects/${id}/publish/`, { method: 'POST', body: '{}' })
+// Admin or Staff force-end bidding before the deadline (published → closed). The
+// reason is required; the published deadline is kept (ProjectViewSet.end_bidding).
+export const apiEndBidding = (id, reason) =>
+  apiFetch(`/projects/${id}/end-bidding/`, { method: 'POST', body: JSON.stringify({ reason }) })
 // Head flags one or more procurement documents — does NOT reject the project,
 // it bounces back to Admin's Planning queue for a fix.
 export const apiProjectRequestRevision = (id, documents) =>
@@ -758,9 +762,6 @@ export const apiEndBacMembership = (id, data) =>
 // Evaluation, ranking and post-qualification.
 export const apiBacProjects = () => apiFetch('/bac/projects/', { fresh: true })
 export const apiBacUpcomingProjects = () => apiFetch('/bac/projects/upcoming/', { fresh: true })
-// DEMO ONLY, temporary: closes bidding before the deadline (DemoCloseBiddingView).
-export const apiDemoCloseBidding = (projectId) =>
-  apiFetch(`/bac/projects/${projectId}/demo-close-bidding/`, { method: 'POST', body: '{}' })
 export const apiBacProject = (projectId) => apiFetch(`/bac/projects/${projectId}/`, { fresh: true })
 export const apiBacEvaluateBid = (bidId, data) =>
   apiFetch(`/bac/bids/${bidId}/evaluate/`, { method: 'POST', body: JSON.stringify(data) })

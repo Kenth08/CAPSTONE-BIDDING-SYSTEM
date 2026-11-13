@@ -8,7 +8,7 @@ import {
   AlertTriangle, ArrowLeft, ClipboardCheck, FileText, Gavel, Landmark, LayoutDashboard, LogOut, ScrollText, Vote,
 } from 'lucide-react'
 import {
-  apiBacEvaluateBid, apiBacPostQualify, apiBacProject, apiBacProjects, apiBacResolutions, apiBacUpcomingProjects, apiBacVote, apiDemoCloseBidding,
+  apiBacEvaluateBid, apiBacPostQualify, apiBacProject, apiBacProjects, apiBacResolutions, apiBacUpcomingProjects, apiBacVote,
   apiBidRequestRevision, apiListProjectBids, apiLogout,
 } from '../api'
 import AppSidebar from '../components/shell/AppSidebar'
@@ -18,6 +18,7 @@ import EmptyState from '../components/ui/EmptyState'
 import StatusBadge from '../components/ui/StatusBadge'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Toaster, { toast } from '../components/ui/Toaster'
+import EndBiddingButton from '../components/EndBiddingButton'
 import { ListSkeleton } from '../components/Skeleton'
 import {
   RankingTable, ResolutionFacts, ResolutionStatus, VoteCounts, VoteList,
@@ -186,27 +187,11 @@ function BacCharts({ projects, resolutions }) {
 function EvaluationList({ status }) {
   const [rows, setRows] = useState(null)
   const [upcoming, setUpcoming] = useState([])
-  // DEMO ONLY, temporary: the procurement whose bidding is about to be closed early.
-  const [closing, setClosing] = useState(null)
-  const [closeBusy, setCloseBusy] = useState(false)
   const load = () => {
     apiBacProjects().then(setRows).catch(e => { toast.error(e.message); setRows([]) })
     apiBacUpcomingProjects().then(setUpcoming).catch(() => setUpcoming([]))
   }
   useEffect(load, [])
-  const closeBidding = async () => {
-    setCloseBusy(true)
-    try {
-      await apiDemoCloseBidding(closing.id)
-      toast.success(`Bidding on ${closing.code} is closed. It is ready for evaluation.`)
-      setClosing(null)
-      load()
-    } catch (err) {
-      toast.error(err.message || 'Could not close bidding.')
-    } finally {
-      setCloseBusy(false)
-    }
-  }
   return (
     <div className="bac-page ad-content">
       <PageHeader title="Evaluation" description="Procurements whose bidding has closed. Open one to evaluate its bids." />
@@ -215,11 +200,12 @@ function EvaluationList({ status }) {
       <section className="bac-card" aria-label="Procurements">
         {rows === null ? <div className="bac-card-body"><ListSkeleton rows={4} /></div>
           : !rows.length ? <EmptyState icon={ClipboardCheck} title="No procurements to evaluate"
-            description="A procurement appears here when its bidding deadline passes." />
+            description="A procurement appears here when its bidding deadline passes, or when the Admin or Staff end its bidding early." />
             : <div className="bac-list">{rows.map(p => (
               <Link key={p.id} to={`/bac/evaluation/${p.id}`} className="bac-list-row">
                 <span><strong>{p.code} · {p.name}</strong>
                   <span className="sub">{p.bid_count} bid(s) · you evaluated {p.my_evaluations} · {p.evaluations_done} of {p.evaluations_expected} evaluations in</span></span>
+                {p.bidding_phase && <StatusBadge domain="bidding" status={p.bidding_phase} />}
                 <StatusBadge tone={p.status === 'awarded' ? 'success' : p.my_evaluations < p.bid_count ? 'warning' : 'info'}
                   label={p.status === 'awarded' ? 'Awarded' : p.my_evaluations < p.bid_count ? 'To do' : 'Evaluated'} />
               </Link>))}</div>}
@@ -227,27 +213,20 @@ function EvaluationList({ status }) {
       {upcoming.length > 0 && (
         <section className="bac-card" aria-labelledby="upcoming-h">
           <div className="bac-card-head"><div><h3 id="upcoming-h">Bidding still open</h3>
-            <p>Bids stay sealed until the deadline. Evaluation opens the day after it.</p></div></div>
+            <p>Bids stay sealed until the deadline. Evaluation opens the day after it, or right away if the Admin or Staff end bidding early.</p></div></div>
           <div className="bac-list">{upcoming.map(p => (
             <div key={p.id} className="bac-list-row">
               <span><strong>{p.code} · {p.name}</strong>
                 <span className="sub">Bidding closes {p.deadline ? fmtDate(p.deadline) : 'when published'}</span></span>
               <span className="bac-actions">
+                <StatusBadge domain="bidding" status="open" />
                 <StatusBadge tone="neutral" label={p.evaluation_opens ? `Opens ${fmtDate(p.evaluation_opens)}` : 'Not scheduled'} />
-                {/* DEMO ONLY, temporary: remove with DemoCloseBiddingView. */}
-                <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={() => setClosing(p)}>
-                  Close bidding now (demo)
-                </button>
+                {/* Admin and Staff end bidding early; for committee members the
+                    button stays visible but disabled, with the reason. */}
+                <EndBiddingButton project={{ ...p, status: 'published' }} role="bac" />
               </span>
             </div>))}</div>
         </section>
-      )}
-      {closing && (
-        <ConfirmDialog title={`Close bidding on ${closing.code} now?`} tone="warning" confirmLabel="Close bidding" busy={closeBusy}
-          points={['Demo only: the bidding ends before its deadline and no more bids are accepted.',
-            'The bids are unsealed for the committee, and evaluation opens right away.',
-            "This is recorded in the audit log and can't be undone."]}
-          onCancel={() => setClosing(null)} onConfirm={closeBidding} />
       )}
     </div>
   )

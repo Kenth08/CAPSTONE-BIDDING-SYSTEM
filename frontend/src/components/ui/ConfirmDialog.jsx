@@ -4,11 +4,13 @@ import { AlertTriangle, CheckCircle2, Link2, XCircle } from 'lucide-react'
 /**
  * Confirmation for an action that changes a record. `points` lists exactly
  * what will happen; `onChain` adds the line that the step is recorded on the
- * blockchain. tone: primary | danger | warning.
+ * blockchain. tone: primary | danger | warning. `message` is an optional
+ * paragraph under the title; `confirmDisabled` keeps Confirm off until the
+ * caller's own fields (passed as children, e.g. a required reason) are filled.
  */
 export default function ConfirmDialog({
-  title, points = [], onChain = false, confirmLabel = 'Confirm', tone = 'primary', busy = false,
-  onConfirm, onCancel, children,
+  title, message = '', points = [], onChain = false, confirmLabel = 'Confirm', tone = 'primary', busy = false,
+  confirmDisabled = false, onConfirm, onCancel, children,
 }) {
   const cancelRef = useRef(null)
   useEffect(() => {
@@ -26,6 +28,7 @@ export default function ConfirmDialog({
         onClick={(e) => e.stopPropagation()}>
         <div className={`rf-dialog-icon rf-tone-${tone === 'primary' ? 'success' : tone}`} aria-hidden="true"><Icon size={20} /></div>
         <h3 id="rf-dialog-title">{title}</h3>
+        {message && <p className="rf-dialog-message">{message}</p>}
         {points.length > 0 && (
           <ul className="rf-dialog-points">
             {points.map((p, i) => <li key={i}>{p}</li>)}
@@ -40,7 +43,7 @@ export default function ConfirmDialog({
         )}
         <div className="rf-dialog-actions">
           <button ref={cancelRef} type="button" className="ui-btn ui-btn--secondary" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button type="button" className={`ui-btn rf-btn-${tone}`} onClick={onConfirm} disabled={busy}>
+          <button type="button" className={`ui-btn rf-btn-${tone}`} onClick={onConfirm} disabled={busy || confirmDisabled}>
             {busy ? 'Working…' : confirmLabel}
           </button>
         </div>

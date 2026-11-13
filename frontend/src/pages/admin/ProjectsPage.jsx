@@ -3,7 +3,9 @@ import { useDebouncedValue } from '../../utils/useDebouncedValue'
 import { ws, useBacStatus, canPrepare } from '../../utils/workspace'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { FolderOpen, Search, Eye, X, Clock } from 'lucide-react'
-import { useProjects, publishProject, isExpired } from '../../store/projectsStore'
+import { useProjects, publishProject, isExpired, refreshProjects } from '../../store/projectsStore'
+import EndBiddingButton from '../../components/EndBiddingButton'
+import { END_BIDDING_SUCCESS } from '../../utils/endBidding'
 import { TableSkeleton } from '../../components/Skeleton'
 import StatusBadge from '../../components/ui/StatusBadge'
 import { TableEmpty } from '../../components/ui/EmptyState'
@@ -131,9 +133,22 @@ export default function ProjectsPage() {
                   <td><DeadlineCell project={p} /></td>
                   <td className="ad-nowrap">{p.type}</td>
                   <td><span className="ui-badge ui-badge--neutral">{p.eligibleTypes}</span></td>
-                  <td><StatusBadge domain="project" status={p.status} /></td>
+                  <td>
+                    {/* Open / Closed / Under Evaluation / Completed while bidding runs
+                        and is evaluated; "Awarded" once there is a winner. */}
+                    {p.biddingPhase && p.status !== 'awarded'
+                      ? <StatusBadge domain="bidding" status={p.biddingPhase} />
+                      : <StatusBadge domain="project" status={p.status} />}
+                  </td>
                   <td className="ad-actions-col">
                     <div className="ad-actions">
+                      {p.status === 'published' && (
+                        <EndBiddingButton project={p} role={workspaceRole()} className="ad-btn-view-sm"
+                          onEnded={() => {
+                            setToast({ type: 'success', message: END_BIDDING_SUCCESS })
+                            refreshProjects()
+                          }} />
+                      )}
                       {p.status === 'approved' && canPrepare(workspaceRole(), workflowOn) && (
                         <PublishButton
                           project={p}

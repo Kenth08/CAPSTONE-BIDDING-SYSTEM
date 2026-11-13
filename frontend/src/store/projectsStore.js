@@ -10,7 +10,7 @@
 import { useEffect } from 'react'
 import { useSyncExternalStore } from 'react'
 import {
-  apiListProjects, apiCreateProject, apiApproveProject, apiPublishProject,
+  apiListProjects, apiCreateProject, apiApproveProject, apiPublishProject, apiEndBidding,
   apiProjectRequestRevision, apiResubmitProjectDocuments,
 } from '../api'
 import { runAnchor } from '../blockchain/anchorStore'
@@ -91,6 +91,13 @@ function fromApi(p) {
     submittedAt: fmtDate(p.created_at),
     reviewedAt: p.reviewed_at ? fmtDate(p.reviewed_at) : null,
     rejectReason: p.reject_reason || '',
+    // open / closed / under_evaluation / completed, derived by the backend
+    // (procurement/bac.py bidding_phase); null before publishing.
+    biddingPhase: p.bidding_phase || null,
+    // Set only when the Admin or Staff force-ended bidding before the deadline.
+    biddingClosedAt: p.bidding_closed_at || null,
+    biddingClosedBy: p.bidding_closed_by_name || '',
+    biddingCloseReason: p.bidding_close_reason || '',
   }
 }
 
@@ -222,6 +229,14 @@ export async function publishProject(id) {
   const updated = await apiPublishProject(id)
   upsert(updated)
   anchorAfter(updated, 'Published for bidding')
+}
+
+// Admin or Staff force-end bidding before the deadline → status `closed`. Not
+// anchored (closing has no ledger stage), so there is no MetaMask step.
+export async function endBidding(id, reason) {
+  const updated = await apiEndBidding(id, reason)
+  upsert(updated)
+  return updated
 }
 
 // Force a silent refresh — used after an out-of-store change (e.g. selecting a

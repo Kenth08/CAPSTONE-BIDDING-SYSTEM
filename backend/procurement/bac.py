@@ -48,6 +48,71 @@ def bidding_closed(project):
             and project.deadline < timezone.localdate())
 
 
+BIDDING_PHASES = ("open", "closed", "under_evaluation", "completed")
+
+
+def bidding_phase(project, *, evaluating, adopted):
+    """The bidding status shown on screen: open, closed, under_evaluation or
+    completed, or None before the procurement is published.
+
+    Derived, never stored: Project.status still only knows published / closed /
+    awarded, and these labels come from the evaluation and resolution data.
+    `evaluating` is True when evaluation has started (a committee evaluation,
+    a resolution in draft or voting, or, with the workflow off, the Admin having
+    qualified or disqualified a bid). `adopted` is True when a resolution has
+    been adopted: evaluation and voting are final."""
+    if project.status == Project.Status.AWARDED:
+        return "completed"
+    if project.status not in (Project.Status.PUBLISHED, Project.Status.CLOSED):
+        return None
+    if not bidding_closed(project):
+        return "open"
+    if adopted:
+        return "completed"
+    return "under_evaluation" if evaluating else "closed"
+
+
+_EVALUATED_BID_STATUSES = (Bid.Status.QUALIFIED, Bid.Status.DISQUALIFIED, Bid.Status.WINNER)
+_IN_PROGRESS_RESOLUTIONS = (BACResolution.Status.DRAFT, BACResolution.Status.VOTING)
+
+
+def with_phase_evidence(queryset):
+    """Annotate a Project queryset with what bidding_phase needs, as three
+    EXISTS subqueries, so a project list costs no extra query per row."""
+    from django.db.models import Exists, OuterRef  # noqa: PLC0415
+
+    from .models import BidEvaluation  # noqa: PLC0415
+
+    return queryset.annotate(
+        phase_committee_evaluated=Exists(BidEvaluation.objects.filter(bid__project=OuterRef("pk"))),
+        phase_bid_reviewed=Exists(Bid.objects.filter(project=OuterRef("pk"), status__in=_EVALUATED_BID_STATUSES)),
+        phase_resolution_open=Exists(BACResolution.objects.filter(
+            project=OuterRef("pk"), status__in=_IN_PROGRESS_RESOLUTIONS)),
+        phase_resolution_adopted=Exists(BACResolution.objects.filter(
+            project=OuterRef("pk"), status=BACResolution.Status.ADOPTED)),
+    )
+
+
+def phase_of(project):
+    """bidding_phase for one project, from with_phase_evidence's annotations
+    when present, otherwise from a few direct queries (a freshly saved row)."""
+    if hasattr(project, "phase_resolution_adopted"):
+        evaluating = (project.phase_committee_evaluated or project.phase_bid_reviewed
+                      or project.phase_resolution_open)
+        adopted = project.phase_resolution_adopted
+    elif project.status in (Project.Status.PUBLISHED, Project.Status.CLOSED) and bidding_closed(project):
+        bids = Bid.objects.filter(project=project)
+        resolutions = BACResolution.objects.filter(project=project)
+        evaluating = (bids.filter(evaluations__isnull=False).exists()
+                      or bids.filter(status__in=_EVALUATED_BID_STATUSES).exists()
+                      or resolutions.filter(status__in=_IN_PROGRESS_RESOLUTIONS).exists())
+        adopted = resolutions.filter(status=BACResolution.Status.ADOPTED).exists()
+    else:
+        # Not closed yet, or awarded: the evidence doesn't change the answer.
+        evaluating = adopted = False
+    return bidding_phase(project, evaluating=evaluating, adopted=adopted)
+
+
 def open_resolution(project):
     return project.bac_resolutions.filter(status__in=BACResolution.OPEN_STATUSES).first()
 
