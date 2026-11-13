@@ -471,7 +471,11 @@ class Project(SecureUploadsMixin, models.Model):
         blank=True,
         related_name="+",
     )
-    bidding_close_reason = models.TextField(blank=True)
+    # db_default: the column is NOT NULL, and an older backend that doesn't know
+    # it yet (Heroku and Render share one database and don't deploy in step)
+    # leaves it out of every INSERT. Without a database default, that older code
+    # could not create any procurement. Same reason as original_filenames.
+    bidding_close_reason = models.TextField(blank=True, default="", db_default="")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

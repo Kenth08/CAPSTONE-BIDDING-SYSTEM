@@ -3696,3 +3696,31 @@ class DisplayPhotoJpegTests(_TempMediaMixin, APITestCase):
         with project.reference_image.open("rb") as fh:
             data = fh.read()
         self.assertEqual((_image_format(data), _image_size(data)), ("JPEG", (1600, 1067)))
+
+
+class OlderBackendCanStillCreateProjectsTests(TestCase):
+    """Heroku and Render share one database and don't deploy in step, so for a
+    while an older backend writes to columns added by a newer one's migration.
+    Its INSERT leaves out every column it doesn't know. A NOT NULL column with
+    no database default then makes every new procurement fail. Django drops the
+    temporary default it uses to add such a column, so the field needs an
+    explicit db_default (migration 0034 for bidding_close_reason)."""
+
+    NEW_COLUMNS = {"bidding_closed_at", "bidding_closed_by_id", "bidding_close_reason"}
+
+    def test_insert_without_the_force_end_columns_succeeds(self):
+        template = make_project()
+        fields = [f for f in Project._meta.concrete_fields
+                  if f.column not in self.NEW_COLUMNS and not f.primary_key]
+        values = []
+        for f in fields:
+            value = f.get_db_prep_save(getattr(template, f.attname), connection)
+            values.append("PC-OLDR-BACK-END1" if f.column == "code" else value)
+        columns = ", ".join(connection.ops.quote_name(f.column) for f in fields)
+        marks = ", ".join(["%s"] * len(fields))
+        with connection.cursor() as cursor:
+            cursor.execute(f"INSERT INTO {Project._meta.db_table} ({columns}) VALUES ({marks})", values)
+        older = Project.objects.get(code="PC-OLDR-BACK-END1")
+        self.assertEqual(older.bidding_close_reason, "")
+        self.assertIsNone(older.bidding_closed_at)
+        self.assertIsNone(older.bidding_closed_by)
