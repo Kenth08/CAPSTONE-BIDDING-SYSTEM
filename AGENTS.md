@@ -15,7 +15,7 @@ E-Procurement system with a blockchain audit trail (capstone project).
 | Frontend | React 19 + Vite 8, React Router 7, lucide-react, jsPDF, ethers v6 (plain JSX, no TypeScript; unit tests with `node --test`) | `frontend/` |
 | Backend | Django 6 + DRF + SimpleJWT, fpdf2, optional web3.py | `backend/` |
 | Contract | Solidity 0.8 `ProcurementLedger` on Sepolia testnet | `contracts/` |
-| Deploy | Render (API, `render.yaml`), Vercel (SPA, `frontend/vercel.json`), Supabase (Postgres + S3 storage) | — |
+| Deploy | Heroku (API the live site calls; root `Procfile`), Render (API, `render.yaml`; its build runs `migrate`), Vercel (SPA, `frontend/vercel.json`), Supabase (Postgres + S3 storage, shared by both APIs) | — |
 
 The system is **live in production**. `main` deploys automatically, so treat
 every change as a production change.
@@ -86,6 +86,7 @@ npm run dev
 - Every state transition in a view should: update the model → `notify_users(...)` → `log_action(...)` → `anchor_*()` → `anchored_response(...)`.
 - Frontend: functional components + hooks, plain CSS files per page, `lucide-react` icons. No new UI libraries without asking.
 - Add regression tests to `backend/procurement/test_regressions.py` for bug fixes, feature tests to `tests.py`.
+- A new column must be `null=True` or have a `db_default`. Heroku and Render share one database and don't deploy at the same moment, so code that doesn't know the column yet must still be able to insert rows (see migration 0034).
 
 ## Definition of done
 

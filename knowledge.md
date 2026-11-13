@@ -191,7 +191,7 @@ prevention, prepared versus published) are in [SECURITY.md](SECURITY.md), sectio
 | Env | Backend | Frontend | DB |
 |-----|---------|----------|----|
 | Local | `runserver` :8000 | Vite :3000 | SQLite (unless `DB_*` set) |
-| Production | Render (`render.yaml`, gunicorn) | Vercel | Supabase Postgres + Supabase Storage |
+| Production | Heroku (root `Procfile`; the API the live frontend calls) and Render (`render.yaml`; its build runs `migrate`), both gunicorn on one database | Vercel | Supabase Postgres + Supabase Storage |
 
 Key env vars: backend `SECRET_KEY`, `DEBUG`, `DB_*`, `FRONTEND_URL` (CORS), `EMAIL_*`,
 `AWS_*`, `LEDGER_CONTRACT_ADDRESS`, `SEPOLIA_RPC_URL`, `BLOCKCHAIN_*`, `COMMITMENT_KEY`,
