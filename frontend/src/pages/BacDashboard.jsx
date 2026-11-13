@@ -8,7 +8,7 @@ import {
   AlertTriangle, ArrowLeft, ClipboardCheck, FileText, Gavel, Landmark, LayoutDashboard, LogOut, ScrollText, Vote,
 } from 'lucide-react'
 import {
-  apiBacEvaluateBid, apiBacPostQualify, apiBacProject, apiBacProjects, apiBacResolutions, apiBacVote,
+  apiBacEvaluateBid, apiBacPostQualify, apiBacProject, apiBacProjects, apiBacResolutions, apiBacUpcomingProjects, apiBacVote,
   apiBidRequestRevision, apiListProjectBids, apiLogout,
 } from '../api'
 import AppSidebar from '../components/shell/AppSidebar'
@@ -59,6 +59,15 @@ function NoSeat({ status }) {
         <p>The Admin records each designation the Head makes. Until yours is recorded you can read the records but not evaluate or vote.</p></div>
     </div>
   )
+}
+
+// Why this member can't evaluate right now, or '' when they can. Mirrors
+// the server's checks in EvaluateBidView (workflow on, active seat, then
+// bac.evaluation_lock_reason), so the reason shown is the one the server gives.
+function evaluationBlock({ workflowEnabled, seat, lockReason }) {
+  if (!workflowEnabled) return 'The BAC Committee workflow is not switched on (BAC_WORKFLOW_ENABLED), so evaluations are refused.'
+  if (!seat) return "You don't hold a seat on the committee. Ask the Admin to record your designation under BAC Committee."
+  return lockReason || ''
 }
 
 // ── Home ──────────────────────────────────────────────────────────────────────
@@ -174,12 +183,18 @@ function BacCharts({ projects, resolutions }) {
 }
 
 // ── Evaluation ────────────────────────────────────────────────────────────────
-function EvaluationList() {
+function EvaluationList({ status }) {
   const [rows, setRows] = useState(null)
-  useEffect(() => { apiBacProjects().then(setRows).catch(e => { toast.error(e.message); setRows([]) }) }, [])
+  const [upcoming, setUpcoming] = useState([])
+  useEffect(() => {
+    apiBacProjects().then(setRows).catch(e => { toast.error(e.message); setRows([]) })
+    apiBacUpcomingProjects().then(setUpcoming).catch(() => setUpcoming([]))
+  }, [])
   return (
     <div className="bac-page ad-content">
       <PageHeader title="Evaluation" description="Procurements whose bidding has closed. Open one to evaluate its bids." />
+      <WorkflowOff status={status} />
+      <NoSeat status={status} />
       <section className="bac-card" aria-label="Procurements">
         {rows === null ? <div className="bac-card-body"><ListSkeleton rows={4} /></div>
           : !rows.length ? <EmptyState icon={ClipboardCheck} title="No procurements to evaluate"
@@ -192,6 +207,18 @@ function EvaluationList() {
                   label={p.status === 'awarded' ? 'Awarded' : p.my_evaluations < p.bid_count ? 'To do' : 'Evaluated'} />
               </Link>))}</div>}
       </section>
+      {upcoming.length > 0 && (
+        <section className="bac-card" aria-labelledby="upcoming-h">
+          <div className="bac-card-head"><div><h3 id="upcoming-h">Bidding still open</h3>
+            <p>Bids stay sealed until the deadline. Evaluation opens the day after it.</p></div></div>
+          <div className="bac-list">{upcoming.map(p => (
+            <div key={p.id} className="bac-list-row">
+              <span><strong>{p.code} · {p.name}</strong>
+                <span className="sub">Bidding closes {p.deadline ? fmtDate(p.deadline) : 'when published'}</span></span>
+              <StatusBadge tone="neutral" label={p.evaluation_opens ? `Opens ${fmtDate(p.evaluation_opens)}` : 'Not scheduled'} />
+            </div>))}</div>
+        </section>
+      )}
     </div>
   )
 }
@@ -202,7 +229,7 @@ const CHECKS = [
   ['financial_ok', 'Financial', 'The bid is within the ABC and the computation is correct'],
 ]
 
-function EvaluationForm({ bid, mine, locked, onSaved }) {
+function EvaluationForm({ bid, mine, locked, lockedReason, onSaved }) {
   const [form, setForm] = useState(() => ({
     eligibility_ok: mine?.eligibility_ok ?? true, technical_ok: mine?.technical_ok ?? true,
     financial_ok: mine?.financial_ok ?? true, remarks: mine?.remarks || '',
@@ -238,13 +265,13 @@ function EvaluationForm({ bid, mine, locked, onSaved }) {
         <textarea id={`rm-${bid.id}`} value={form.remarks} disabled={locked || busy} required={failing}
           onChange={e => setForm(f => ({ ...f, remarks: e.target.value }))} />
       </div>
-      {!locked && (
-        <div className="bac-actions">
-          <button type="submit" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy}>
-            {busy ? 'Saving…' : mine ? 'Update my evaluation' : 'Submit my evaluation'}
-          </button>
-        </div>
-      )}
+      <div className="bac-actions">
+        {locked && lockedReason && <span className="bac-hint" id={`lock-${bid.id}`}>{lockedReason}</span>}
+        <button type="submit" className="ui-btn ui-btn--primary ui-btn--sm" disabled={busy || locked}
+          aria-describedby={locked && lockedReason ? `lock-${bid.id}` : undefined}>
+          <ClipboardCheck size={13} /> {busy ? 'Saving…' : mine ? 'Update my evaluation' : 'Submit my evaluation'}
+        </button>
+      </div>
     </form>
   )
 }
@@ -388,7 +415,8 @@ function EvaluationProject({ status }) {
   if (!data) return <div className="bac-page ad-content"><ListSkeleton rows={4} /></div>
 
   const seat = data.membership
-  const locked = !!data.lock_reason || !seat || !data.workflow_enabled
+  const block = evaluationBlock({ workflowEnabled: data.workflow_enabled, seat, lockReason: data.lock_reason })
+  const locked = !!block
   const candidate = data.ranking.rows.find(r => r.bid_id === data.ranking.candidate_id)
   const needsPostQual = candidate && !candidate.post_qualification && !data.lock_reason
   return (
@@ -399,7 +427,9 @@ function EvaluationProject({ status }) {
       <PageHeader title={`${data.project.code} · ${data.project.name}`}
         description={`ABC ${peso(data.project.budget)} · ${data.project.bid_count} bid(s) · bidding closed ${fmtDate(data.project.deadline)}`} />
       <WorkflowOff status={status} />
-      {data.lock_reason && <div className="bac-note" role="status"><Landmark size={16} /><div><strong>Evaluation is closed</strong><p>{data.lock_reason}</p></div></div>}
+      {block
+        ? <div className="bac-note bac-note--warning" role="status"><AlertTriangle size={16} /><div><strong>You can&apos;t evaluate this procurement right now</strong><p>{block}</p></div></div>
+        : <div className="bac-note bac-note--success" role="status"><ClipboardCheck size={16} /><div><strong>Evaluation is open</strong><p>Check each bid below and press <b>Submit my evaluation</b>. Three passes qualify a bid.</p></div></div>}
 
       {data.bids.map(bid => {
         const files = bidFiles[bid.id]
@@ -448,7 +478,7 @@ function EvaluationProject({ status }) {
                 </ul>
               )}
             </div>
-            {seat && <EvaluationForm key={`${bid.id}-${bid.my_evaluation?.updated_at || 'new'}`} bid={bid} mine={bid.my_evaluation} locked={locked} onSaved={load} />}
+            <EvaluationForm key={`${bid.id}-${bid.my_evaluation?.updated_at || 'new'}`} bid={bid} mine={bid.my_evaluation} locked={locked} lockedReason={block} onSaved={load} />
           </section>
         )
       })}
@@ -582,7 +612,7 @@ export default function BacDashboard() {
         <div className="ad-body">
           <Routes>
             <Route index element={<BacHome status={status} />} />
-            <Route path="evaluation" element={<EvaluationList />} />
+            <Route path="evaluation" element={<EvaluationList status={status} />} />
             <Route path="evaluation/:id" element={<EvaluationProject status={status} />} />
             <Route path="resolutions" element={<ResolutionsPage status={status} />} />
             <Route path="records" element={<BacRecordsPage className="ad-content" />} />

@@ -22,6 +22,8 @@ Everything that changes something refuses while settings.BAC_WORKFLOW_ENABLED
 is off, except recording designations: the committee has to be set up before
 the workflow is switched on.
 """
+from datetime import timedelta
+
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import permissions, serializers, status as http_status, viewsets
@@ -321,6 +323,28 @@ class EvaluationProjectsView(APIView):
         rows = [_project_summary(p, seat) for p in projects]
         # Only procurements whose bidding has closed: before that bids are sealed.
         return Response([r for r in rows if r["bidding_closed"] or r["status"] == Project.Status.AWARDED])
+
+
+class UpcomingEvaluationsView(APIView):
+    """GET the published procurements whose bidding is still open, so members
+    can see what is coming and the day evaluation opens. Bids are sealed until
+    the deadline, so this says nothing about them: no count, no amounts, no
+    bidders. Evaluation opens the day after the deadline (bac.bidding_closed
+    uses deadline < today)."""
+
+    permission_classes = [IsInternalRole]
+
+    def get(self, request):
+        projects = (Project.objects.filter(status=Project.Status.PUBLISHED)
+                    .order_by("deadline", "id"))
+        rows = []
+        for p in projects:
+            if bac.bidding_closed(p):
+                continue
+            opens = p.deadline + timedelta(days=1) if p.deadline else None
+            rows.append({"id": p.id, "code": p.code, "name": p.name, "category": p.category,
+                         "deadline": p.deadline, "evaluation_opens": opens})
+        return Response(rows)
 
 
 class EvaluationProjectDetailView(APIView):

@@ -11,6 +11,7 @@ from .bac_views import (
     MembershipViewSet,
     PostQualifyView,
     ResolutionViewSet,
+    UpcomingEvaluationsView,
     VoteNoteView,
 )
 from .categories import CategoryView
@@ -54,6 +55,7 @@ urlpatterns = [
     path("anchors/send-next/", AnchorNextPendingView.as_view(), name="anchors-send-next"),
     path("bac/status/", BACStatusView.as_view(), name="bac-status"),
     path("bac/projects/", EvaluationProjectsView.as_view(), name="bac-projects"),
+    path("bac/projects/upcoming/", UpcomingEvaluationsView.as_view(), name="bac-projects-upcoming"),
     path("bac/projects/<int:pk>/", EvaluationProjectDetailView.as_view(), name="bac-project"),
     path("bac/bids/<int:pk>/evaluate/", EvaluateBidView.as_view(), name="bac-evaluate"),
     path("bac/bids/<int:pk>/post-qualify/", PostQualifyView.as_view(), name="bac-post-qualify"),

@@ -757,6 +757,7 @@ export const apiEndBacMembership = (id, data) =>
 
 // Evaluation, ranking and post-qualification.
 export const apiBacProjects = () => apiFetch('/bac/projects/', { fresh: true })
+export const apiBacUpcomingProjects = () => apiFetch('/bac/projects/upcoming/', { fresh: true })
 export const apiBacProject = (projectId) => apiFetch(`/bac/projects/${projectId}/`, { fresh: true })
 export const apiBacEvaluateBid = (bidId, data) =>
   apiFetch(`/bac/bids/${bidId}/evaluate/`, { method: 'POST', body: JSON.stringify(data) })
