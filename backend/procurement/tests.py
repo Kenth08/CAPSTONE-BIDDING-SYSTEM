@@ -6008,6 +6008,23 @@ class BACWorkflowTests(APITestCase):
         supplier = make_user("sup8", User.Role.SUPPLIER)
         self.assertEqual(self.as_user(supplier).get("/api/bac/projects/upcoming/").status_code, 403)
 
+    def test_demo_close_bidding_opens_evaluation_early_and_keeps_the_deadline(self):
+        deadline = timezone.localdate() + timedelta(days=3)
+        Project.objects.filter(pk=self.project.pk).update(status=Project.Status.PUBLISHED, deadline=deadline)
+        url = f"/api/bac/projects/{self.project.id}/demo-close-bidding/"
+        self.assertEqual(self.as_user(self.head).post(url).status_code, 403)
+        self.assertEqual(self.as_user(make_user("sup7", User.Role.SUPPLIER)).post(url).status_code, 403)
+        with self.settings(DEMO_CLOSE_BIDDING_ENABLED=False):
+            self.assertEqual(self.as_user(self.staff).post(url).status_code, 403)
+        self.assertEqual(self.as_user(self.staff).post(url).status_code, 200)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, Project.Status.CLOSED)
+        self.assertEqual(self.project.deadline, deadline)
+        client = self.as_user(self.members[0].user)
+        self.assertEqual(client.post(f"/api/bac/bids/{self.low.id}/evaluate/", self.PASS, format="json").status_code, 201)
+        # Only open bidding can be closed.
+        self.assertEqual(self.as_user(self.staff).post(url).status_code, 400)
+
     def test_only_seated_members_evaluate_and_members_see_others_only_after_their_own(self):
         outsider = make_user("bac9", User.Role.BAC)
         res = self.as_user(outsider).post(f"/api/bac/bids/{self.low.id}/evaluate/", self.PASS, format="json")

@@ -10,6 +10,7 @@ from .bac_views import (
     EvaluationProjectsView,
     MembershipViewSet,
     PostQualifyView,
+    DemoCloseBiddingView,
     ResolutionViewSet,
     UpcomingEvaluationsView,
     VoteNoteView,
@@ -56,6 +57,8 @@ urlpatterns = [
     path("bac/status/", BACStatusView.as_view(), name="bac-status"),
     path("bac/projects/", EvaluationProjectsView.as_view(), name="bac-projects"),
     path("bac/projects/upcoming/", UpcomingEvaluationsView.as_view(), name="bac-projects-upcoming"),
+    # DEMO ONLY, temporary (see DemoCloseBiddingView).
+    path("bac/projects/<int:pk>/demo-close-bidding/", DemoCloseBiddingView.as_view(), name="bac-demo-close-bidding"),
     path("bac/projects/<int:pk>/", EvaluationProjectDetailView.as_view(), name="bac-project"),
     path("bac/bids/<int:pk>/evaluate/", EvaluateBidView.as_view(), name="bac-evaluate"),
     path("bac/bids/<int:pk>/post-qualify/", PostQualifyView.as_view(), name="bac-post-qualify"),

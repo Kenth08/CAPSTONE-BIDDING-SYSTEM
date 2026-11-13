@@ -32,12 +32,23 @@ export function useBacStatus() {
   const [status, setStatus] = useState({ ...OFF, loading: true })
   useEffect(() => {
     let alive = true
-    apiBacStatus()
+    // Asked again whenever the tab comes back into view: the Admin may record
+    // or end this member's seat while the dashboard is open, and a status read
+    // once at mount would keep saying "no seat" until a full reload.
+    const load = (fresh) => apiBacStatus({ fresh })
       .then(s => { if (alive) setStatus({ ...OFF, ...s, loading: false }) })
       // Can't tell: behave as before (switch off). The server refuses anything
       // a role may not do whatever the page shows.
-      .catch(() => { if (alive) setStatus({ ...OFF, loading: false }) })
-    return () => { alive = false }
+      .catch(() => { if (alive) setStatus(prev => (prev.loading ? { ...OFF, loading: false } : prev)) })
+    load(false)
+    const onVisible = () => { if (document.visibilityState === 'visible') load(true) }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      alive = false
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
   }, [])
   return status
 }

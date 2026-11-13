@@ -8,7 +8,7 @@ import {
   AlertTriangle, ArrowLeft, ClipboardCheck, FileText, Gavel, Landmark, LayoutDashboard, LogOut, ScrollText, Vote,
 } from 'lucide-react'
 import {
-  apiBacEvaluateBid, apiBacPostQualify, apiBacProject, apiBacProjects, apiBacResolutions, apiBacUpcomingProjects, apiBacVote,
+  apiBacEvaluateBid, apiBacPostQualify, apiBacProject, apiBacProjects, apiBacResolutions, apiBacUpcomingProjects, apiBacVote, apiDemoCloseBidding,
   apiBidRequestRevision, apiListProjectBids, apiLogout,
 } from '../api'
 import AppSidebar from '../components/shell/AppSidebar'
@@ -186,10 +186,27 @@ function BacCharts({ projects, resolutions }) {
 function EvaluationList({ status }) {
   const [rows, setRows] = useState(null)
   const [upcoming, setUpcoming] = useState([])
-  useEffect(() => {
+  // DEMO ONLY, temporary: the procurement whose bidding is about to be closed early.
+  const [closing, setClosing] = useState(null)
+  const [closeBusy, setCloseBusy] = useState(false)
+  const load = () => {
     apiBacProjects().then(setRows).catch(e => { toast.error(e.message); setRows([]) })
     apiBacUpcomingProjects().then(setUpcoming).catch(() => setUpcoming([]))
-  }, [])
+  }
+  useEffect(load, [])
+  const closeBidding = async () => {
+    setCloseBusy(true)
+    try {
+      await apiDemoCloseBidding(closing.id)
+      toast.success(`Bidding on ${closing.code} is closed. It is ready for evaluation.`)
+      setClosing(null)
+      load()
+    } catch (err) {
+      toast.error(err.message || 'Could not close bidding.')
+    } finally {
+      setCloseBusy(false)
+    }
+  }
   return (
     <div className="bac-page ad-content">
       <PageHeader title="Evaluation" description="Procurements whose bidding has closed. Open one to evaluate its bids." />
@@ -215,9 +232,22 @@ function EvaluationList({ status }) {
             <div key={p.id} className="bac-list-row">
               <span><strong>{p.code} · {p.name}</strong>
                 <span className="sub">Bidding closes {p.deadline ? fmtDate(p.deadline) : 'when published'}</span></span>
-              <StatusBadge tone="neutral" label={p.evaluation_opens ? `Opens ${fmtDate(p.evaluation_opens)}` : 'Not scheduled'} />
+              <span className="bac-actions">
+                <StatusBadge tone="neutral" label={p.evaluation_opens ? `Opens ${fmtDate(p.evaluation_opens)}` : 'Not scheduled'} />
+                {/* DEMO ONLY, temporary: remove with DemoCloseBiddingView. */}
+                <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={() => setClosing(p)}>
+                  Close bidding now (demo)
+                </button>
+              </span>
             </div>))}</div>
         </section>
+      )}
+      {closing && (
+        <ConfirmDialog title={`Close bidding on ${closing.code} now?`} tone="warning" confirmLabel="Close bidding" busy={closeBusy}
+          points={['Demo only: the bidding ends before its deadline and no more bids are accepted.',
+            'The bids are unsealed for the committee, and evaluation opens right away.',
+            "This is recorded in the audit log and can't be undone."]}
+          onCancel={() => setClosing(null)} onConfirm={closeBidding} />
       )}
     </div>
   )
