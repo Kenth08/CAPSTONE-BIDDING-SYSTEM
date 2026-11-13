@@ -174,7 +174,10 @@ function BidProductImages({ bid, onChanged, setToast }) {
   )
 }
 function BidDetailModal({ bid, award, onClose, onWithdraw, onResubmitted, setToast }) {
-  const canWithdraw = bid.status === 'submitted' || bid.status === 'under_review'
+  // Only while bidding is open: once it closes (deadline, or ended early by the
+  // procuring entity) the server refuses a withdrawal (BidViewSet.destroy).
+  const canWithdraw = (bid.status === 'submitted' || bid.status === 'under_review')
+    && bid.projectStatus === 'published' && !(bid.projectDeadline && bid.projectDeadline < todayISO())
   const flaggedDocs = (bid.documents || []).filter(d => d.review_status === 'needs_revision')
   const [files, setFiles] = useState({})  // { key: File } — product_images holds [{ id, file, caption }]
   const [busy, setBusy] = useState(false)

@@ -24,7 +24,6 @@ the workflow is switched on.
 """
 from datetime import timedelta
 
-from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import permissions, serializers, status as http_status, viewsets
@@ -308,6 +307,13 @@ def _project_summary(project, seat):
         "resolution": ({"id": res.id, "number": res.number, "status": res.status,
                         "head_decision": res.head_decision} if res else None),
         "latest_resolution_status": latest.status if latest else "",
+        # open / closed / under_evaluation / completed (bac.bidding_phase).
+        "bidding_phase": bac.bidding_phase(
+            project,
+            evaluating=bool(evaluations) or res is not None
+            or any(b.status in (Bid.Status.QUALIFIED, Bid.Status.DISQUALIFIED, Bid.Status.WINNER) for b in bids),
+            adopted=any(r.status == BACResolution.Status.ADOPTED for r in project.bac_resolutions.all()),
+        ),
     }
 
 
@@ -324,38 +330,6 @@ class EvaluationProjectsView(APIView):
         rows = [_project_summary(p, seat) for p in projects]
         # Only procurements whose bidding has closed: before that bids are sealed.
         return Response([r for r in rows if r["bidding_closed"] or r["status"] == Project.Status.AWARDED])
-
-
-class DemoCloseBiddingView(APIView):
-    """DEMO ONLY — POST closes a published procurement's bidding now, before
-    its deadline, so a demo can go straight to BAC evaluation. Temporary: off
-    with DEMO_CLOSE_BIDDING_ENABLED=False, and meant to be deleted (this view,
-    its URL, apiDemoCloseBidding and the button in BacDashboard) after the demo.
-
-    Only the status changes (published → closed), the same flip
-    close_expired_published_projects makes when the deadline passes. The
-    deadline is left as it was so the record stays honest, and nothing is
-    anchored: closing has no ledger stage. Audit-logged like every change."""
-
-    permission_classes = [IsInternalRole]
-
-    def post(self, request, pk):
-        if not getattr(settings, "DEMO_CLOSE_BIDDING_ENABLED", False):
-            return _bad("Closing bidding early is turned off.", http_status.HTTP_403_FORBIDDEN)
-        if request.user.role not in ("admin", "staff", "bac"):
-            return _bad("Only the Admin, Staff or a BAC member can close bidding.", http_status.HTTP_403_FORBIDDEN)
-        with transaction.atomic():
-            project = Project.objects.select_for_update().filter(pk=pk).first()
-            if project is None:
-                return _bad("Procurement not found.", http_status.HTTP_404_NOT_FOUND)
-            if project.status != Project.Status.PUBLISHED:
-                return _bad("Only a procurement whose bidding is open can be closed.")
-            project.status = Project.Status.CLOSED
-            project.save(update_fields=["status"])
-        log_action(request, "bac.demo_bidding_closed", entity_type="Project", entity_id=project.pk,
-                   description=f"{_person(request.user)} closed bidding on {project.code} early "
-                               f"(demo; deadline was {project.deadline}).")
-        return Response({"id": project.id, "status": project.status})
 
 
 class UpcomingEvaluationsView(APIView):

@@ -459,6 +459,19 @@ class Project(SecureUploadsMixin, models.Model):
     # procurement timeline shown to the Admin.
     published_at = models.DateTimeField(null=True, blank=True)
     awarded_at = models.DateTimeField(null=True, blank=True)
+    # Set only when the Admin or Staff force-end bidding before the deadline
+    # (ProjectViewSet.end_bidding). A procurement closed by its deadline passing
+    # leaves all three empty. `deadline` is never changed by a force-end: the
+    # record keeps both what was announced and when bidding actually ended.
+    bidding_closed_at = models.DateTimeField(null=True, blank=True)
+    bidding_closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    bidding_close_reason = models.TextField(blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

@@ -6008,22 +6008,213 @@ class BACWorkflowTests(APITestCase):
         supplier = make_user("sup8", User.Role.SUPPLIER)
         self.assertEqual(self.as_user(supplier).get("/api/bac/projects/upcoming/").status_code, 403)
 
-    def test_demo_close_bidding_opens_evaluation_early_and_keeps_the_deadline(self):
-        deadline = timezone.localdate() + timedelta(days=3)
+    # force-ending bidding (ProjectViewSet.end_bidding)
+    REASON = "Every eligible supplier has already submitted a bid."
+
+    def open_bidding(self, days_left=3):
+        """Put the fixture procurement back in open bidding, deadline in the future."""
+        deadline = timezone.localdate() + timedelta(days=days_left)
         Project.objects.filter(pk=self.project.pk).update(status=Project.Status.PUBLISHED, deadline=deadline)
-        url = f"/api/bac/projects/{self.project.id}/demo-close-bidding/"
-        self.assertEqual(self.as_user(self.head).post(url).status_code, 403)
-        self.assertEqual(self.as_user(make_user("sup7", User.Role.SUPPLIER)).post(url).status_code, 403)
-        with self.settings(DEMO_CLOSE_BIDDING_ENABLED=False):
-            self.assertEqual(self.as_user(self.staff).post(url).status_code, 403)
-        self.assertEqual(self.as_user(self.staff).post(url).status_code, 200)
+        self.project.refresh_from_db()
+        return deadline
+
+    def end_bidding(self, user, reason=REASON):
+        body = {} if reason is None else {"reason": reason}
+        return self.as_user(user).post(f"/api/projects/{self.project.id}/end-bidding/", body, format="json")
+
+    def test_admin_can_force_end_bidding_and_the_deadline_is_kept(self):
+        deadline = self.open_bidding()
+        before = timezone.now()
+        res = self.end_bidding(self.admin)
+        self.assertEqual(res.status_code, 200, res.data)
         self.project.refresh_from_db()
         self.assertEqual(self.project.status, Project.Status.CLOSED)
         self.assertEqual(self.project.deadline, deadline)
-        client = self.as_user(self.members[0].user)
-        self.assertEqual(client.post(f"/api/bac/bids/{self.low.id}/evaluate/", self.PASS, format="json").status_code, 201)
-        # Only open bidding can be closed.
-        self.assertEqual(self.as_user(self.staff).post(url).status_code, 400)
+        self.assertEqual(self.project.bidding_closed_by, self.admin)
+        self.assertGreaterEqual(self.project.bidding_closed_at, before)
+        self.assertLessEqual(self.project.bidding_closed_at, timezone.now())
+        self.assertEqual(self.project.bidding_close_reason, self.REASON)
+        self.assertEqual(res.data["status"], "closed")
+        self.assertEqual(res.data["bidding_close_reason"], self.REASON)
+        self.assertEqual(res.data["bidding_closed_by_name"], self.admin.full_name or self.admin.username)
+        self.assertEqual(res.data["bidding_phase"], "closed")
+
+    def test_staff_can_force_end_bidding(self):
+        self.open_bidding()
+        res = self.end_bidding(self.staff)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, Project.Status.CLOSED)
+        self.assertEqual(self.project.bidding_closed_by, self.staff)
+
+    @override_settings(BAC_WORKFLOW_ENABLED=False)
+    def test_admin_can_force_end_bidding_with_the_workflow_off_and_then_evaluate(self):
+        self.open_bidding()
+        self.assertEqual(self.end_bidding(self.admin).status_code, 200)
+        self.assertEqual(self.as_user(self.admin).post(f"/api/bids/{self.low.id}/qualify/").status_code, 200)
+
+    def test_bac_members_head_suppliers_and_strangers_cannot_force_end_bidding(self):
+        self.open_bidding()
+        # Every committee seat, the Chairperson included.
+        for member in self.members:
+            self.assertEqual(self.end_bidding(member.user).status_code, 403)
+        self.assertEqual(self.end_bidding(self.head).status_code, 403)
+        self.assertEqual(self.end_bidding(self.low.supplier.user).status_code, 403)
+        self.client.force_authenticate(user=None)
+        res = self.client.post(f"/api/projects/{self.project.id}/end-bidding/", {"reason": self.REASON}, format="json")
+        self.assertEqual(res.status_code, 401)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, Project.Status.PUBLISHED)
+        self.assertIsNone(self.project.bidding_closed_at)
+        self.assertFalse(AuditLog.objects.filter(action="project.bidding_force_ended").exists())
+
+    def test_a_reason_is_required(self):
+        self.open_bidding()
+        for reason in (None, "", "   "):
+            res = self.end_bidding(self.staff, reason=reason)
+            self.assertEqual(res.status_code, 400)
+            self.assertIn("reason", res.data)
+        self.assertEqual(self.end_bidding(self.staff, reason="x" * 1001).status_code, 400)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, Project.Status.PUBLISHED)
+        self.assertIsNone(self.project.bidding_closed_at)
+        self.assertFalse(AuditLog.objects.filter(action="project.bidding_force_ended").exists())
+
+    def test_force_end_is_audit_logged_with_every_detail(self):
+        self.open_bidding()
+        self.assertEqual(self.end_bidding(self.staff).status_code, 200)
+        self.project.refresh_from_db()
+        entries = AuditLog.objects.filter(action="project.bidding_force_ended")
+        self.assertEqual(entries.count(), 1)
+        entry = entries.get()
+        self.assertEqual(entry.user, self.staff)
+        self.assertEqual((entry.entity_type, entry.entity_id), ("Project", str(self.project.id)))
+        for part in ("Manual force end", self.project.code, "published → closed",
+                     self.staff.full_name, f"user #{self.staff.pk}", str(self.project.deadline), self.REASON):
+            self.assertIn(part, entry.description)
+        local = timezone.localtime(self.project.bidding_closed_at).strftime("%Y-%m-%d %H:%M:%S")
+        self.assertIn(local, entry.description)
+
+    def test_bac_members_and_bidders_are_notified(self):
+        self.open_bidding()
+        self.assertEqual(self.end_bidding(self.staff).status_code, 200)
+        for member in self.members:
+            self.assertTrue(Notification.objects.filter(
+                user=member.user, message__contains=self.project.code, link=f"/bac/evaluation/{self.project.id}",
+            ).exists())
+        for bid in (self.low, self.mid, self.high):
+            self.assertTrue(Notification.objects.filter(
+                user=bid.supplier.user, message__contains="closed before its deadline").exists())
+
+    def test_after_force_end_bids_are_blocked_and_existing_bids_stay_intact(self):
+        self.open_bidding()
+        late = make_supplier()
+        supplier = self.low.supplier.user
+        fields = ("pk", "amount", "status", "notes", "supplier_id", "delivery_timeline")
+        snapshot = list(Bid.objects.order_by("pk").values(*fields))
+        self.assertEqual(self.end_bidding(self.staff).status_code, 200)
+        self.assertEqual(list(Bid.objects.order_by("pk").values(*fields)), snapshot)
+        # No new bid: a closed procurement is not one a supplier can bid on.
+        res = self.as_user(late.user).post(f"/api/projects/{self.project.id}/bid/", {"amount": "700"}, format="multipart")
+        self.assertIn(res.status_code, (400, 404))
+        self.assertFalse(Bid.objects.filter(project=self.project, supplier=late).exists())
+        # No withdrawal, no product image change.
+        self.assertEqual(self.as_user(supplier).delete(f"/api/bids/{self.low.id}/").status_code, 400)
+        self.assertTrue(Bid.objects.filter(pk=self.low.pk).exists())
+        res = self.as_user(supplier).post(f"/api/bids/{self.low.id}/images/", {}, format="multipart")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("closed", str(res.data["detail"]))
+
+    def test_evaluation_post_qualification_and_voting_open_right_after_force_end(self):
+        self.open_bidding()
+        # Sealed while bidding is open.
+        res = self.as_user(self.members[0].user).post(f"/api/bac/bids/{self.low.id}/evaluate/", self.PASS, format="json")
+        self.assertNotIn(res.status_code, (200, 201))
+        self.assertEqual(self.end_bidding(self.staff).status_code, 200)
+        listed = self.as_user(self.members[0].user).get("/api/bac/projects/").data
+        self.assertIn(self.project.id, [r["id"] for r in listed])
+        # Every member evaluates every bid, the Chairperson post-qualifies, Staff
+        # drafts and opens voting, three approvals adopt.
+        resolution = self.adopted_resolution()
+        self.assertEqual(resolution.status, BACResolution.Status.ADOPTED)
+
+    def test_duplicate_force_end_is_refused_and_changes_nothing(self):
+        self.open_bidding()
+        self.assertEqual(self.end_bidding(self.staff).status_code, 200)
+        self.project.refresh_from_db()
+        first = (self.project.bidding_closed_at, self.project.bidding_closed_by_id, self.project.bidding_close_reason)
+        res = self.end_bidding(self.admin, reason="A second click.")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("already closed", res.data["detail"])
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, Project.Status.CLOSED)
+        self.assertEqual((self.project.bidding_closed_at, self.project.bidding_closed_by_id,
+                          self.project.bidding_close_reason), first)
+        self.assertEqual(AuditLog.objects.filter(action="project.bidding_force_ended").count(), 1)
+
+    def test_force_end_never_reopens_or_touches_other_statuses(self):
+        for status_value in (Project.Status.APPROVED, Project.Status.AWARDED, Project.Status.CLOSED):
+            Project.objects.filter(pk=self.project.pk).update(status=status_value)
+            self.assertEqual(self.end_bidding(self.staff).status_code, 400)
+            self.project.refresh_from_db()
+            self.assertEqual(self.project.status, status_value)
+            self.assertIsNone(self.project.bidding_closed_at)
+
+    def test_automatic_deadline_closure_still_works_and_is_not_a_force_end(self):
+        Project.objects.filter(pk=self.project.pk).update(
+            status=Project.Status.PUBLISHED, deadline=timezone.localdate() - timedelta(days=1))
+        res = self.as_user(self.admin).get(f"/api/projects/{self.project.id}/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["status"], "closed")
+        self.assertIsNone(res.data["bidding_closed_at"])
+        # Already closed by its deadline, so it can't be recorded as force-ended.
+        self.assertEqual(self.end_bidding(self.staff).status_code, 400)
+        self.project.refresh_from_db()
+        self.assertIsNone(self.project.bidding_closed_at)
+        self.assertEqual(self.project.bidding_close_reason, "")
+
+    def test_bidding_phase_goes_open_closed_under_evaluation_completed(self):
+        def phases():
+            detail = self.as_user(self.staff).get(f"/api/projects/{self.project.id}/").data["bidding_phase"]
+            rows = self.as_user(self.staff).get("/api/projects/").data
+            rows = rows["results"] if isinstance(rows, dict) else rows
+            listed = next(r["bidding_phase"] for r in rows if r["id"] == self.project.id)
+            return detail, listed
+
+        self.open_bidding()
+        self.assertEqual(phases(), ("open", "open"))
+        self.end_bidding(self.staff)
+        self.assertEqual(phases(), ("closed", "closed"))
+        self.evaluate(self.low, self.members[:1], self.PASS)
+        self.assertEqual(phases(), ("under_evaluation", "under_evaluation"))
+        bac_row = next(r for r in self.as_user(self.members[0].user).get("/api/bac/projects/").data
+                       if r["id"] == self.project.id)
+        self.assertEqual(bac_row["bidding_phase"], "under_evaluation")
+        # Finish the evaluation and adopt a resolution.
+        self.evaluate(self.low, self.members[1:], self.PASS)
+        for bid in (self.mid, self.high):
+            self.evaluate(bid, self.members, self.PASS)
+        res = self.as_user(self.members[0].user).post(
+            f"/api/bac/bids/{self.low.id}/post-qualify/",
+            {"result": "passed", "remarks": "Site visit and documents verified."}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        rid = self.draft_resolution().data["id"]
+        self.assertEqual(self.as_user(self.staff).post(f"/api/bac/resolutions/{rid}/open-voting/").status_code, 200)
+        self.assertEqual(phases(), ("under_evaluation", "under_evaluation"))
+        for m in self.members[:3]:
+            self.as_user(m.user).post(f"/api/bac/resolutions/{rid}/vote/", {
+                "choice": "approve", "comment": f"{m.user.full_name}: lowest responsive bid."}, format="json")
+        self.assertEqual(BACResolution.objects.get(pk=rid).status, BACResolution.Status.ADOPTED)
+        self.assertEqual(phases(), ("completed", "completed"))
+
+    def test_suppliers_do_not_see_who_ended_bidding(self):
+        self.open_bidding()
+        self.end_bidding(self.staff)
+        self.project.refresh_from_db()
+        request = type("FakeRequest", (), {"user": self.low.supplier.user})()
+        data = ProjectSerializer(self.project, context={"request": request}).data
+        self.assertIsNone(data["bidding_closed_by_name"])
+        self.assertEqual(data["bidding_close_reason"], self.REASON)
 
     def test_only_seated_members_evaluate_and_members_see_others_only_after_their_own(self):
         outsider = make_user("bac9", User.Role.BAC)

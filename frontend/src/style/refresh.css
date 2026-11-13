@@ -360,6 +360,16 @@ a.rf-list-row:focus-visible { outline: none; box-shadow: inset var(--focus-ring)
   background: var(--tone-info-bg); color: var(--tone-info-fg); font-size: var(--fs-caption); line-height: 1.45;
 }
 .rf-dialog-chain svg { flex-shrink: 0; margin-top: 2px; }
+.rf-dialog-message { margin: 0 0 var(--sp-3); color: var(--text-body); font-size: var(--fs-small); line-height: 1.5; }
+.rf-dialog-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 var(--sp-4); }
+.rf-dialog-field label { font-size: var(--fs-caption); font-weight: var(--fw-semibold); color: var(--text-body); }
+.rf-dialog-field textarea {
+  min-height: 84px; resize: vertical; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-btn);
+  font: inherit; font-size: var(--fs-small); color: var(--text-strong); background: var(--surface);
+}
+.rf-dialog-field textarea:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: transparent; }
+.rf-dialog-field .rf-dialog-hint { font-size: var(--fs-caption); color: var(--text-subtle); }
+.rf-dialog-field .rf-dialog-error { font-size: var(--fs-caption); color: var(--tone-danger-fg); }
 .rf-dialog-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); flex-wrap: wrap; }
 .rf-btn-primary { background: var(--c-primary-700); color: #fff; }
 .rf-btn-primary:hover:not(:disabled) { background: var(--c-navy-900); }

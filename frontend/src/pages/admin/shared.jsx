@@ -48,6 +48,18 @@ function RefCodeImpl({ code, size = 'sm' }) {
 // Deadline column: the real date once published; before that, a compact
 // "N-day period" chip whose tooltip explains the date is set on publish.
 function DeadlineCellImpl({ project }) {
+  // Force-ended early: the published deadline stays, with when bidding really ended.
+  if (project.deadline && project.biddingClosedAt) {
+    const ended = new Date(project.biddingClosedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    const tip = `Bidding was ended early${project.biddingClosedBy ? ` by ${project.biddingClosedBy}` : ''}`
+      + (project.biddingCloseReason ? `: ${project.biddingCloseReason}` : '')
+    return (
+      <span className="ad-nowrap" title={tip}>
+        {project.deadline}
+        <span className="ad-muted ad-small" style={{ display: 'block' }}>Ended early {ended}</span>
+      </span>
+    )
+  }
   if (project.deadline) return <span className="ad-nowrap">{project.deadline}</span>
   if (project.biddingPeriodDays) {
     return (

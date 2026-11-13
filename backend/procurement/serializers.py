@@ -266,6 +266,23 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
     # its bids and its award, since the contract indexes everything by the
     # procurement code.
     anchors = serializers.SerializerMethodField()
+    # open / closed / under_evaluation / completed (bac.bidding_phase), derived
+    # from evaluation and resolution data, never stored.
+    bidding_phase = serializers.SerializerMethodField()
+    # Who force-ended bidding early (ProjectViewSet.end_bidding). Internal only.
+    bidding_closed_by_name = serializers.SerializerMethodField()
+
+    def get_bidding_phase(self, obj):
+        from . import bac  # noqa: PLC0415 — bac imports documents, keep this module light
+
+        return bac.phase_of(obj)
+
+    def get_bidding_closed_by_name(self, obj):
+        user = getattr(self.context.get("request"), "user", None)
+        if getattr(user, "role", None) == "supplier" or not obj.bidding_closed_by_id:
+            return None
+        closer = obj.bidding_closed_by
+        return (closer.full_name or closer.username) if closer else None
 
     def get_anchors(self, obj):
         rows = super().get_anchors(obj)
@@ -392,6 +409,8 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
             "eligible_types", "status", "bid_count", "created_at",
             "reviewed_at", "reject_reason", "document_reviews", "published_at", "awarded_at", "documents",
             "anchors",
+            # force-end bidding (ProjectViewSet.end_bidding) + the derived phase
+            "bidding_closed_at", "bidding_close_reason", "bidding_closed_by_name", "bidding_phase",
             # write-only file inputs (read side is exposed via `documents`)
             "purchase_request", "technical_specifications", "terms_of_reference",
             "approved_budget_document", "bid_evaluation_criteria",
@@ -409,7 +428,7 @@ class ProjectSerializer(AnchorTrailMixin, serializers.ModelSerializer):
         read_only_fields = [
             "code", "created_at", "status", "reviewed_at", "reject_reason",
             "published_at", "awarded_at", "deadline", "expected_delivery_date",
-            "document_reviews",
+            "document_reviews", "bidding_closed_at", "bidding_close_reason",
         ]
         extra_kwargs = {
             **{
