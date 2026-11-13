@@ -1,0 +1,3 @@
+# Heroku builds this repository from its root, where the Python buildpack looks
+# for requirements.txt. The real list lives with the Django app.
+-r backend/requirements.txt
