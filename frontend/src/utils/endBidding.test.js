@@ -1,6 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { canEndBidding, checkReason, endBiddingBlockReason, END_BIDDING_REASON_LIMIT } from './endBidding.js'
+import {
+  canEndBidding, checkReason, endBiddingBlockReason, endBiddingErrorMessage, END_BIDDING_REASON_LIMIT,
+} from './endBidding.js'
+
+test('server messages are shown as they are; bare status codes are explained', () => {
+  assert.equal(endBiddingErrorMessage('Bidding on PC-1 is already closed.'), 'Bidding on PC-1 is already closed.')
+  assert.match(endBiddingErrorMessage('Request failed (404).'), /still be updating/)
+  assert.match(endBiddingErrorMessage('Request failed (502).'), /error 502/)
+  assert.match(endBiddingErrorMessage(''), /Try again/)
+})
 
 // Must match the backend: IsAdminOrStaffRole on ProjectViewSet.end_bidding.
 test('only the Admin and Staff may force-end bidding', () => {
