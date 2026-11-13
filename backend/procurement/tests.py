@@ -5993,6 +5993,21 @@ class BACWorkflowTests(APITestCase):
         self.assertEqual(res.status_code, 400)
         self.assertEqual(client.get(f"/api/bac/projects/{self.project.id}/").status_code, 409)
 
+    def test_upcoming_lists_open_biddings_with_their_opening_day_and_nothing_about_bids(self):
+        client = self.as_user(self.members[0].user)
+        # Bidding closed: not upcoming.
+        self.assertEqual(client.get("/api/bac/projects/upcoming/").json(), [])
+        deadline = timezone.localdate() + timedelta(days=3)
+        Project.objects.filter(pk=self.project.pk).update(status=Project.Status.PUBLISHED, deadline=deadline)
+        rows = client.get("/api/bac/projects/upcoming/").json()
+        self.assertEqual([r["id"] for r in rows], [self.project.id])
+        self.assertEqual(rows[0]["evaluation_opens"], str(deadline + timedelta(days=1)))
+        self.assertFalse({"bid_count", "bids", "amount"} & set(rows[0]))
+        # A seatless BAC account may look too; suppliers may not.
+        self.assertEqual(self.as_user(make_user("bac8", User.Role.BAC)).get("/api/bac/projects/upcoming/").status_code, 200)
+        supplier = make_user("sup8", User.Role.SUPPLIER)
+        self.assertEqual(self.as_user(supplier).get("/api/bac/projects/upcoming/").status_code, 403)
+
     def test_only_seated_members_evaluate_and_members_see_others_only_after_their_own(self):
         outsider = make_user("bac9", User.Role.BAC)
         res = self.as_user(outsider).post(f"/api/bac/bids/{self.low.id}/evaluate/", self.PASS, format="json")
