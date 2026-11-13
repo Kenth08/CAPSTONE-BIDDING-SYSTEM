@@ -4,6 +4,7 @@ import ConfirmDialog from './ui/ConfirmDialog'
 import { endBidding } from '../store/projectsStore'
 import {
   END_BIDDING_MESSAGE, END_BIDDING_REASON_LIMIT, END_BIDDING_TITLE, checkReason, endBiddingBlockReason,
+  endBiddingErrorMessage,
 } from '../utils/endBidding'
 
 /**
@@ -37,7 +38,7 @@ export default function EndBiddingButton({ project, role, onEnded, className = '
     } catch (err) {
       // A second click or another tab got there first: the server says it is
       // already closed. Show it here and let the caller refresh.
-      setError(err.message || 'Could not end bidding. Try again.')
+      setError(endBiddingErrorMessage(err.message))
     } finally {
       setBusy(false)
     }
@@ -54,9 +55,8 @@ export default function EndBiddingButton({ project, role, onEnded, className = '
         <ConfirmDialog title={END_BIDDING_TITLE} message={END_BIDDING_MESSAGE} tone="warning"
           confirmLabel="Confirm and End Bidding" busy={busy} confirmDisabled={!reason.trim()}
           points={[
-            `${project.code}: the published deadline stays on record, and the actual closing time, your name and this reason are saved.`,
-            'Submitted bids and their files are not changed. Bidders can no longer edit or withdraw them.',
-            "This is recorded in the audit log and can't be undone.",
+            `${project.code}: submitted bids stay as they are; the published deadline is kept.`,
+            "Your name, the time and this reason go in the audit log. This can't be undone.",
           ]}
           onCancel={close} onConfirm={confirm}>
           <div className="rf-dialog-field">
@@ -66,7 +66,7 @@ export default function EndBiddingButton({ project, role, onEnded, className = '
               placeholder="e.g. Every eligible supplier has already submitted a bid."
               onChange={e => { setReason(e.target.value); if (error) setError('') }} />
             <span id={`end-bidding-hint-${project.id}`} className={error ? 'rf-dialog-error' : 'rf-dialog-hint'} role={error ? 'alert' : undefined}>
-              {error || 'Kept on the procurement record and in the audit log.'}
+              {error || 'Saved on the procurement record.'}
             </span>
           </div>
         </ConfirmDialog>

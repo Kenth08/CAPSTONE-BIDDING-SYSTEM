@@ -351,6 +351,9 @@ a.rf-list-row:focus-visible { outline: none; box-shadow: inset var(--focus-ring)
 .rf-dialog {
   width: min(460px, 100%); background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-lg);
   padding: var(--sp-6); animation: rf-fade-in 160ms ease both;
+  /* Never taller than the window: the body scrolls, the buttons stay in view. */
+  max-height: calc(100vh - 2 * var(--sp-4)); max-height: calc(100dvh - 2 * var(--sp-4));
+  overflow-y: auto; overscroll-behavior: contain;
 }
 .rf-dialog-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; margin-bottom: var(--sp-3); }
 .rf-dialog h3 { margin: 0 0 var(--sp-2); font-size: var(--fs-section-title); color: var(--text-strong); }
@@ -364,13 +367,19 @@ a.rf-list-row:focus-visible { outline: none; box-shadow: inset var(--focus-ring)
 .rf-dialog-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 var(--sp-4); }
 .rf-dialog-field label { font-size: var(--fs-caption); font-weight: var(--fw-semibold); color: var(--text-body); }
 .rf-dialog-field textarea {
-  min-height: 84px; resize: vertical; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-btn);
+  min-height: 72px; resize: vertical; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-btn);
   font: inherit; font-size: var(--fs-small); color: var(--text-strong); background: var(--surface);
 }
 .rf-dialog-field textarea:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: transparent; }
 .rf-dialog-field .rf-dialog-hint { font-size: var(--fs-caption); color: var(--text-subtle); }
 .rf-dialog-field .rf-dialog-error { font-size: var(--fs-caption); color: var(--tone-danger-fg); }
-.rf-dialog-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); flex-wrap: wrap; }
+.rf-dialog-actions {
+  display: flex; justify-content: flex-end; gap: var(--sp-2); flex-wrap: wrap;
+  /* Pinned to the bottom edge while a long dialog scrolls. */
+  position: sticky; bottom: calc(-1 * var(--sp-6)); z-index: 1;
+  margin: 0 calc(-1 * var(--sp-6)) calc(-1 * var(--sp-6)); padding: var(--sp-3) var(--sp-6) var(--sp-6);
+  background: var(--surface); border-radius: 0 0 var(--r-lg) var(--r-lg);
+}
 .rf-btn-primary { background: var(--c-primary-700); color: #fff; }
 .rf-btn-primary:hover:not(:disabled) { background: var(--c-navy-900); }
 .rf-btn-danger { background: var(--tone-danger-fg); color: #fff; }

@@ -24,6 +24,22 @@ export function endBiddingBlockReason(role, status) {
   return null
 }
 
+/**
+ * What to show when the request fails. The server's own words when it gave
+ * any ("already closed", "Only the Admin or Staff…"). A bare status code means
+ * the server sent no explanation: a 404 then means it doesn't have this action
+ * yet, which happens for a minute or two while a new version is deploying.
+ */
+export function endBiddingErrorMessage(message) {
+  const bare = /^Request failed \((\d+)\)\.?$/.exec(String(message || ''))
+  if (!message) return 'Could not end bidding. Try again.'
+  if (!bare) return message
+  if (bare[1] === '404') {
+    return 'The server is not ready for this action yet (it may still be updating). Wait a minute, then try again.'
+  }
+  return `Could not end bidding (error ${bare[1]}). Try again in a moment.`
+}
+
 /** The trimmed reason, or an error message: the reason is required. */
 export function checkReason(raw) {
   const reason = String(raw || '').trim()
